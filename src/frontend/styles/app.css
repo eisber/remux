@@ -709,14 +709,21 @@ button.danger {
   gap: 0.5rem;
 }
 
-.scrollback-terminal {
-  overflow: hidden;
-  border-radius: 8px;
+.scrollback-content {
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: 'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', Menlo, Monaco, 'Courier New', monospace;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  background: var(--scrollback-bg);
   border: 1px solid var(--scrollback-border);
-}
-
-.scrollback-terminal .xterm-viewport {
-  overflow-x: hidden !important;
+  border-radius: 8px;
+  padding: 0.5rem;
+  color: var(--text-primary);
+  user-select: text;
 }
 
 .upload-overlay {
