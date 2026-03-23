@@ -16,10 +16,10 @@ Built for the age of AI coding agents: keep an eye on Claude Code, long-running 
 ## Screenshots
 
 ### Amber theme
-![Remux screenshot - Amber](./screenshot.png)
+![Remux screenshot - Amber](./docs/assets/screenshot.png)
 
 ### Midnight theme
-![Remux screenshot - Midnight](./screenshot-midnight.png)
+![Remux screenshot - Midnight](./docs/assets/screenshot-midnight.png)
 
 ## Prerequisites
 
@@ -82,7 +82,7 @@ Options:
 
 - Password authentication enabled by default (random password generated if not specified)
 - Clients attach through dedicated grouped tmux sessions for independent window focus
-- Full security model documented in [SECURITY.md](./SECURITY.md)
+- Full security model documented in [SECURITY.md](./docs/SECURITY.md)
 
 ## Development
 
