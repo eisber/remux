@@ -30,7 +30,7 @@ Write-Host "  Frontend: Vite HMR on http://localhost:5173" -ForegroundColor Dark
 Write-Host ""
 
 # Start Vite in background
-$viteJob = Start-Process -FilePath "npx" -ArgumentList "vite","--config","vite.config.ts" `
+$viteJob = Start-Process -FilePath "node" -ArgumentList "node_modules/vite/bin/vite.js","--config","vite.config.ts" `
     -NoNewWindow -PassThru -RedirectStandardOutput "$env:TEMP\remux-vite.log" -RedirectStandardError "$env:TEMP\remux-vite-err.log"
 
 Write-Host "[vite] started (pid=$($viteJob.Id))" -ForegroundColor Green
