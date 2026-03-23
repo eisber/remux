@@ -368,7 +368,7 @@ describe("tmux mobile server", () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     const { attachedSession } = await authControl(control);
 
-    // Create a second window on the mobile session
+    // Create a second window (structural ops now target base session "main")
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
     await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
 
@@ -412,7 +412,7 @@ describe("tmux mobile server", () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     const { attachedSession } = await authControl(control);
 
-    // Create window 1
+    // Create window 1 (structural ops now target base session "main")
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
     await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
 
@@ -431,9 +431,72 @@ describe("tmux mobile server", () => {
     );
     await waitForTmuxCall((call) => call.includes("killWindow:") && call.endsWith(":1"));
 
-    // Verify the correct window (1) was killed, not window 0
+    // Verify the correct window (1) was killed on the base session, not window 0
     expect(
-      tmux.calls.some((c) => c.startsWith("killWindow:remux-client-") && c.endsWith(":1"))
+      tmux.calls.some((c) => c === "killWindow:main:1")
+    ).toBe(true);
+
+    control.close();
+  });
+
+  test("kill_window refuses to kill the last window", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const { attachedSession } = await authControl(control);
+
+    // Session has only one window — kill should be rejected
+    tmux.calls.length = 0;
+    control.send(
+      JSON.stringify({ type: "kill_window", session: attachedSession, windowIndex: 0 })
+    );
+
+    // Should receive an info message instead of killing
+    const infoMsg = await waitForMessage<{ type: string; message: string }>(
+      control,
+      (msg) => msg.type === "info" && msg.message.includes("last window")
+    );
+    expect(infoMsg.message).toContain("last window");
+
+    // killWindow should NOT have been called
+    expect(tmux.calls.some((c) => c.includes("killWindow:"))).toBe(false);
+
+    control.close();
+  });
+
+  test("rename_session renames via tmux gateway", async () => {
+    await runningServer.stop();
+    await startWithSessions(["alpha"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const { attachedSession } = await authControl(control);
+    expect(attachedSession).toBe("alpha");
+
+    control.send(
+      JSON.stringify({ type: "rename_session", session: "alpha", newName: "beta" })
+    );
+    await waitForTmuxCall((call) => call === "renameSession:alpha:beta");
+
+    expect(tmux.calls).toContain("renameSession:alpha:beta");
+
+    control.close();
+  });
+
+  test("rename_window renames via tmux gateway", async () => {
+    await runningServer.stop();
+    await startWithSessions(["work"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    await authControl(control);
+
+    control.send(
+      JSON.stringify({ type: "rename_window", session: "work", windowIndex: 0, newName: "editor" })
+    );
+    await waitForTmuxCall((call) => call.includes("renameWindow:") && call.endsWith(":0:editor"));
+
+    expect(
+      tmux.calls.some((c) => c === "renameWindow:work:0:editor")
     ).toBe(true);
 
     control.close();

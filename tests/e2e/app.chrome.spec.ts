@@ -23,6 +23,7 @@ test.describe("remux browser behavior", () => {
       await expect.poll(() => server.ptyFactory.processes.length).toBeGreaterThan(0);
       server.ptyFactory.latestProcess().emitData("hello from e2e\r\n");
 
+      // Default is terminal mode — wait for terminal to be visible
       await expect(page.getByTestId("terminal-host")).toBeVisible();
       const hostBox = await page.getByTestId("terminal-host").boundingBox();
       expect(hostBox?.height ?? 0).toBeGreaterThan(120);
@@ -243,7 +244,6 @@ test.describe("remux browser behavior", () => {
 
         await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
         await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
-        await expect(page.getByTestId("top-zoom-indicator")).toHaveAttribute("aria-label", "Pane zoom: off");
 
         await page.getByTestId("drawer-toggle").click();
         const stickyZoomToggle = page.getByTestId("sticky-zoom-toggle");
@@ -259,7 +259,6 @@ test.describe("remux browser behavior", () => {
         await expect
           .poll(() => localServer.tmux.calls.filter((call) => call.startsWith("zoomPane:")).length)
           .toBe(initialZoomCalls + 1);
-        await expect(page.getByTestId("top-zoom-indicator")).toHaveAttribute("aria-label", "Pane zoom: on");
         await expect(page.getByTestId("active-pane-zoom-indicator")).toHaveAttribute(
           "aria-label",
           "Pane zoom: on"
@@ -270,7 +269,7 @@ test.describe("remux browser behavior", () => {
       }
     });
 
-    test("shows zoom indicators for active pane in drawer and top bar", async ({ page }, testInfo) => {
+    test("shows zoom indicators for active pane in drawer", async ({ page }, testInfo) => {
       const frontendConsole: Array<{
         at: string;
         type: string;
@@ -299,18 +298,10 @@ test.describe("remux browser behavior", () => {
       });
 
       const collectZoomDebug = async (phase: string, options?: { attach?: boolean }): Promise<void> => {
-        const topIndicator = page.getByTestId("top-zoom-indicator");
         const activePaneIndicator = page.getByTestId("active-pane-zoom-indicator");
         const paneButtons = page.getByRole("button", { name: /^%\d+:/ });
         const sessionsListButtons = page.getByTestId("sessions-list").getByRole("button");
 
-        const topIndicatorSnapshot = await topIndicator.evaluateAll((nodes) =>
-          nodes.map((node) => ({
-            ariaLabel: node.getAttribute("aria-label"),
-            title: node.getAttribute("title"),
-            text: node.textContent
-          }))
-        );
         const activePaneIndicatorSnapshot = await activePaneIndicator.evaluateAll((nodes) =>
           nodes.map((node) => ({
             ariaLabel: node.getAttribute("aria-label"),
@@ -349,10 +340,6 @@ test.describe("remux browser behavior", () => {
 
         const debug = {
           phase,
-          topZoomIndicator: {
-            count: topIndicatorSnapshot.length,
-            ...(topIndicatorSnapshot[0] ?? {})
-          },
           activePaneZoomIndicator: {
             count: activePaneIndicatorSnapshot.length,
             ...(activePaneIndicatorSnapshot[0] ?? {})
@@ -384,10 +371,6 @@ test.describe("remux browser behavior", () => {
       const expectZoomIndicators = async (expected: "on" | "off", phase: string): Promise<void> => {
         const expectedAriaLabel = `Pane zoom: ${expected}`;
         try {
-          await expect(page.getByTestId("top-zoom-indicator")).toHaveAttribute(
-            "aria-label",
-            expectedAriaLabel
-          );
           if (expected === "on") {
             await expect(page.getByTestId("active-pane-zoom-indicator")).toHaveAttribute(
               "aria-label",
@@ -407,7 +390,6 @@ test.describe("remux browser behavior", () => {
 
       await page.goto(`${server.baseUrl}/?token=${server.token}&debug=1`);
       await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
-      await expect(page.getByTestId("top-zoom-indicator")).toHaveAttribute("aria-label", "Pane zoom: off");
       await collectZoomDebug("after-load");
 
       await page.getByTestId("drawer-toggle").click();

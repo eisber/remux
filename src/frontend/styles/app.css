@@ -330,6 +330,8 @@ body,
   margin: 0;
   width: 100%;
   height: 100%;
+  overscroll-behavior: none;
+  touch-action: manipulation;
 }
 
 button,
@@ -340,21 +342,28 @@ input {
 .app-shell {
   position: relative;
   width: 100%;
+  max-width: 100vw;
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(10rem, 1fr) auto auto;
   background: var(--bg-shell);
+  overflow: hidden;
 }
 
 .topbar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  gap: 0.4rem;
   padding: 0.45rem 0.5rem;
   background: var(--bg-topbar);
   backdrop-filter: var(--topbar-blur);
   -webkit-backdrop-filter: var(--topbar-blur);
   border-bottom: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.top-actions {
+  flex-shrink: 0;
 }
 
 .icon-btn,
@@ -440,7 +449,9 @@ input {
 
 .terminal-wrap {
   min-height: 0;
+  min-width: 0;
   padding: 0.3rem;
+  overflow: hidden;
 }
 
 .terminal-host {
@@ -451,6 +462,7 @@ input {
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   background: var(--bg-terminal);
+  touch-action: pan-y;
 }
 
 .terminal-host .xterm {
@@ -460,6 +472,26 @@ input {
 
 .terminal-host .xterm-screen {
   height: 100% !important;
+}
+
+.scrollback-main {
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', Menlo, Monaco, 'Courier New', monospace;
+  font-size: var(--scroll-font-size, clamp(11px, 1.1vw, 16px));
+  line-height: 1.35;
+  background: var(--bg-terminal);
+  border-radius: 10px;
+  border: 1px solid var(--border-subtle);
+  padding: 0.5rem;
+  color: var(--text-primary);
+  user-select: text;
 }
 
 .toolbar {
@@ -632,9 +664,44 @@ button.danger {
   margin-top: 0.45rem;
 }
 
+.drawer-version {
+  margin-top: 1.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.4;
+}
+
+[data-testid="sessions-list"] button,
+[data-testid="windows-list"] button {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.item-context {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .drawer button.active {
   background: var(--active-btn-bg);
   border-color: var(--border-active);
+}
+
+.rename-input {
+  width: 100%;
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border-active);
+  border-radius: 6px;
+  outline: none;
+  box-sizing: border-box;
 }
 
 .pane-zoom-indicator {
