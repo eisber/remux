@@ -120,18 +120,18 @@ const summarizeState = (state: TmuxStateSnapshot): string => {
   return `capturedAt=${state.capturedAt}; sessions=${sessions.join(" | ")}`;
 };
 
-const MOBILE_SESSION_PREFIX = "tmux-mobile-client-";
+const REMUX_SESSION_PREFIX = "remux-client-";
 
-const isManagedMobileSession = (name: string): boolean => name.startsWith(MOBILE_SESSION_PREFIX);
+const isManagedMobileSession = (name: string): boolean => name.startsWith(REMUX_SESSION_PREFIX);
 
-const buildMobileSessionName = (clientId: string): string => `${MOBILE_SESSION_PREFIX}${clientId}`;
+const buildMobileSessionName = (clientId: string): string => `${REMUX_SESSION_PREFIX}${clientId}`;
 
-export const createTmuxMobileServer = (
+export const createRemuxServer = (
   config: RuntimeConfig,
   deps: ServerDependencies
 ): RunningServer => {
   const logger = deps.logger ?? console;
-  const verboseDebug = process.env.TMUX_MOBILE_VERBOSE_DEBUG === "1";
+  const verboseDebug = process.env.REMUX_VERBOSE_DEBUG === "1";
   const verboseLog = (...args: unknown[]): void => {
     if (verboseDebug) {
       logger.log(...args);
