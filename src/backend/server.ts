@@ -486,9 +486,10 @@ export const createRemuxServer = (
         return;
       case "rename_session": {
         await deps.tmux.renameSession(message.session, message.newName);
-        // Update baseSession reference if this client was attached to the renamed session
+        // Update baseSession reference and notify client if attached to the renamed session
         if (context.baseSession === message.session) {
           context.baseSession = message.newName;
+          sendJson(context.socket, { type: "attached", session: message.newName });
         }
         return;
       }

@@ -139,6 +139,7 @@ export const App = () => {
   const [renameSessionValue, setRenameSessionValue] = useState("");
   const [renamingWindow, setRenamingWindow] = useState<{ session: string; index: number } | null>(null);
   const [renameWindowValue, setRenameWindowValue] = useState("");
+  const renameHandledByKeyRef = useRef(false);
 
   const [dragOver, setDragOver] = useState(false);
   const [uploadToast, setUploadToast] = useState<{ path: string; filename: string } | null>(null);
@@ -1082,13 +1083,19 @@ export const App = () => {
                       onChange={(e) => setRenameSessionValue(e.target.value)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && renameSessionValue.trim()) {
+                          renameHandledByKeyRef.current = true;
                           sendControl({ type: "rename_session", session: session.name, newName: renameSessionValue.trim() });
                           setRenamingSession(null);
                         } else if (e.key === "Escape") {
+                          renameHandledByKeyRef.current = true;
                           setRenamingSession(null);
                         }
                       }}
                       onBlur={() => {
+                        if (renameHandledByKeyRef.current) {
+                          renameHandledByKeyRef.current = false;
+                          return;
+                        }
                         if (renameSessionValue.trim() && renameSessionValue.trim() !== session.name) {
                           sendControl({ type: "rename_session", session: session.name, newName: renameSessionValue.trim() });
                         }
@@ -1133,13 +1140,19 @@ export const App = () => {
                           onChange={(e) => setRenameWindowValue(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" && renameWindowValue.trim()) {
+                              renameHandledByKeyRef.current = true;
                               sendControl({ type: "rename_window", session: activeSession.name, windowIndex: windowState.index, newName: renameWindowValue.trim() });
                               setRenamingWindow(null);
                             } else if (e.key === "Escape") {
+                              renameHandledByKeyRef.current = true;
                               setRenamingWindow(null);
                             }
                           }}
                           onBlur={() => {
+                            if (renameHandledByKeyRef.current) {
+                              renameHandledByKeyRef.current = false;
+                              return;
+                            }
                             if (renameWindowValue.trim() && renameWindowValue.trim() !== windowState.name) {
                               sendControl({ type: "rename_window", session: activeSession.name, windowIndex: windowState.index, newName: renameWindowValue.trim() });
                             }
