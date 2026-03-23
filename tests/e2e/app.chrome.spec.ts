@@ -157,7 +157,7 @@ test.describe("remux browser behavior", () => {
 
     test("shows feedback when saved password is wrong", async ({ page }) => {
       await page.addInitScript(() => {
-        localStorage.setItem("remux-password", "wrong-password");
+        sessionStorage.setItem("remux-password", "wrong-password");
       });
 
       await page.goto(`${server.baseUrl}/?token=${server.token}`);

@@ -17,12 +17,12 @@ test('toolbar layout: unified rows with balanced button distribution', async ({ 
   const mainRows = await page.locator('.toolbar-main').all();
   expect(mainRows.length).toBe(2);
 
-  // Row 1: Esc, Ctrl, Alt, Cmd, Meta, /, @, Hm, ↑, Ed (10 buttons)
+  // Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed (9 buttons)
   const row1Buttons = await mainRows[0].locator('button').all();
   const row1Labels = await Promise.all(row1Buttons.map(b => b.textContent()));
   console.log('Row 1 buttons:', row1Labels);
-  expect(row1Buttons.length).toBe(10);
-  expect(row1Labels).toEqual(['Esc', 'Ctrl', 'Alt', 'Cmd', 'Meta', '/', '@', 'Hm', '↑', 'Ed']);
+  expect(row1Buttons.length).toBe(9);
+  expect(row1Labels).toEqual(['Esc', 'Ctrl', 'Alt', 'Cmd', '/', '@', 'Hm', '↑', 'Ed']);
 
   // Row 2: ^C, ^B, ^R, Sft, Tab, Enter, ..., ←, ↓, → (10 buttons)
   const row2Buttons = await mainRows[1].locator('button').all();
@@ -37,7 +37,7 @@ test('toolbar layout: unified rows with balanced button distribution', async ({ 
 
   // All modifiers should be in the main visible rows
   const allLabels = [...row1Labels, ...row2Labels];
-  for (const mod of ['Ctrl', 'Alt', 'Cmd', 'Meta', 'Sft']) {
+  for (const mod of ['Ctrl', 'Alt', 'Cmd', 'Sft']) {
     expect(allLabels).toContain(mod);
   }
 

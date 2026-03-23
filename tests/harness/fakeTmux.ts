@@ -204,14 +204,23 @@ export class FakeTmuxGateway implements TmuxGateway {
       pane.active = false;
     }
     window.zoomed = false;
-    window.panes.push({
+    const newPane: PaneNode = {
       index: window.panes.length,
       id: `%${paneCounter++}`,
       command: "bash",
       active: true,
       width: orientation === "h" ? 60 : 120,
       height: orientation === "v" ? 20 : 40
-    });
+    };
+    window.panes.push(newPane);
+    // Sync new pane to grouped session copies of this window
+    for (const member of this.getGroupMembers(session)) {
+      const memberWindow = member.windows.find((w) => w.index === window.index);
+      if (memberWindow && !memberWindow.panes.some((p) => p.id === newPane.id)) {
+        memberWindow.zoomed = false;
+        memberWindow.panes.push(newPane);
+      }
+    }
     for (const s of this.sessions) {
       s.attached = s.name === session.name;
     }
@@ -228,6 +237,8 @@ export class FakeTmuxGateway implements TmuxGateway {
 
   public async selectPane(paneId: string): Promise<void> {
     this.calls.push(`selectPane:${paneId}`);
+    // Pane objects are shared by reference across grouped sessions,
+    // so setting pane.active here affects all sessions.
     const { window } = this.findByPane(paneId);
     for (const pane of window.panes) {
       pane.active = pane.id === paneId;
@@ -236,11 +247,18 @@ export class FakeTmuxGateway implements TmuxGateway {
 
   public async zoomPane(paneId: string): Promise<void> {
     this.calls.push(`zoomPane:${paneId}`);
-    const { window } = this.findByPane(paneId);
+    const { session, window } = this.findByPane(paneId);
     for (const pane of window.panes) {
       pane.active = pane.id === paneId;
     }
     window.zoomed = !window.zoomed;
+    // Sync zoom state to all grouped session copies of this window
+    for (const member of this.getGroupMembers(session)) {
+      const memberWindow = member.windows.find((w) => w.index === window.index);
+      if (memberWindow) {
+        memberWindow.zoomed = window.zoomed;
+      }
+    }
   }
 
   public async isPaneZoomed(paneId: string): Promise<boolean> {
