@@ -15,7 +15,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import type { Router } from "express";
+import express, { type Router } from "express";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -132,9 +132,6 @@ export class NotificationManager {
 
   /** Create Express routes for push subscription management. */
   createRoutes(): Router {
-    // Dynamic import to avoid requiring express at module level.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const express = require("express") as typeof import("express");
     const router = express.Router();
 
     // GET /api/push/vapid-key — client needs this to subscribe.

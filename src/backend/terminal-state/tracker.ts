@@ -10,8 +10,10 @@
  * we maintain terminal state and send state diffs.
  */
 
-import { Terminal } from "@xterm/headless";
-import { SerializeAddon } from "@xterm/addon-serialize";
+import headless from "@xterm/headless";
+const { Terminal } = headless;
+import serializeAddon from "@xterm/addon-serialize";
+const { SerializeAddon } = serializeAddon;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,8 +69,8 @@ export interface TerminalDiffMessage {
 // ---------------------------------------------------------------------------
 
 export class TerminalStateTracker {
-  private terminal: Terminal;
-  private serializeAddon: SerializeAddon;
+  private terminal: InstanceType<typeof Terminal>;
+  private serializeAddon: InstanceType<typeof SerializeAddon>;
   private seq = 0;
   private lastRowHashes: Map<number, string> = new Map();
   private lastCursor = { row: 0, col: 0 };

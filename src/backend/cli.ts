@@ -41,7 +41,7 @@ const parseCliArgs = async (): Promise<CliArgs> => {
     .option("tunnel", {
       type: "boolean",
       default: true,
-      describe: "Start cloudflared quick tunnel"
+      describe: "Start remote access tunnel (auto-detects devtunnel or cloudflare)"
     })
     .option("session", {
       type: "string",
