@@ -96,18 +96,20 @@ const printConnectionInfo = (
   const frontendUrl = isDevMode ? `http://localhost:5173` : localUrl;
   const localWithToken = buildLaunchUrl(frontendUrl, token);
 
-  console.log("\n═══════════════════════════════════════");
-  console.log(`Frontend: ${frontendUrl}${isDevMode ? " (Vite dev)" : ""}`);
-  console.log(`Backend:  ${localUrl}`);
+  console.log("");
   console.log("═══════════════════════════════════════");
-  console.log(`\nOpen this URL in your browser:\n${localWithToken}`);
+  console.log(`  Frontend: ${frontendUrl}${isDevMode ? " (Vite dev)" : ""}`);
+  console.log(`  Backend:  ${localUrl}`);
+  console.log(`  Token:    ${token}`);
   if (password) {
-    console.log(`\nPassword: ${password}`);
+    console.log(`  Password: ${password}`);
   }
+  console.log("═══════════════════════════════════════");
+  console.log(`\n  Open: ${localWithToken}\n`);
 
   if (tunnelUrl) {
     const tunnelWithToken = buildLaunchUrl(tunnelUrl, token);
-    console.log(`\nTunnel URL: ${tunnelWithToken}`);
+    console.log(`  Tunnel: ${tunnelWithToken}\n`);
     qrcode.generate(tunnelWithToken, { small: true });
     return;
   }
@@ -167,8 +169,8 @@ const main = async (): Promise<void> => {
 
   await runningServer.start();
 
-  // Check if running in dev mode (set by npm run dev:backend)
-  const isDevMode = process.env.VITE_DEV_MODE === "1";
+  // Detect dev mode: VITE_DEV_MODE env var, or if frontend dist doesn't exist (running via tsx watch)
+  const isDevMode = process.env.VITE_DEV_MODE === "1" || !fs.existsSync(path.join(frontendDir, "index.html"));
 
   let tunnelUrl: string | undefined;
   if (args.tunnel && !isDevMode) {
