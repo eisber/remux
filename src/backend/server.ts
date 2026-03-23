@@ -393,15 +393,15 @@ export const createRemuxServer = (
     context: ControlContext,
     forceSession?: string
   ): Promise<void> => {
-    if (forceSession) {
+    const sessions = (await deps.tmux.listSessions()).filter(
+      (session) => !isManagedMobileSession(session.name)
+    );
+
+    if (forceSession && sessions.some((s) => s.name === forceSession)) {
       logger.log("attach session (forced)", forceSession);
       await attachControlToBaseSession(context, forceSession);
       return;
     }
-
-    const sessions = (await deps.tmux.listSessions()).filter(
-      (session) => !isManagedMobileSession(session.name)
-    );
     logger.log(
       "sessions discovered",
       sessions.map((session) => `${session.name}:${session.attached ? "attached" : "detached"}`).join(",")
@@ -492,10 +492,12 @@ export const createRemuxServer = (
         return;
       case "rename_session": {
         await deps.tmux.renameSession(message.session, message.newName);
-        // Update baseSession reference and notify client if attached to the renamed session
-        if (context.baseSession === message.session) {
-          context.baseSession = message.newName;
-          sendJson(context.socket, { type: "attached", session: message.newName });
+        // Update all clients attached to the renamed session
+        for (const client of controlClients) {
+          if (client.authed && client.baseSession === message.session) {
+            client.baseSession = message.newName;
+            sendJson(client.socket, { type: "attached", session: message.newName });
+          }
         }
         return;
       }
