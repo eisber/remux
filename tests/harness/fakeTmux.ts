@@ -9,6 +9,8 @@ interface SessionNode {
   name: string;
   attached: boolean;
   windows: WindowNode[];
+  /** For grouped sessions, points to the target session's windows array */
+  groupTarget?: string;
 }
 
 interface WindowNode {
@@ -125,11 +127,14 @@ export class FakeTmuxGateway implements TmuxGateway {
       return;
     }
     const target = this.findSession(targetSession);
+    // Grouped sessions share the same underlying windows/panes but each session
+    // has its own active window pointer (like real tmux).
+    // We deep-copy the window metadata but share pane arrays.
     this.sessions.push({
       name,
       attached: false,
-      // Grouped sessions share the same underlying windows/panes.
-      windows: target.windows
+      groupTarget: targetSession,
+      windows: target.windows.map((w) => ({ ...w, panes: [...w.panes] }))
     });
   }
 
@@ -153,7 +158,7 @@ export class FakeTmuxGateway implements TmuxGateway {
       window.active = false;
     }
     const nextIndex = session.windows.at(-1)?.index ?? -1;
-    session.windows.push({
+    const newWindow: WindowNode = {
       index: nextIndex + 1,
       name: `win-${nextIndex + 1}`,
       active: true,
@@ -168,16 +173,20 @@ export class FakeTmuxGateway implements TmuxGateway {
           height: 40
         }
       ]
-    });
+    };
+    session.windows.push(newWindow);
+    // Sync to grouped sessions (add window but keep their active state)
+    this.syncWindowToGroup(session, newWindow);
   }
 
   public async killWindow(sessionName: string, windowIndex: number): Promise<void> {
     this.calls.push(`killWindow:${sessionName}:${windowIndex}`);
     const session = this.findSession(sessionName);
     session.windows = session.windows.filter((window) => window.index !== windowIndex);
-    if (session.windows.length > 0) {
+    if (session.windows.length > 0 && !session.windows.some((w) => w.active)) {
       session.windows[0].active = true;
     }
+    this.syncWindowRemovalToGroup(session, windowIndex);
   }
 
   public async selectWindow(sessionName: string, windowIndex: number): Promise<void> {
@@ -247,6 +256,33 @@ export class FakeTmuxGateway implements TmuxGateway {
 
   public setFailSwitchClient(value: boolean): void {
     this.failSwitchClient = value;
+  }
+
+  /** Get all sessions in the same group as the given session */
+  private getGroupMembers(session: SessionNode): SessionNode[] {
+    const groupName = session.groupTarget ?? session.name;
+    return this.sessions.filter(
+      (s) => s !== session && (s.groupTarget === groupName || (s.name === groupName && session.groupTarget))
+    );
+  }
+
+  /** Sync a newly added window to all grouped sessions */
+  private syncWindowToGroup(session: SessionNode, newWindow: WindowNode): void {
+    for (const member of this.getGroupMembers(session)) {
+      if (!member.windows.some((w) => w.index === newWindow.index)) {
+        member.windows.push({ ...newWindow, active: false, panes: [...newWindow.panes] });
+      }
+    }
+  }
+
+  /** Sync a window removal to all grouped sessions */
+  private syncWindowRemovalToGroup(session: SessionNode, windowIndex: number): void {
+    for (const member of this.getGroupMembers(session)) {
+      member.windows = member.windows.filter((w) => w.index !== windowIndex);
+      if (member.windows.length > 0 && !member.windows.some((w) => w.active)) {
+        member.windows[0].active = true;
+      }
+    }
   }
 
   private markAttached(sessionName: string): void {

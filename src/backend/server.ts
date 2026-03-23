@@ -7,6 +7,7 @@ import type { RuntimeConfig } from "./config.js";
 import type {
   ControlClientMessage,
   ControlServerMessage,
+  TmuxSessionState,
   TmuxSessionSummary,
   TmuxStateSnapshot
 } from "../shared/protocol.js";
@@ -174,21 +175,68 @@ export const createRemuxServer = (
   let started = false;
   let stopPromise: Promise<void> | null = null;
 
+  const buildClientState = (
+    baseSessions: TmuxSessionState[],
+    fullState: TmuxStateSnapshot,
+    client: ControlContext
+  ): TmuxStateSnapshot => {
+    if (!client.attachedSession || !client.baseSession) {
+      return { ...fullState, sessions: baseSessions };
+    }
+
+    const mobileSession = fullState.sessions.find(
+      (session) => session.name === client.attachedSession
+    );
+    if (!mobileSession) {
+      return { ...fullState, sessions: baseSessions };
+    }
+
+    // Override base session's active flags with mobile session's active flags
+    const sessions = baseSessions.map((session) => {
+      if (session.name !== client.baseSession) {
+        return session;
+      }
+      return {
+        ...session,
+        windowStates: session.windowStates.map((window) => {
+          const mobileWindow = mobileSession.windowStates.find(
+            (mw) => mw.index === window.index
+          );
+          if (!mobileWindow) {
+            return { ...window, active: false };
+          }
+          return {
+            ...window,
+            active: mobileWindow.active,
+            panes: window.panes.map((pane) => {
+              const mobilePane = mobileWindow.panes.find((mp) => mp.id === pane.id);
+              return {
+                ...pane,
+                active: mobilePane?.active ?? pane.active,
+                zoomed: mobilePane?.zoomed ?? pane.zoomed
+              };
+            })
+          };
+        })
+      };
+    });
+
+    return { ...fullState, sessions };
+  };
+
   const broadcastState = (state: TmuxStateSnapshot): void => {
-    const filteredState: TmuxStateSnapshot = {
-      ...state,
-      sessions: state.sessions.filter(
-        (session) => !isManagedMobileSession(session.name)
-      )
-    };
+    const baseSessions = state.sessions.filter(
+      (session) => !isManagedMobileSession(session.name)
+    );
     verboseLog(
       "broadcast tmux_state",
       `authedControlClients=${[...controlClients].filter((client) => client.authed).length}`,
-      summarizeState(filteredState)
+      summarizeState({ ...state, sessions: baseSessions })
     );
     for (const client of controlClients) {
       if (client.authed) {
-        sendJson(client.socket, { type: "tmux_state", state: filteredState });
+        const clientState = buildClientState(baseSessions, state, client);
+        sendJson(client.socket, { type: "tmux_state", state: clientState });
       }
     }
   };
