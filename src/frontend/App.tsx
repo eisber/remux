@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { themes } from "./themes";
+import { ansiToHtml } from "./ansi-to-html";
 import type {
   ControlServerMessage,
   TmuxPaneState,
@@ -114,8 +115,7 @@ export const App = () => {
   const [scrollbackVisible, setScrollbackVisible] = useState(false);
   const [scrollbackText, setScrollbackText] = useState("");
   const [scrollbackLines, setScrollbackLines] = useState(1000);
-  const scrollbackTermRef = useRef<Terminal | null>(null);
-  const scrollbackContainerRef = useRef<HTMLDivElement | null>(null);
+  const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
   const scrollbackRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
@@ -622,47 +622,23 @@ export const App = () => {
     };
   }, []);
 
-  // Scrollback xterm.js viewer lifecycle
+  // Scrollback auto-refresh and scroll-to-bottom
   useEffect(() => {
     if (!scrollbackVisible) {
       if (scrollbackRefreshRef.current) {
         clearInterval(scrollbackRefreshRef.current);
         scrollbackRefreshRef.current = null;
       }
-      if (scrollbackTermRef.current) {
-        scrollbackTermRef.current.dispose();
-        scrollbackTermRef.current = null;
+      return;
+    }
+
+    // Scroll to bottom on first open
+    requestAnimationFrame(() => {
+      const el = scrollbackContentRef.current;
+      if (el) {
+        el.scrollTop = el.scrollHeight;
       }
-      return;
-    }
-
-    const container = scrollbackContainerRef.current;
-    if (!container || scrollbackTermRef.current) {
-      return;
-    }
-
-    const themeConfig = themes[theme];
-    const term = new Terminal({
-      cursorBlink: false,
-      disableStdin: true,
-      fontSize: getPreferredTerminalFontSize(),
-      fontFamily: "'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', 'FiraCode Nerd Font', 'JetBrainsMono Nerd Font', 'DejaVu Sans Mono Nerd Font', 'Symbols Nerd Font Mono', Menlo, Monaco, 'Courier New', monospace",
-      scrollback: 50000,
-      theme: themeConfig?.xterm ?? { background: "#0d1117", foreground: "#d1e4ff" },
-      convertEol: true
     });
-    const fitAddon = new FitAddon();
-    term.loadAddon(fitAddon);
-    term.open(container);
-    requestAnimationFrame(() => fitAddon.fit());
-    scrollbackTermRef.current = term;
-
-    // Write initial content
-    if (scrollbackText) {
-      term.write(scrollbackText, () => {
-        term.scrollToBottom();
-      });
-    }
 
     // Auto-refresh every 3s
     scrollbackRefreshRef.current = setInterval(() => {
@@ -674,29 +650,23 @@ export const App = () => {
         clearInterval(scrollbackRefreshRef.current);
         scrollbackRefreshRef.current = null;
       }
-      term.dispose();
-      scrollbackTermRef.current = null;
     };
   }, [scrollbackVisible]);
 
-  // Update scrollback xterm when new data arrives
+  // Scroll to bottom when new scrollback text arrives (only if already at bottom)
   useEffect(() => {
-    const term = scrollbackTermRef.current;
-    if (!term || !scrollbackVisible || !scrollbackText) {
+    const el = scrollbackContentRef.current;
+    if (!el || !scrollbackVisible || !scrollbackText) {
       return;
     }
-    // Check if user is near the bottom before rewriting
-    const viewport = term.element?.querySelector(".xterm-viewport");
-    const isAtBottom = viewport
-      ? viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 20
-      : true;
-
-    term.clear();
-    term.write(scrollbackText, () => {
-      if (isAtBottom) {
-        term.scrollToBottom();
-      }
-    });
+    const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+    // Update HTML content
+    el.innerHTML = ansiToHtml(scrollbackText);
+    if (isAtBottom) {
+      requestAnimationFrame(() => {
+        el.scrollTop = el.scrollHeight;
+      });
+    }
   }, [scrollbackText]);
 
   // Persist toolbar expanded state
@@ -1246,7 +1216,7 @@ export const App = () => {
               <button onClick={() => requestScrollback(scrollbackLines + 1000)}>Load More</button>
               <button onClick={() => void copySelection()}>Copy</button>
             </div>
-            <div className="scrollback-terminal" ref={scrollbackContainerRef} />
+            <div className="scrollback-content" ref={scrollbackContentRef} />
           </div>
         </div>
       )}
