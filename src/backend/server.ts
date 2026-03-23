@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import express from "express";
@@ -143,13 +144,92 @@ export const createRemuxServer = (
   const app = express();
   app.use(express.json());
 
+  const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+
   app.get("/api/config", (_req, res) => {
     res.json({
       passwordRequired: authService.requiresPassword(),
       scrollbackLines: config.scrollbackLines,
-      pollIntervalMs: config.pollIntervalMs
+      pollIntervalMs: config.pollIntervalMs,
+      uploadMaxSize: UPLOAD_MAX_BYTES
     });
   });
+
+  const sanitizeFilename = (raw: string): string => {
+    // Strip path separators, null bytes, and parent directory traversal
+    let name = raw.replace(/[\\/\0]/g, "").replace(/\.\./g, "");
+    name = name.trim();
+    if (!name) {
+      name = "upload";
+    }
+    return name;
+  };
+
+  app.post(
+    "/api/upload",
+    express.raw({ limit: UPLOAD_MAX_BYTES, type: "application/octet-stream" }),
+    async (req, res) => {
+      // Auth check
+      const authHeader = req.headers.authorization;
+      const uploadToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
+      const uploadPassword = req.headers["x-password"] as string | undefined;
+      const authResult = authService.verify({ token: uploadToken, password: uploadPassword });
+      if (!authResult.ok) {
+        res.status(401).json({ ok: false, error: "unauthorized" });
+        return;
+      }
+
+      const rawFilename = req.headers["x-filename"] as string | undefined;
+      if (!rawFilename) {
+        res.status(400).json({ ok: false, error: "missing X-Filename header" });
+        return;
+      }
+
+      const filename = sanitizeFilename(rawFilename);
+      const paneCwd = req.headers["x-pane-cwd"] as string | undefined;
+      const uploadDir = paneCwd || process.cwd();
+
+      try {
+        // Verify upload directory exists
+        const dirStat = await fs.promises.stat(uploadDir);
+        if (!dirStat.isDirectory()) {
+          res.status(400).json({ ok: false, error: "upload directory is not a directory" });
+          return;
+        }
+      } catch {
+        // Fall back to cwd if the pane CWD doesn't exist
+        // (this can happen if the pane's CWD was removed)
+      }
+
+      const resolvedDir = await fs.promises.stat(uploadDir).then(
+        (stat) => (stat.isDirectory() ? uploadDir : process.cwd()),
+        () => process.cwd()
+      );
+
+      // Avoid overwrites by prepending timestamp if file exists
+      let finalName = filename;
+      const targetPath = path.join(resolvedDir, finalName);
+      try {
+        await fs.promises.access(targetPath);
+        // File exists, prepend timestamp
+        finalName = `upload-${Date.now()}-${filename}`;
+      } catch {
+        // File doesn't exist, use original name
+      }
+
+      const finalPath = path.join(resolvedDir, finalName);
+      const body = req.body as Buffer;
+
+      try {
+        await fs.promises.writeFile(finalPath, body);
+        logger.log("file uploaded", finalPath, `bytes=${body.length}`);
+        res.json({ ok: true, path: finalPath, filename: finalName });
+      } catch (error) {
+        logger.error("file upload write error", error);
+        res.status(500).json({ ok: false, error: "failed to write file" });
+      }
+    }
+  );
 
   app.use(express.static(config.frontendDir));
   app.get(frontendFallbackRoute, (req, res) => {
