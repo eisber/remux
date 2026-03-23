@@ -9,7 +9,7 @@ import type {
   TmuxSessionSummary,
   TmuxStateSnapshot,
   TmuxWindowState
-} from "./types/protocol";
+} from "../shared/protocol";
 
 interface ServerConfig {
   passwordRequired: boolean;
@@ -22,12 +22,12 @@ type ModifierMode = "off" | "sticky" | "locked";
 
 declare global {
   interface Window {
-    __tmuxMobileDebugEvents?: Array<{
+    __remuxDebugEvents?: Array<{
       at: string;
       event: string;
       payload?: unknown;
     }>;
-    __tmuxMobileDebugState?: unknown;
+    __remuxDebugState?: unknown;
   }
 }
 
@@ -45,7 +45,7 @@ const getPreferredTerminalFontSize = (): number => {
 };
 
 const getInitialStickyZoom = (): boolean => {
-  const stored = localStorage.getItem("tmux-mobile-sticky-zoom");
+  const stored = localStorage.getItem("remux-sticky-zoom");
   if (stored === "true") {
     return true;
   }
@@ -72,14 +72,17 @@ const debugLog = (event: string, payload?: unknown): void => {
     event,
     payload
   };
-  const current = window.__tmuxMobileDebugEvents ?? [];
+  const current = window.__remuxDebugEvents ?? [];
   current.push(entry);
   if (current.length > 500) {
     current.splice(0, current.length - 500);
   }
-  window.__tmuxMobileDebugEvents = current;
-  console.log("[tmux-mobile-debug]", entry.at, event, payload ?? "");
+  window.__remuxDebugEvents = current;
+  console.log("[remux-debug]", entry.at, event, payload ?? "");
 };
+
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 8000;
 
 export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
@@ -87,11 +90,15 @@ export const App = () => {
   const fitAddonRef = useRef<FitAddon | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  /** Set to true when user-initiated or expected close (e.g. auth error) */
+  const suppressReconnectRef = useRef(false);
 
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
-  const [password, setPassword] = useState(localStorage.getItem("tmux-mobile-password") ?? "");
+  const [password, setPassword] = useState(sessionStorage.getItem("remux-password") ?? "");
   const [needsPasswordInput, setNeedsPasswordInput] = useState(false);
   const [passwordErrorMessage, setPasswordErrorMessage] = useState("");
   const [authReady, setAuthReady] = useState(false);
@@ -115,12 +122,16 @@ export const App = () => {
   });
   const modifierTapRef = useRef<{ key: ModifierKey; at: number } | null>(null);
 
-  const [theme, setTheme] = useState(localStorage.getItem("tmux-mobile-theme") ?? "midnight");
+  const [theme, setTheme] = useState(localStorage.getItem("remux-theme") ?? "midnight");
   const [toolbarExpanded, setToolbarExpanded] = useState(
-    localStorage.getItem("tmux-mobile-toolbar-expanded") === "true"
+    localStorage.getItem("remux-toolbar-expanded") === "true"
   );
   const [toolbarDeepExpanded, setToolbarDeepExpanded] = useState(false);
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
+
+  // Local selection state for instant UI feedback before server snapshot arrives
+  const [selectedWindowIndex, setSelectedWindowIndex] = useState<number | null>(null);
+  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
 
   const activeSession: TmuxSessionState | undefined = useMemo(() => {
     const selected = snapshot.sessions.find((session) => session.name === attachedSession);
@@ -134,24 +145,40 @@ export const App = () => {
     if (!activeSession) {
       return undefined;
     }
+    // Use local selection if it still exists in the snapshot
+    if (selectedWindowIndex !== null) {
+      const selected = activeSession.windowStates.find(
+        (window) => window.index === selectedWindowIndex
+      );
+      if (selected) {
+        return selected;
+      }
+    }
     return activeSession.windowStates.find((window) => window.active) ?? activeSession.windowStates[0];
-  }, [activeSession]);
+  }, [activeSession, selectedWindowIndex]);
 
   const activePane: TmuxPaneState | undefined = useMemo(() => {
     if (!activeWindow) {
       return undefined;
     }
+    // Use local selection if it still exists in the snapshot
+    if (selectedPaneId !== null) {
+      const selected = activeWindow.panes.find((pane) => pane.id === selectedPaneId);
+      if (selected) {
+        return selected;
+      }
+    }
     return activeWindow.panes.find((pane) => pane.active) ?? activeWindow.panes[0];
-  }, [activeWindow]);
+  }, [activeWindow, selectedPaneId]);
 
   const topStatus = useMemo(() => {
     if (errorMessage) {
       return { kind: "error", label: errorMessage };
     }
-    if (statusMessage.toLowerCase().includes("disconnected")) {
+    if (statusMessage.toLowerCase().includes("disconnected") || statusMessage.toLowerCase().includes("reconnect")) {
       return { kind: "warn", label: statusMessage };
     }
-    if (statusMessage.toLowerCase().includes("connected")) {
+    if (statusMessage.toLowerCase().includes("connected") || statusMessage.startsWith("attached:")) {
       return { kind: "ok", label: statusMessage };
     }
     if (statusMessage) {
@@ -283,9 +310,36 @@ export const App = () => {
     return reason;
   };
 
+  const cancelReconnect = (): void => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const scheduleReconnect = (passwordValue: string): void => {
+    if (suppressReconnectRef.current) {
+      return;
+    }
+    cancelReconnect();
+    const attempt = reconnectAttemptRef.current++;
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
+    debugLog("reconnect.schedule", { attempt, delay });
+    setStatusMessage(`reconnecting in ${(delay / 1000).toFixed(0)}s...`);
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      debugLog("reconnect.attempt", { attempt });
+      setStatusMessage("reconnecting...");
+      openControlSocket(passwordValue);
+    }, delay);
+  };
+
   const openTerminalSocket = (passwordValue: string, clientId: string): void => {
     debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
-    terminalSocketRef.current?.close();
+    if (terminalSocketRef.current) {
+      terminalSocketRef.current.onclose = null;
+      terminalSocketRef.current.close();
+    }
 
     const socket = new WebSocket(`${wsOrigin}/ws/terminal`);
     socket.onopen = () => {
@@ -313,11 +367,9 @@ export const App = () => {
       if (event.code === 4001) {
         setErrorMessage("terminal authentication failed");
       }
-      setStatusMessage("terminal disconnected");
     };
     socket.onerror = () => {
       debugLog("terminal_socket.onerror");
-      setErrorMessage("terminal websocket error");
     };
 
     terminalSocketRef.current = socket;
@@ -325,7 +377,12 @@ export const App = () => {
 
   const openControlSocket = (passwordValue: string): void => {
     debugLog("control_socket.open.begin", { hasPassword: Boolean(passwordValue) });
-    controlSocketRef.current?.close();
+    cancelReconnect();
+    // Strip onclose before closing to prevent triggering reconnect for intentional close
+    if (controlSocketRef.current) {
+      controlSocketRef.current.onclose = null;
+      controlSocketRef.current.close();
+    }
 
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
 
@@ -349,19 +406,22 @@ export const App = () => {
             clientId: message.clientId,
             requiresPassword: message.requiresPassword
           });
+          reconnectAttemptRef.current = 0;
+          suppressReconnectRef.current = false;
           setErrorMessage("");
           setPasswordErrorMessage("");
           setAuthReady(true);
           setNeedsPasswordInput(false);
           if (message.requiresPassword && passwordValue) {
-            localStorage.setItem("tmux-mobile-password", passwordValue);
+            sessionStorage.setItem("remux-password", passwordValue);
           } else {
-            localStorage.removeItem("tmux-mobile-password");
+            sessionStorage.removeItem("remux-password");
           }
           openTerminalSocket(passwordValue, message.clientId);
           return;
         case "auth_error":
           debugLog("control_socket.auth_error", { reason: message.reason });
+          suppressReconnectRef.current = true;
           setErrorMessage(message.reason);
           setAuthReady(false);
           const passwordAuthFailed =
@@ -369,12 +429,14 @@ export const App = () => {
           if (passwordAuthFailed) {
             setNeedsPasswordInput(true);
             setPasswordErrorMessage(formatPasswordError(message.reason));
-            localStorage.removeItem("tmux-mobile-password");
+            sessionStorage.removeItem("remux-password");
           }
           return;
         case "attached":
           debugLog("control_socket.attached", { session: message.session });
           setAttachedSession(message.session);
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
           setSessionChoices(null);
           setDrawerOpen(false);
           setStatusMessage(`attached: ${message.session}`);
@@ -411,6 +473,10 @@ export const App = () => {
             })
           });
           setSnapshot(message.state);
+          // Clear local selections — the server now sends per-client active state,
+          // so the snapshot already reflects this client's active window/pane.
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
           return;
         case "scrollback":
           debugLog("control_socket.scrollback", {
@@ -435,6 +501,11 @@ export const App = () => {
     socket.onclose = () => {
       debugLog("control_socket.onclose");
       setAuthReady(false);
+      setErrorMessage("");
+      // Close terminal socket too — it will be re-opened on reconnect
+      terminalSocketRef.current?.close();
+      terminalSocketRef.current = null;
+      scheduleReconnect(passwordValue);
     };
 
     controlSocketRef.current = socket;
@@ -474,7 +545,7 @@ export const App = () => {
   // Theme effect: apply data-theme attribute, persist, update xterm theme
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("tmux-mobile-theme", theme);
+    localStorage.setItem("remux-theme", theme);
     const themeConfig = themes[theme];
     if (themeConfig && terminalRef.current) {
       terminalRef.current.options.theme = themeConfig.xterm;
@@ -522,18 +593,12 @@ export const App = () => {
       sendTerminalResize();
     };
 
-    const onResize = () => {
-      fitAndNotifyResize();
-    };
-
-    window.addEventListener("resize", onResize);
     const resizeObserver = new ResizeObserver(() => {
       fitAndNotifyResize();
     });
     resizeObserver.observe(terminalContainerRef.current);
 
     return () => {
-      window.removeEventListener("resize", onResize);
       resizeObserver.disconnect();
       disposable.dispose();
       terminal.dispose();
@@ -551,12 +616,12 @@ export const App = () => {
 
   // Persist toolbar expanded state
   useEffect(() => {
-    localStorage.setItem("tmux-mobile-toolbar-expanded", toolbarExpanded ? "true" : "false");
+    localStorage.setItem("remux-toolbar-expanded", toolbarExpanded ? "true" : "false");
   }, [toolbarExpanded]);
 
   // Persist sticky zoom state
   useEffect(() => {
-    localStorage.setItem("tmux-mobile-sticky-zoom", stickyZoom ? "true" : "false");
+    localStorage.setItem("remux-sticky-zoom", stickyZoom ? "true" : "false");
   }, [stickyZoom]);
 
   useEffect(() => {
@@ -585,7 +650,7 @@ export const App = () => {
       snapshotCapturedAt: snapshot.capturedAt,
       sessions: sessionSummary
     };
-    window.__tmuxMobileDebugState = derived;
+    window.__remuxDebugState = derived;
     debugLog("derived_state", derived);
   }, [attachedSession, activeSession, activeWindow, activePane, snapshot, topStatus]);
 
@@ -616,6 +681,8 @@ export const App = () => {
     if (!activeSession) {
       return;
     }
+    setSelectedWindowIndex(windowState.index);
+    setSelectedPaneId(null);
     sendControl({
       type: "select_window",
       session: activeSession.name,
@@ -673,13 +740,12 @@ export const App = () => {
       </main>
 
       <section className="toolbar" onMouseUp={focusTerminal}>
-        {/* Row 1: Esc, Ctrl, Alt, Cmd, Meta, /, @, Hm, ↑, Ed */}
+        {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
           <button onClick={() => sendTerminal("\u001b")}>Esc</button>
           <button className={`modifier ${modifiers.ctrl}`} onClick={() => toggleModifier("ctrl")}>Ctrl</button>
           <button className={`modifier ${modifiers.alt}`} onClick={() => toggleModifier("alt")}>Alt</button>
           <button className={`modifier ${modifiers.meta}`} onClick={() => toggleModifier("meta")}>Cmd</button>
-          <button onClick={() => sendTerminal("\u001b")}>Meta</button>
           <button onClick={() => sendTerminal("/")}>/</button>
           <button onClick={() => sendTerminal("@")}>@</button>
           <button onClick={() => sendTerminal("\u001b[H")}>Hm</button>
@@ -717,8 +783,12 @@ export const App = () => {
           <button onClick={() => sendTerminal("\u000c", false)}>^L</button>
           <button
             onClick={async () => {
-              const clip = await navigator.clipboard.readText();
-              sendTerminal(clip, false);
+              try {
+                const clip = await navigator.clipboard.readText();
+                sendTerminal(clip, false);
+              } catch {
+                setStatusMessage("clipboard read failed");
+              }
             }}
           >
             Paste
@@ -727,7 +797,6 @@ export const App = () => {
           <button onClick={() => sendTerminal("\u001b[2~")}>Insert</button>
           <button onClick={() => sendTerminal("\u001b[5~")}>PgUp</button>
           <button onClick={() => sendTerminal("\u001b[6~")}>PgDn</button>
-          <button onClick={() => sendTerminal("")}>CapsLk</button>
           <button
             className="toolbar-expand-btn"
             onClick={() => setToolbarDeepExpanded((v) => !v)}
@@ -760,6 +829,7 @@ export const App = () => {
             value={composeText}
             onChange={(event) => setComposeText(event.target.value)}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
               if (event.key === "Enter") {
                 sendControl({ type: "send_compose", text: composeText });
                 setComposeText("");
@@ -822,9 +892,10 @@ export const App = () => {
                     <li key={`${activeSession.name}-${windowState.index}`}>
                       <button
                         onClick={() => selectWindow(windowState)}
-                        className={windowState.active ? "active" : ""}
+                        className={windowState.index === activeWindow?.index ? "active" : ""}
                       >
-                        {windowState.index}: {windowState.name} {windowState.active ? "*" : ""}
+                        {windowState.index}: {windowState.name}
+                        {windowState.index === activeWindow?.index ? " *" : ""}
                       </button>
                     </li>
                   ))
@@ -844,30 +915,36 @@ export const App = () => {
             <h3>Panes ({activeWindow ? `${activeWindow.index}` : "-"})</h3>
             <ul>
               {activeWindow
-                ? activeWindow.panes.map((pane) => (
-                    <li key={pane.id}>
-                      <button
-                        onClick={() => sendControl({
-                          type: "select_pane",
-                          paneId: pane.id,
-                          ...(stickyZoom && !pane.active ? { stickyZoom: true } : {})
-                        })}
-                        className={pane.active ? "active" : ""}
-                      >
-                        %{pane.index}: {pane.currentCommand} {pane.active ? "*" : ""}
-                        {pane.active && pane.zoomed ? (
-                          <span
-                            className="pane-zoom-indicator on"
-                            title="Active pane is zoomed"
-                            aria-label="Pane zoom: on"
-                            data-testid="active-pane-zoom-indicator"
-                          >
-                            🔍
-                          </span>
-                        ) : null}
-                      </button>
-                    </li>
-                  ))
+                ? activeWindow.panes.map((pane) => {
+                    const isActive = pane.id === activePane?.id;
+                    return (
+                      <li key={pane.id}>
+                        <button
+                          onClick={() => {
+                            setSelectedPaneId(pane.id);
+                            sendControl({
+                              type: "select_pane",
+                              paneId: pane.id,
+                              ...(stickyZoom && !isActive ? { stickyZoom: true } : {})
+                            });
+                          }}
+                          className={isActive ? "active" : ""}
+                        >
+                          %{pane.index}: {pane.currentCommand} {isActive ? "*" : ""}
+                          {isActive && pane.zoomed ? (
+                            <span
+                              className="pane-zoom-indicator on"
+                              title="Active pane is zoomed"
+                              aria-label="Pane zoom: on"
+                              data-testid="active-pane-zoom-indicator"
+                            >
+                              🔍
+                            </span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })
                 : null}
             </ul>
             <div className="drawer-grid">
@@ -909,22 +986,27 @@ export const App = () => {
 
             <button
               className="drawer-section-action"
-              onClick={() => activePane && sendControl({ type: "kill_pane", paneId: activePane.id })}
+              onClick={() => {
+                if (!activePane) return;
+                setSelectedPaneId(null);
+                sendControl({ type: "kill_pane", paneId: activePane.id });
+              }}
               disabled={!activePane}
             >
               Close Pane
             </button>
             <button
               className="drawer-section-action"
-              onClick={() =>
-                activeSession &&
-                activeWindow &&
+              onClick={() => {
+                if (!activeSession || !activeWindow) return;
+                setSelectedWindowIndex(null);
+                setSelectedPaneId(null);
                 sendControl({
                   type: "kill_window",
                   session: activeSession.name,
                   windowIndex: activeWindow.index
-                })
-              }
+                });
+              }}
               disabled={!activeSession || !activeWindow}
             >
               Kill Window

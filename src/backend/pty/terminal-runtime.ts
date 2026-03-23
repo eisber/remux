@@ -19,8 +19,12 @@ export class TerminalRuntime {
     return this.session;
   }
 
-  public attachToSession(session: string): void {
-    if (this.session === session && this.process) {
+  public isAlive(): boolean {
+    return this.process !== undefined;
+  }
+
+  public attachToSession(session: string, force = false): void {
+    if (!force && this.session === session && this.process) {
       return;
     }
 
@@ -63,10 +67,22 @@ export class TerminalRuntime {
     return () => this.events.off(event, handler as (...args: unknown[]) => void);
   }
 
-  public shutdown(): void {
-    if (this.process) {
-      this.process.kill();
-      this.process = undefined;
+  public shutdown(): Promise<void> {
+    if (!this.process) {
+      return Promise.resolve();
     }
+    return new Promise<void>((resolve) => {
+      const proc = this.process!;
+      const timeout = setTimeout(() => {
+        this.process = undefined;
+        resolve();
+      }, 500);
+      proc.onExit(() => {
+        clearTimeout(timeout);
+        this.process = undefined;
+        resolve();
+      });
+      proc.kill();
+    });
   }
 }

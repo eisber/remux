@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WebSocket, type RawData } from "ws";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
 import type { RuntimeConfig } from "../../src/backend/config.js";
-import { createTmuxMobileServer, type RunningServer } from "../../src/backend/server.js";
+import { createRemuxServer, type RunningServer } from "../../src/backend/server.js";
 import { buildSnapshot } from "../../src/backend/tmux/types.js";
 import { FakePtyFactory } from "../harness/fakePty.js";
 import { FakeTmuxGateway } from "../harness/fakeTmux.js";
@@ -70,7 +70,7 @@ describe("tmux mobile server", () => {
     ptyFactory = new FakePtyFactory();
     const auth = new AuthService(options.password, "test-token");
 
-    runningServer = createTmuxMobileServer(buildConfig("test-token"), {
+    runningServer = createRemuxServer(buildConfig("test-token"), {
       tmux,
       ptyFactory,
       authService: auth,
@@ -107,10 +107,10 @@ describe("tmux mobile server", () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     const { attachedSession } = await authControl(control);
 
-    expect(attachedSession).toMatch(/^tmux-mobile-client-/);
+    expect(attachedSession).toBe("main");
     expect(tmux.calls).toContain("createSession:main");
-    expect(tmux.calls).toContain(`createGroupedSession:${attachedSession}:main`);
-    expect(ptyFactory.lastSpawnedSession).toBe(attachedSession);
+    expect(tmux.calls.some((c) => c.startsWith("createGroupedSession:") && c.endsWith(":main"))).toBe(true);
+    expect(ptyFactory.lastSpawnedSession).toMatch(/^remux-client-/);
 
     control.close();
   });
@@ -162,9 +162,9 @@ describe("tmux mobile server", () => {
       (msg) => msg.type === "attached"
     );
 
-    expect(attached.session).toMatch(/^tmux-mobile-client-/);
-    expect(tmux.calls).toContain(`createGroupedSession:${attached.session}:dev`);
-    expect(ptyFactory.lastSpawnedSession).toBe(attached.session);
+    expect(attached.session).toBe("dev");
+    expect(tmux.calls.some((c) => c.startsWith("createGroupedSession:") && c.endsWith(":dev"))).toBe(true);
+    expect(ptyFactory.lastSpawnedSession).toMatch(/^remux-client-/);
     expect(tmux.calls.some((call) => call.startsWith("switchClient:"))).toBe(false);
     control.close();
   });
@@ -348,15 +348,93 @@ describe("tmux mobile server", () => {
     const { attachedSession } = await authControl(control);
 
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
-    await waitForTmuxCall((call) => call === `newWindow:${attachedSession}`);
+    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
 
     tmux.calls.length = 0;
 
     control.send(JSON.stringify({ type: "select_window", session: attachedSession, windowIndex: 0, stickyZoom: true }));
-    await waitForTmuxCall((call) => call === `selectWindow:${attachedSession}:0`);
+    await waitForTmuxCall((call) => call.startsWith("selectWindow:remux-client-") && call.endsWith(":0"));
 
-    expect(tmux.calls).toContain(`selectWindow:${attachedSession}:0`);
+    expect(tmux.calls.some((c) => c.startsWith("selectWindow:remux-client-") && c.endsWith(":0"))).toBe(true);
     expect(tmux.calls.some((call) => call.startsWith("zoomPane:"))).toBe(true);
+
+    control.close();
+  });
+
+  test("tmux_state reflects per-client active window from mobile session", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const { attachedSession } = await authControl(control);
+
+    // Create a second window on the mobile session
+    control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
+    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
+
+    // Drain any pending tmux_state messages from new_window
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Set up listener BEFORE sending select_window to catch the response
+    const statePromise = waitForMessage<{
+      type: string;
+      state: { sessions: Array<{ name: string; windowStates: Array<{ index: number; active: boolean }> }> };
+    }>(control, (msg) => {
+      if (msg.type !== "tmux_state") return false;
+      // Only match state where window 0 is active (our desired state)
+      const main = msg.state.sessions.find((s) => s.name === "main");
+      const w0 = main?.windowStates.find((w) => w.index === 0);
+      return w0?.active === true;
+    });
+
+    // Now select window 0 on the mobile session (window 1 is currently active after new_window)
+    control.send(
+      JSON.stringify({ type: "select_window", session: attachedSession, windowIndex: 0 })
+    );
+
+    const stateMsg = await statePromise;
+    const mainSession = stateMsg.state.sessions.find((s) => s.name === "main");
+    expect(mainSession).toBeDefined();
+
+    // The broadcast should show window 0 as active (matching the mobile session's state)
+    const window0 = mainSession!.windowStates.find((w) => w.index === 0);
+    const window1 = mainSession!.windowStates.find((w) => w.index === 1);
+    expect(window0?.active).toBe(true);
+    expect(window1?.active).toBe(false);
+
+    control.close();
+  });
+
+  test("kill_window targets the correct window after switching", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const { attachedSession } = await authControl(control);
+
+    // Create window 1
+    control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
+    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
+
+    // Select window 1 on mobile session
+    control.send(
+      JSON.stringify({ type: "select_window", session: attachedSession, windowIndex: 1 })
+    );
+    await waitForTmuxCall(
+      (call) => call.startsWith("selectWindow:remux-client-") && call.endsWith(":1")
+    );
+
+    // Kill window 1 (the active window on mobile)
+    tmux.calls.length = 0;
+    control.send(
+      JSON.stringify({ type: "kill_window", session: attachedSession, windowIndex: 1 })
+    );
+    await waitForTmuxCall((call) => call.includes("killWindow:") && call.endsWith(":1"));
+
+    // Verify the correct window (1) was killed, not window 0
+    expect(
+      tmux.calls.some((c) => c.startsWith("killWindow:remux-client-") && c.endsWith(":1"))
+    ).toBe(true);
 
     control.close();
   });
