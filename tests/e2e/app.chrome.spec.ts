@@ -330,12 +330,12 @@ test.describe("remux browser behavior", () => {
 
         const browserDebug = await page.evaluate(() => {
           const debugWindow = window as Window & {
-            __tmuxMobileDebugState?: unknown;
-            __tmuxMobileDebugEvents?: unknown[];
+            __remuxDebugState?: unknown;
+            __remuxDebugEvents?: unknown[];
           };
           return {
-            state: debugWindow.__tmuxMobileDebugState ?? null,
-            events: (debugWindow.__tmuxMobileDebugEvents ?? []).slice(-200)
+            state: debugWindow.__remuxDebugState ?? null,
+            events: (debugWindow.__remuxDebugEvents ?? []).slice(-200)
           };
         });
 
