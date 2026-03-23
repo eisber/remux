@@ -81,12 +81,19 @@ const debugLog = (event: string, payload?: unknown): void => {
   console.log("[remux-debug]", entry.at, event, payload ?? "");
 };
 
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 8000;
+
 export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  /** Set to true when user-initiated or expected close (e.g. auth error) */
+  const suppressReconnectRef = useRef(false);
 
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -168,7 +175,7 @@ export const App = () => {
     if (errorMessage) {
       return { kind: "error", label: errorMessage };
     }
-    if (statusMessage.toLowerCase().includes("disconnected")) {
+    if (statusMessage.toLowerCase().includes("disconnected") || statusMessage.toLowerCase().includes("reconnect")) {
       return { kind: "warn", label: statusMessage };
     }
     if (statusMessage.toLowerCase().includes("connected") || statusMessage.startsWith("attached:")) {
@@ -303,6 +310,30 @@ export const App = () => {
     return reason;
   };
 
+  const cancelReconnect = (): void => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const scheduleReconnect = (passwordValue: string): void => {
+    if (suppressReconnectRef.current) {
+      return;
+    }
+    cancelReconnect();
+    const attempt = reconnectAttemptRef.current++;
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
+    debugLog("reconnect.schedule", { attempt, delay });
+    setStatusMessage(`reconnecting in ${(delay / 1000).toFixed(0)}s...`);
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectTimerRef.current = null;
+      debugLog("reconnect.attempt", { attempt });
+      setStatusMessage("reconnecting...");
+      openControlSocket(passwordValue);
+    }, delay);
+  };
+
   const openTerminalSocket = (passwordValue: string, clientId: string): void => {
     debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
     terminalSocketRef.current?.close();
@@ -333,11 +364,9 @@ export const App = () => {
       if (event.code === 4001) {
         setErrorMessage("terminal authentication failed");
       }
-      setStatusMessage("terminal disconnected");
     };
     socket.onerror = () => {
       debugLog("terminal_socket.onerror");
-      setErrorMessage("terminal websocket error");
     };
 
     terminalSocketRef.current = socket;
@@ -345,6 +374,7 @@ export const App = () => {
 
   const openControlSocket = (passwordValue: string): void => {
     debugLog("control_socket.open.begin", { hasPassword: Boolean(passwordValue) });
+    cancelReconnect();
     controlSocketRef.current?.close();
 
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
@@ -369,6 +399,8 @@ export const App = () => {
             clientId: message.clientId,
             requiresPassword: message.requiresPassword
           });
+          reconnectAttemptRef.current = 0;
+          suppressReconnectRef.current = false;
           setErrorMessage("");
           setPasswordErrorMessage("");
           setAuthReady(true);
@@ -382,6 +414,7 @@ export const App = () => {
           return;
         case "auth_error":
           debugLog("control_socket.auth_error", { reason: message.reason });
+          suppressReconnectRef.current = true;
           setErrorMessage(message.reason);
           setAuthReady(false);
           const passwordAuthFailed =
@@ -461,8 +494,11 @@ export const App = () => {
     socket.onclose = () => {
       debugLog("control_socket.onclose");
       setAuthReady(false);
-      setStatusMessage("control disconnected");
       setErrorMessage("");
+      // Close terminal socket too — it will be re-opened on reconnect
+      terminalSocketRef.current?.close();
+      terminalSocketRef.current = null;
+      scheduleReconnect(passwordValue);
     };
 
     controlSocketRef.current = socket;
