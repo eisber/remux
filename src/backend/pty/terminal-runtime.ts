@@ -23,8 +23,8 @@ export class TerminalRuntime {
     return this.process !== undefined;
   }
 
-  public attachToSession(session: string): void {
-    if (this.session === session && this.process) {
+  public attachToSession(session: string, force = false): void {
+    if (!force && this.session === session && this.process) {
       return;
     }
 
