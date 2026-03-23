@@ -1,3 +1,4 @@
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -27,6 +28,8 @@ interface ControlContext {
   attachedSession?: string;
   baseSession?: string;
   terminalClients: Set<DataContext>;
+  /** Pending resize from terminal WS received before runtime was created */
+  pendingResize?: { cols: number; rows: number };
 }
 
 interface DataContext {
@@ -59,7 +62,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const controlClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional() }),
+  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
   z.object({ type: z.literal("new_session"), name: z.string() }),
   z.object({ type: z.literal("new_window"), session: z.string() }),
@@ -70,7 +73,9 @@ const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("kill_pane"), paneId: z.string() }),
   z.object({ type: z.literal("zoom_pane"), paneId: z.string() }),
   z.object({ type: z.literal("capture_scrollback"), paneId: z.string(), lines: z.number().optional() }),
-  z.object({ type: z.literal("send_compose"), text: z.string() })
+  z.object({ type: z.literal("send_compose"), text: z.string() }),
+  z.object({ type: z.literal("rename_session"), session: z.string(), newName: z.string() }),
+  z.object({ type: z.literal("rename_window"), session: z.string(), windowIndex: z.number(), newName: z.string() })
 ]);
 
 const parseClientMessage = (raw: string): ControlClientMessage | null => {
@@ -147,8 +152,12 @@ export const createRemuxServer = (
 
   const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 
+  const require = createRequire(import.meta.url);
+  const pkgVersion: string = (require("../../package.json") as { version: string }).version;
+
   app.get("/api/config", (_req, res) => {
     res.json({
+      version: pkgVersion,
       passwordRequired: authService.requiresPassword(),
       scrollbackLines: config.scrollbackLines,
       pollIntervalMs: config.pollIntervalMs,
@@ -431,6 +440,10 @@ export const createRemuxServer = (
       sendJson(context.socket, { type: "info", message: "tmux client exited" });
     });
     context.runtime = runtime;
+    // Apply any pending resize received before runtime existed
+    if (context.pendingResize) {
+      runtime.resize(context.pendingResize.cols, context.pendingResize.rows);
+    }
     return runtime;
   };
 
@@ -466,15 +479,15 @@ export const createRemuxServer = (
     context: ControlContext,
     forceSession?: string
   ): Promise<void> => {
-    if (forceSession) {
+    const sessions = (await deps.tmux.listSessions()).filter(
+      (session) => !isManagedMobileSession(session.name)
+    );
+
+    if (forceSession && sessions.some((s) => s.name === forceSession)) {
       logger.log("attach session (forced)", forceSession);
       await attachControlToBaseSession(context, forceSession);
       return;
     }
-
-    const sessions = (await deps.tmux.listSessions()).filter(
-      (session) => !isManagedMobileSession(session.name)
-    );
     logger.log(
       "sessions discovered",
       sessions.map((session) => `${session.name}:${session.attached ? "attached" : "detached"}`).join(",")
@@ -510,6 +523,8 @@ export const createRemuxServer = (
         await attachControlToBaseSession(context, message.name);
         return;
       case "new_window":
+        // new_window is additive (no session-group destruction risk),
+        // so target the mobile session to auto-switch the client's active window.
         if (!attachedSession) {
           throw new Error("no attached session");
         }
@@ -528,12 +543,24 @@ export const createRemuxServer = (
           }
         }
         return;
-      case "kill_window":
-        if (!attachedSession) {
+      case "kill_window": {
+        // Structural operations target the base session to avoid destroying
+        // the grouped mobile session when the last window is killed.
+        const baseForKill = context.baseSession;
+        if (!baseForKill) {
           throw new Error("no attached session");
         }
-        await deps.tmux.killWindow(attachedSession, message.windowIndex);
+        const windows = await deps.tmux.listWindows(baseForKill);
+        if (windows.length <= 1) {
+          sendJson(context.socket, {
+            type: "info",
+            message: "cannot kill the last window"
+          });
+          return;
+        }
+        await deps.tmux.killWindow(baseForKill, message.windowIndex);
         return;
+      }
       case "select_pane":
         await deps.tmux.selectPane(message.paneId);
         if (message.stickyZoom === true && !(await deps.tmux.isPaneZoomed(message.paneId))) {
@@ -543,26 +570,66 @@ export const createRemuxServer = (
       case "split_pane":
         await deps.tmux.splitWindow(message.paneId, message.orientation);
         return;
-      case "kill_pane":
+      case "kill_pane": {
+        // Guard: prevent killing the last pane of the last window (would destroy session group)
+        const baseForKillPane = context.baseSession;
+        if (baseForKillPane) {
+          const allWindows = await deps.tmux.listWindows(baseForKillPane);
+          if (allWindows.length <= 1) {
+            // Find which window this pane belongs to and check its pane count
+            const windowForPane = allWindows[0];
+            if (windowForPane) {
+              const panes = await deps.tmux.listPanes(baseForKillPane, windowForPane.index);
+              if (panes.length <= 1) {
+                sendJson(context.socket, {
+                  type: "info",
+                  message: "cannot kill the last pane"
+                });
+                return;
+              }
+            }
+          }
+        }
         await deps.tmux.killPane(message.paneId);
         return;
+      }
       case "zoom_pane":
         await deps.tmux.zoomPane(message.paneId);
         return;
       case "capture_scrollback": {
         const lines = message.lines ?? config.scrollbackLines;
-        const output = await deps.tmux.capturePane(message.paneId, lines);
+        const { text, paneWidth } = await deps.tmux.capturePane(message.paneId, lines);
         sendJson(context.socket, {
           type: "scrollback",
           paneId: message.paneId,
           lines,
-          text: output
+          text,
+          paneWidth
         });
         return;
       }
       case "send_compose":
         context.runtime?.write(`${message.text}\r`);
         return;
+      case "rename_session": {
+        await deps.tmux.renameSession(message.session, message.newName);
+        // Update all clients attached to the renamed session
+        for (const client of controlClients) {
+          if (client.authed && client.baseSession === message.session) {
+            client.baseSession = message.newName;
+            sendJson(client.socket, { type: "attached", session: message.newName });
+          }
+        }
+        return;
+      }
+      case "rename_window": {
+        const baseForRename = context.baseSession;
+        if (!baseForRename) {
+          throw new Error("no attached session");
+        }
+        await deps.tmux.renameWindow(baseForRename, message.windowIndex, message.newName);
+        return;
+      }
       case "auth":
         return;
       default: {
@@ -638,7 +705,7 @@ export const createRemuxServer = (
             requiresPassword: authService.requiresPassword()
           });
           try {
-            await ensureAttachedSession(context);
+            await ensureAttachedSession(context, message.session);
           } catch (error) {
             logger.error("initial attach failed", error);
             sendJson(socket, {
@@ -747,7 +814,13 @@ export const createRemuxServer = (
             typeof payload.cols === "number" &&
             typeof payload.rows === "number"
           ) {
-            ctx.controlContext?.runtime?.resize(payload.cols, payload.rows);
+            if (ctx.controlContext?.runtime) {
+              ctx.controlContext.runtime.resize(payload.cols, payload.rows);
+            }
+            // Store resize so it can be applied when runtime is created later
+            if (ctx.controlContext) {
+              ctx.controlContext.pendingResize = { cols: payload.cols, rows: payload.rows };
+            }
             verboseLog("terminal ws resize", `${payload.cols}x${payload.rows}`);
             return;
           }

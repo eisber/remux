@@ -20,13 +20,14 @@ deploy_instance() {
   (cd "$dir" && npm run build 2>&1 | tail -3)
 
   echo "[deploy] restarting $name ..."
-  # Kill the process; launchd auto-restarts with new build
   local pid
   pid=$(launchctl list "$service" 2>/dev/null | awk -F'"PID" = ' '/PID/{gsub(/[^0-9]/,"",$2); print $2}' || true)
   if [[ -n "$pid" && "$pid" != "0" ]]; then
+    # SIGTERM first, then SIGKILL if still alive after 2s
     kill "$pid" 2>/dev/null || true
+    sleep 2
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
   else
-    # Service might not be loaded yet
     launchctl load "$HOME/Library/LaunchAgents/${service}.plist" 2>/dev/null || true
   fi
 

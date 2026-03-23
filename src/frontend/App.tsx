@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { themes } from "./themes";
 import { ansiToHtml } from "./ansi-to-html";
+import { deriveContext, formatContext } from "./context-label";
 import type {
   ControlServerMessage,
   TmuxPaneState,
@@ -13,6 +15,7 @@ import type {
 } from "../shared/protocol";
 
 interface ServerConfig {
+  version?: string;
   passwordRequired: boolean;
   scrollbackLines: number;
   pollIntervalMs: number;
@@ -93,6 +96,7 @@ export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const serializeAddonRef = useRef<SerializeAddon | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -110,16 +114,19 @@ export const App = () => {
 
   const [snapshot, setSnapshot] = useState<TmuxStateSnapshot>({ sessions: [], capturedAt: "" });
   const [attachedSession, setAttachedSession] = useState<string>("");
+  const attachedSessionRef = useRef("");
   const [sessionChoices, setSessionChoices] = useState<TmuxSessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [composeEnabled, setComposeEnabled] = useState(() => isMobileDevice());
   const [composeText, setComposeText] = useState("");
 
-  const [scrollbackVisible, setScrollbackVisible] = useState(false);
-  const [scrollbackText, setScrollbackText] = useState("");
-  const [scrollbackLines, setScrollbackLines] = useState(1000);
+  const [scrollbackHtml, setScrollbackHtml] = useState("");
   const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
-  const scrollbackRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
+  const [scrollFontSize, setScrollFontSize] = useState<number>(
+    Number(localStorage.getItem("remux-scroll-font-size")) || 0
+  );
 
   const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
     ctrl: "off",
@@ -135,6 +142,12 @@ export const App = () => {
   );
   const [toolbarDeepExpanded, setToolbarDeepExpanded] = useState(false);
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
+
+  const [renamingSession, setRenamingSession] = useState<string | null>(null);
+  const [renameSessionValue, setRenameSessionValue] = useState("");
+  const [renamingWindow, setRenamingWindow] = useState<{ session: string; index: number } | null>(null);
+  const [renameWindowValue, setRenameWindowValue] = useState("");
+  const renameHandledByKeyRef = useRef(false);
 
   const [dragOver, setDragOver] = useState(false);
   const [uploadToast, setUploadToast] = useState<{ path: string; filename: string } | null>(null);
@@ -352,12 +365,11 @@ export const App = () => {
     });
   };
 
-  const requestScrollback = (lines: number): void => {
-    if (!activePane) {
-      return;
-    }
-    setScrollbackLines(lines);
-    sendControl({ type: "capture_scrollback", paneId: activePane.id, lines });
+  const readTerminalBuffer = (): string => {
+    const addon = serializeAddonRef.current;
+    if (!addon) return "";
+    // Serialize full terminal buffer including scrollback
+    return addon.serialize({ scrollback: 10000 });
   };
 
   const formatPasswordError = (reason: string): string => {
@@ -405,10 +417,24 @@ export const App = () => {
         JSON.stringify({ type: "auth", token, password: passwordValue || undefined, clientId })
       );
       setStatusMessage("terminal connected");
-      if (fitAddonRef.current && terminalRef.current) {
-        fitAddonRef.current.fit();
-      }
-      sendTerminalResize();
+      // Retry fit until cols are reasonable — layout may not be settled on first try
+      let retries = 0;
+      const tryFit = () => {
+        if (fitAddonRef.current && terminalRef.current) {
+          fitAddonRef.current.fit();
+          if (terminalRef.current.cols < 20 && retries < 5) {
+            retries++;
+            setTimeout(tryFit, 200);
+            return;
+          }
+          // Final fallback: if still too narrow, force 80x24
+          if (terminalRef.current.cols < 20) {
+            terminalRef.current.resize(80, 24);
+          }
+        }
+        sendTerminalResize();
+      };
+      setTimeout(tryFit, 300);
     };
 
     socket.onmessage = (event) => {
@@ -450,7 +476,12 @@ export const App = () => {
 
     socket.onopen = () => {
       debugLog("control_socket.onopen");
-      socket.send(JSON.stringify({ type: "auth", token, password: passwordValue || undefined }));
+      socket.send(JSON.stringify({
+        type: "auth",
+        token,
+        password: passwordValue || undefined,
+        ...(attachedSessionRef.current ? { session: attachedSessionRef.current } : {})
+      }));
     };
 
     socket.onmessage = (event) => {
@@ -497,6 +528,7 @@ export const App = () => {
         case "attached":
           debugLog("control_socket.attached", { session: message.session });
           setAttachedSession(message.session);
+          attachedSessionRef.current = message.session;
           setSelectedWindowIndex(null);
           setSelectedPaneId(null);
           setSessionChoices(null);
@@ -541,13 +573,7 @@ export const App = () => {
           setSelectedPaneId(null);
           return;
         case "scrollback":
-          debugLog("control_socket.scrollback", {
-            paneId: message.paneId,
-            lines: message.lines,
-            bytes: message.text.length
-          });
-          setScrollbackText(message.text);
-          setScrollbackVisible(true);
+          // Legacy handler — scroll mode now reads from xterm buffer directly
           return;
         case "error":
           debugLog("control_socket.error", { message: message.message });
@@ -623,6 +649,7 @@ export const App = () => {
     const themeConfig = themes[theme];
     const terminal = new Terminal({
       cursorBlink: true,
+      scrollback: 10000,
       fontFamily: "'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', 'FiraCode Nerd Font', 'JetBrainsMono Nerd Font', 'DejaVu Sans Mono Nerd Font', 'Symbols Nerd Font Mono', Menlo, Monaco, 'Courier New', monospace",
       fontSize: initialFontSize,
       theme: themeConfig?.xterm ?? {
@@ -632,7 +659,9 @@ export const App = () => {
       }
     });
     const fitAddon = new FitAddon();
+    const serializeAddon = new SerializeAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(serializeAddon);
     terminal.open(terminalContainerRef.current);
     requestAnimationFrame(() => {
       fitAddon.fit();
@@ -645,8 +674,15 @@ export const App = () => {
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    serializeAddonRef.current = serializeAddon;
 
     const fitAndNotifyResize = () => {
+      // Skip resize when container is hidden (e.g. scroll mode sets display:none)
+      // to avoid shrinking the tmux pane to near-zero columns
+      const container = terminalContainerRef.current;
+      if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
+        return;
+      }
       const preferredFontSize = getPreferredTerminalFontSize();
       if (terminal.options.fontSize !== preferredFontSize) {
         terminal.options.fontSize = preferredFontSize;
@@ -666,6 +702,7 @@ export const App = () => {
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      serializeAddonRef.current = null;
     };
   }, []);
 
@@ -676,52 +713,76 @@ export const App = () => {
     };
   }, []);
 
-  // Scrollback auto-refresh and scroll-to-bottom
-  useEffect(() => {
-    if (!scrollbackVisible) {
-      if (scrollbackRefreshRef.current) {
-        clearInterval(scrollbackRefreshRef.current);
-        scrollbackRefreshRef.current = null;
-      }
-      return;
-    }
+  const scrollViewActive = viewMode === "scroll";
 
-    // Scroll to bottom on first open
-    requestAnimationFrame(() => {
-      const el = scrollbackContentRef.current;
-      if (el) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-
-    // Auto-refresh every 3s
-    scrollbackRefreshRef.current = setInterval(() => {
-      requestScrollback(scrollbackLines);
-    }, 3000);
-
-    return () => {
-      if (scrollbackRefreshRef.current) {
-        clearInterval(scrollbackRefreshRef.current);
-        scrollbackRefreshRef.current = null;
-      }
-    };
-  }, [scrollbackVisible]);
-
-  // Scroll to bottom when new scrollback text arrives (only if already at bottom)
-  useEffect(() => {
+  // Read xterm buffer and update scroll view HTML
+  const refreshScrollView = (): void => {
     const el = scrollbackContentRef.current;
-    if (!el || !scrollbackVisible || !scrollbackText) {
-      return;
-    }
+    if (!el) return;
+    const raw = readTerminalBuffer();
+    if (!raw) return;
     const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-    // Update HTML content
-    el.innerHTML = ansiToHtml(scrollbackText);
-    if (isAtBottom) {
+    const html = ansiToHtml(raw);
+    if (html !== scrollbackHtml) {
+      setScrollbackHtml(html);
+      el.innerHTML = html;
+      if (isAtBottom) {
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight;
+        });
+      }
+    }
+  };
+
+  // When entering scroll mode: read buffer + subscribe to terminal writes
+  useEffect(() => {
+    if (!scrollViewActive || !authReady) return;
+
+    // Initial read + scroll to bottom
+    const raw = readTerminalBuffer();
+    if (raw) {
+      const html = ansiToHtml(raw);
+      setScrollbackHtml(html);
       requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
+        const el = scrollbackContentRef.current;
+        if (el) {
+          el.innerHTML = html;
+          el.scrollTop = el.scrollHeight;
+        }
       });
     }
-  }, [scrollbackText]);
+
+    // Subscribe to terminal writes — update scroll view when new data arrives
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const disposable = terminal.onWriteParsed(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => refreshScrollView(), 80);
+    });
+
+    return () => {
+      disposable.dispose();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [scrollViewActive, authReady]);
+
+  // Re-fit terminal when switching to terminal mode
+  useEffect(() => {
+    if (viewMode === "terminal" && fitAddonRef.current) {
+      // Double-fit: once immediately, once after CSS settles
+      const doFit = () => {
+        fitAddonRef.current?.fit();
+        sendTerminalResize();
+      };
+      requestAnimationFrame(doFit);
+      const timer = setTimeout(doFit, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode]);
+
+  // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
   // Persist toolbar expanded state
   useEffect(() => {
@@ -782,8 +843,9 @@ export const App = () => {
       // Text paste: let xterm.js handle it normally
     };
 
-    document.addEventListener("paste", handlePaste);
-    return () => document.removeEventListener("paste", handlePaste);
+    // Use capture phase so we intercept before xterm.js's internal paste handler
+    document.addEventListener("paste", handlePaste, true);
+    return () => document.removeEventListener("paste", handlePaste, true);
   }, [activePane, serverConfig, password]);
 
   const submitPassword = (): void => {
@@ -800,8 +862,13 @@ export const App = () => {
   };
 
   const copySelection = async (): Promise<void> => {
-    const selected = window.getSelection()?.toString() || scrollbackText;
-    await navigator.clipboard.writeText(selected);
+    let text = window.getSelection()?.toString() || "";
+    if (!text) {
+      // Fallback: copy terminal buffer with ANSI codes stripped
+      const raw = readTerminalBuffer();
+      text = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    }
+    await navigator.clipboard.writeText(text);
     setStatusMessage("Copied to clipboard");
   };
 
@@ -936,10 +1003,14 @@ export const App = () => {
             aria-label={`Status: ${topStatus.label}`}
             data-testid="top-status-indicator"
           />
-          <button className="top-btn" onClick={() => requestScrollback(serverConfig?.scrollbackLines ?? 1000)}
-            title="View scrollback history — see previous terminal output with auto-refresh"
+          <button
+            className={`top-btn${viewMode === "terminal" ? " active" : ""}`}
+            title="Toggle between terminal view and scrollback history"
+            onClick={() => {
+              setViewMode((m) => m === "scroll" ? "terminal" : "scroll");
+            }}
           >
-            Scroll
+            {viewMode === "scroll" ? "Term" : "Scroll"}
           </button>
         </div>
       </header>
@@ -949,6 +1020,7 @@ export const App = () => {
           className="terminal-host"
           ref={terminalContainerRef}
           data-testid="terminal-host"
+          style={viewMode !== "terminal" ? { display: "none" } : undefined}
           onContextMenu={(event) => event.preventDefault()}
           onDragOver={(event) => {
             event.preventDefault();
@@ -970,9 +1042,30 @@ export const App = () => {
             </div>
           )}
         </div>
+        {viewMode === "scroll" && (
+          <div
+            className="scrollback-main"
+            ref={scrollbackContentRef}
+            data-testid="scrollback-main"
+            style={scrollFontSize > 0 ? { fontSize: `${scrollFontSize}px` } as React.CSSProperties : undefined}
+          />
+        )}
       </main>
 
-      <section className={`toolbar${isMobileDevice() ? "" : " desktop-hidden"}`} onMouseUp={focusTerminal}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            uploadFile(file);
+          }
+          event.target.value = "";
+        }}
+      />
+
+      {viewMode === "terminal" && <section className={`toolbar${isMobileDevice() ? "" : " desktop-hidden"}`} onMouseUp={focusTerminal}>
         {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
           <button onClick={() => sendTerminal("\u001b")} title="Escape key — cancel current operation or exit insert mode">Esc</button>
@@ -1034,18 +1127,7 @@ export const App = () => {
           >
             Upload
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            style={{ display: "none" }}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                uploadFile(file);
-              }
-              event.target.value = "";
-            }}
-          />
+          {/* file input moved outside toolbar for scroll mode access */}
           <button onClick={() => sendTerminal("\u001b[3~")} title="Delete key — delete character under cursor">Del</button>
           <button onClick={() => sendTerminal("\u001b[2~")} title="Insert key — toggle insert/overwrite mode">Insert</button>
           <button onClick={() => sendTerminal("\u001b[5~")} title="Page Up — scroll up one page">PgUp</button>
@@ -1074,7 +1156,7 @@ export const App = () => {
             </div>
           </div>
         )}
-      </section>
+      </section>}
 
       {composeEnabled && (
         <section className="compose-bar">
@@ -1086,6 +1168,18 @@ export const App = () => {
               if (event.key === "Enter") {
                 sendControl({ type: "send_compose", text: composeText });
                 setComposeText("");
+              }
+            }}
+            onPaste={(event) => {
+              const items = event.clipboardData?.items;
+              if (!items) return;
+              for (const item of items) {
+                if (item.kind === "file") {
+                  event.preventDefault();
+                  const file = item.getAsFile();
+                  if (file) uploadFile(file);
+                  return;
+                }
               }
             }}
             placeholder="Compose command"
@@ -1123,12 +1217,52 @@ export const App = () => {
             <ul data-testid="sessions-list">
               {snapshot.sessions.map((session) => (
                 <li key={session.name}>
-                  <button
-                    onClick={() => sendControl({ type: "select_session", session: session.name })}
-                    className={session.name === (attachedSession || activeSession?.name) ? "active" : ""}
-                  >
-                    {session.name} {session.attached ? "*" : ""}
-                  </button>
+                  {renamingSession === session.name ? (
+                    <input
+                      className="rename-input"
+                      value={renameSessionValue}
+                      onChange={(e) => setRenameSessionValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && renameSessionValue.trim()) {
+                          renameHandledByKeyRef.current = true;
+                          sendControl({ type: "rename_session", session: session.name, newName: renameSessionValue.trim() });
+                          setRenamingSession(null);
+                        } else if (e.key === "Escape") {
+                          renameHandledByKeyRef.current = true;
+                          setRenamingSession(null);
+                        }
+                      }}
+                      onBlur={() => {
+                        if (renameHandledByKeyRef.current) {
+                          renameHandledByKeyRef.current = false;
+                          return;
+                        }
+                        if (renameSessionValue.trim() && renameSessionValue.trim() !== session.name) {
+                          sendControl({ type: "rename_session", session: session.name, newName: renameSessionValue.trim() });
+                        }
+                        setRenamingSession(null);
+                      }}
+                      autoFocus
+                      data-testid="rename-session-input"
+                    />
+                  ) : (
+                    <button
+                      onClick={() => sendControl({ type: "select_session", session: session.name })}
+                      onDoubleClick={(e) => {
+                        e.preventDefault();
+                        setRenamingSession(session.name);
+                        setRenameSessionValue(session.name);
+                      }}
+                      className={session.name === (attachedSession || activeSession?.name) ? "active" : ""}
+                    >
+                      <span className="item-name">{session.name} {session.attached ? "*" : ""}</span>
+                      {(() => {
+                        const aw = session.windowStates.find((w) => w.active) ?? session.windowStates[0];
+                        const label = aw ? formatContext(deriveContext(aw.panes)) : "";
+                        return label ? <span className="item-context">{label}</span> : null;
+                      })()}
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -1146,13 +1280,54 @@ export const App = () => {
               {activeSession
                 ? activeSession.windowStates.map((windowState) => (
                     <li key={`${activeSession.name}-${windowState.index}`}>
-                      <button
-                        onClick={() => selectWindow(windowState)}
-                        className={windowState.index === activeWindow?.index ? "active" : ""}
-                      >
-                        {windowState.index}: {windowState.name}
-                        {windowState.index === activeWindow?.index ? " *" : ""}
-                      </button>
+                      {renamingWindow?.session === activeSession.name && renamingWindow?.index === windowState.index ? (
+                        <input
+                          className="rename-input"
+                          value={renameWindowValue}
+                          onChange={(e) => setRenameWindowValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && renameWindowValue.trim()) {
+                              renameHandledByKeyRef.current = true;
+                              sendControl({ type: "rename_window", session: activeSession.name, windowIndex: windowState.index, newName: renameWindowValue.trim() });
+                              setRenamingWindow(null);
+                            } else if (e.key === "Escape") {
+                              renameHandledByKeyRef.current = true;
+                              setRenamingWindow(null);
+                            }
+                          }}
+                          onBlur={() => {
+                            if (renameHandledByKeyRef.current) {
+                              renameHandledByKeyRef.current = false;
+                              return;
+                            }
+                            if (renameWindowValue.trim() && renameWindowValue.trim() !== windowState.name) {
+                              sendControl({ type: "rename_window", session: activeSession.name, windowIndex: windowState.index, newName: renameWindowValue.trim() });
+                            }
+                            setRenamingWindow(null);
+                          }}
+                          autoFocus
+                          data-testid="rename-window-input"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => selectWindow(windowState)}
+                          onDoubleClick={(e) => {
+                            e.preventDefault();
+                            setRenamingWindow({ session: activeSession.name, index: windowState.index });
+                            setRenameWindowValue(windowState.name);
+                          }}
+                          className={windowState.index === activeWindow?.index ? "active" : ""}
+                        >
+                          <span className="item-name">
+                            {windowState.index}: {windowState.name}
+                            {windowState.index === activeWindow?.index ? " *" : ""}
+                          </span>
+                          {(() => {
+                            const label = formatContext(deriveContext(windowState.panes));
+                            return label ? <span className="item-context">{label}</span> : null;
+                          })()}
+                        </button>
+                      )}
                     </li>
                   ))
                 : null}
@@ -1287,6 +1462,29 @@ export const App = () => {
                 </button>
               ))}
             </div>
+
+            <h3>Font Size</h3>
+            <div className="drawer-grid" style={{ gridTemplateColumns: "auto 1fr auto", alignItems: "center" }}>
+              <button onClick={() => {
+                const v = Math.max(8, (scrollFontSize || 14) - 1);
+                setScrollFontSize(v);
+                localStorage.setItem("remux-scroll-font-size", String(v));
+              }}>A-</button>
+              <span style={{ textAlign: "center" }}>{scrollFontSize || "Auto"}</span>
+              <button onClick={() => {
+                const v = Math.min(24, (scrollFontSize || 14) + 1);
+                setScrollFontSize(v);
+                localStorage.setItem("remux-scroll-font-size", String(v));
+              }}>A+</button>
+            </div>
+            <button className="drawer-section-action" onClick={() => {
+              setScrollFontSize(0);
+              localStorage.removeItem("remux-scroll-font-size");
+            }}>Reset to Auto</button>
+
+            {serverConfig?.version && (
+              <p className="drawer-version">v{serverConfig.version}</p>
+            )}
           </aside>
         </div>
       )}
@@ -1307,18 +1505,7 @@ export const App = () => {
         </div>
       )}
 
-      {scrollbackVisible && (
-        <div className="overlay">
-          <div className="card scrollback-card">
-            <div className="scrollback-actions">
-              <button onClick={() => setScrollbackVisible(false)} title="Close scrollback viewer and return to live terminal">Close</button>
-              <button onClick={() => requestScrollback(scrollbackLines + 1000)} title="Load 1000 more lines of history">Load More</button>
-              <button onClick={() => void copySelection()} title="Copy selected text (or all scrollback) to clipboard">Copy</button>
-            </div>
-            <div className="scrollback-content" ref={scrollbackContentRef} />
-          </div>
-        </div>
-      )}
+      {/* Legacy overlay scrollback removed — now inline in scroll viewMode */}
 
       {needsPasswordInput && (
         <div className="overlay">
