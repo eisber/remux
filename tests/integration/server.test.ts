@@ -348,7 +348,7 @@ describe("tmux mobile server", () => {
     const { attachedSession } = await authControl(control);
 
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
-    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
+    await waitForTmuxCall((call) => call === "newWindow:main");
 
     tmux.calls.length = 0;
 
@@ -368,9 +368,9 @@ describe("tmux mobile server", () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     const { attachedSession } = await authControl(control);
 
-    // Create a second window on the mobile session
+    // Create a second window (structural ops now target base session "main")
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
-    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
+    await waitForTmuxCall((call) => call === "newWindow:main");
 
     // Drain any pending tmux_state messages from new_window
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -412,9 +412,9 @@ describe("tmux mobile server", () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     const { attachedSession } = await authControl(control);
 
-    // Create window 1
+    // Create window 1 (structural ops now target base session "main")
     control.send(JSON.stringify({ type: "new_window", session: attachedSession }));
-    await waitForTmuxCall((call) => call.startsWith("newWindow:remux-client-"));
+    await waitForTmuxCall((call) => call === "newWindow:main");
 
     // Select window 1 on mobile session
     control.send(
@@ -431,9 +431,9 @@ describe("tmux mobile server", () => {
     );
     await waitForTmuxCall((call) => call.includes("killWindow:") && call.endsWith(":1"));
 
-    // Verify the correct window (1) was killed, not window 0
+    // Verify the correct window (1) was killed on the base session, not window 0
     expect(
-      tmux.calls.some((c) => c.startsWith("killWindow:remux-client-") && c.endsWith(":1"))
+      tmux.calls.some((c) => c === "killWindow:main:1")
     ).toBe(true);
 
     control.close();
@@ -496,7 +496,7 @@ describe("tmux mobile server", () => {
     await waitForTmuxCall((call) => call.includes("renameWindow:") && call.endsWith(":0:editor"));
 
     expect(
-      tmux.calls.some((c) => c.startsWith("renameWindow:remux-client-") && c.endsWith(":0:editor"))
+      tmux.calls.some((c) => c === "renameWindow:work:0:editor")
     ).toBe(true);
 
     control.close();
