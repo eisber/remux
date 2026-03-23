@@ -122,6 +122,10 @@ export const App = () => {
   const [toolbarDeepExpanded, setToolbarDeepExpanded] = useState(false);
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
 
+  // Local selection state for instant UI feedback before server snapshot arrives
+  const [selectedWindowIndex, setSelectedWindowIndex] = useState<number | null>(null);
+  const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
+
   const activeSession: TmuxSessionState | undefined = useMemo(() => {
     const selected = snapshot.sessions.find((session) => session.name === attachedSession);
     if (selected) {
@@ -134,15 +138,31 @@ export const App = () => {
     if (!activeSession) {
       return undefined;
     }
+    // Use local selection if it still exists in the snapshot
+    if (selectedWindowIndex !== null) {
+      const selected = activeSession.windowStates.find(
+        (window) => window.index === selectedWindowIndex
+      );
+      if (selected) {
+        return selected;
+      }
+    }
     return activeSession.windowStates.find((window) => window.active) ?? activeSession.windowStates[0];
-  }, [activeSession]);
+  }, [activeSession, selectedWindowIndex]);
 
   const activePane: TmuxPaneState | undefined = useMemo(() => {
     if (!activeWindow) {
       return undefined;
     }
+    // Use local selection if it still exists in the snapshot
+    if (selectedPaneId !== null) {
+      const selected = activeWindow.panes.find((pane) => pane.id === selectedPaneId);
+      if (selected) {
+        return selected;
+      }
+    }
     return activeWindow.panes.find((pane) => pane.active) ?? activeWindow.panes[0];
-  }, [activeWindow]);
+  }, [activeWindow, selectedPaneId]);
 
   const topStatus = useMemo(() => {
     if (errorMessage) {
@@ -375,6 +395,8 @@ export const App = () => {
         case "attached":
           debugLog("control_socket.attached", { session: message.session });
           setAttachedSession(message.session);
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
           setSessionChoices(null);
           setDrawerOpen(false);
           setStatusMessage(`attached: ${message.session}`);
@@ -612,6 +634,8 @@ export const App = () => {
     if (!activeSession) {
       return;
     }
+    setSelectedWindowIndex(windowState.index);
+    setSelectedPaneId(null);
     sendControl({
       type: "select_window",
       session: activeSession.name,
@@ -821,9 +845,10 @@ export const App = () => {
                     <li key={`${activeSession.name}-${windowState.index}`}>
                       <button
                         onClick={() => selectWindow(windowState)}
-                        className={windowState.active ? "active" : ""}
+                        className={windowState.index === activeWindow?.index ? "active" : ""}
                       >
-                        {windowState.index}: {windowState.name} {windowState.active ? "*" : ""}
+                        {windowState.index}: {windowState.name}
+                        {windowState.index === activeWindow?.index ? " *" : ""}
                       </button>
                     </li>
                   ))
@@ -843,30 +868,36 @@ export const App = () => {
             <h3>Panes ({activeWindow ? `${activeWindow.index}` : "-"})</h3>
             <ul>
               {activeWindow
-                ? activeWindow.panes.map((pane) => (
-                    <li key={pane.id}>
-                      <button
-                        onClick={() => sendControl({
-                          type: "select_pane",
-                          paneId: pane.id,
-                          ...(stickyZoom && !pane.active ? { stickyZoom: true } : {})
-                        })}
-                        className={pane.active ? "active" : ""}
-                      >
-                        %{pane.index}: {pane.currentCommand} {pane.active ? "*" : ""}
-                        {pane.active && pane.zoomed ? (
-                          <span
-                            className="pane-zoom-indicator on"
-                            title="Active pane is zoomed"
-                            aria-label="Pane zoom: on"
-                            data-testid="active-pane-zoom-indicator"
-                          >
-                            🔍
-                          </span>
-                        ) : null}
-                      </button>
-                    </li>
-                  ))
+                ? activeWindow.panes.map((pane) => {
+                    const isActive = pane.id === activePane?.id;
+                    return (
+                      <li key={pane.id}>
+                        <button
+                          onClick={() => {
+                            setSelectedPaneId(pane.id);
+                            sendControl({
+                              type: "select_pane",
+                              paneId: pane.id,
+                              ...(stickyZoom && !isActive ? { stickyZoom: true } : {})
+                            });
+                          }}
+                          className={isActive ? "active" : ""}
+                        >
+                          %{pane.index}: {pane.currentCommand} {isActive ? "*" : ""}
+                          {isActive && pane.zoomed ? (
+                            <span
+                              className="pane-zoom-indicator on"
+                              title="Active pane is zoomed"
+                              aria-label="Pane zoom: on"
+                              data-testid="active-pane-zoom-indicator"
+                            >
+                              🔍
+                            </span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })
                 : null}
             </ul>
             <div className="drawer-grid">
@@ -908,22 +939,27 @@ export const App = () => {
 
             <button
               className="drawer-section-action"
-              onClick={() => activePane && sendControl({ type: "kill_pane", paneId: activePane.id })}
+              onClick={() => {
+                if (!activePane) return;
+                setSelectedPaneId(null);
+                sendControl({ type: "kill_pane", paneId: activePane.id });
+              }}
               disabled={!activePane}
             >
               Close Pane
             </button>
             <button
               className="drawer-section-action"
-              onClick={() =>
-                activeSession &&
-                activeWindow &&
+              onClick={() => {
+                if (!activeSession || !activeWindow) return;
+                setSelectedWindowIndex(null);
+                setSelectedPaneId(null);
                 sendControl({
                   type: "kill_window",
                   session: activeSession.name,
                   windowIndex: activeWindow.index
-                })
-              }
+                });
+              }}
               disabled={!activeSession || !activeWindow}
             >
               Kill Window
