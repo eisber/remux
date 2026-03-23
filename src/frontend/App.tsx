@@ -336,7 +336,10 @@ export const App = () => {
 
   const openTerminalSocket = (passwordValue: string, clientId: string): void => {
     debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
-    terminalSocketRef.current?.close();
+    if (terminalSocketRef.current) {
+      terminalSocketRef.current.onclose = null;
+      terminalSocketRef.current.close();
+    }
 
     const socket = new WebSocket(`${wsOrigin}/ws/terminal`);
     socket.onopen = () => {
@@ -375,7 +378,11 @@ export const App = () => {
   const openControlSocket = (passwordValue: string): void => {
     debugLog("control_socket.open.begin", { hasPassword: Boolean(passwordValue) });
     cancelReconnect();
-    controlSocketRef.current?.close();
+    // Strip onclose before closing to prevent triggering reconnect for intentional close
+    if (controlSocketRef.current) {
+      controlSocketRef.current.onclose = null;
+      controlSocketRef.current.close();
+    }
 
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
 
