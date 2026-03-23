@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { themes } from "./themes";
 import { ansiToHtml } from "./ansi-to-html";
-import { reflowText } from "./reflow-text";
 import { deriveContext, formatContext } from "./context-label";
 import type {
   ControlServerMessage,
@@ -92,6 +92,7 @@ export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const serializeAddonRef = useRef<SerializeAddon | null>(null);
   const controlSocketRef = useRef<WebSocket | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -115,12 +116,8 @@ export const App = () => {
   const [composeEnabled, setComposeEnabled] = useState(true);
   const [composeText, setComposeText] = useState("");
 
-  const [scrollbackText, setScrollbackText] = useState("");
-  const [scrollbackPaneWidth, setScrollbackPaneWidth] = useState(80);
-  const [scrollbackLines, setScrollbackLines] = useState(1000);
+  const [scrollbackHtml, setScrollbackHtml] = useState("");
   const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
-  const scrollbackRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastScrollbackHashRef = useRef("");
 
   // Start in terminal mode so xterm.js can initialize with correct dimensions,
   // then auto-switch to scroll mode after first tmux_state arrives.
@@ -321,12 +318,11 @@ export const App = () => {
     });
   };
 
-  const requestScrollback = (lines: number): void => {
-    if (!activePane) {
-      return;
-    }
-    setScrollbackLines(lines);
-    sendControl({ type: "capture_scrollback", paneId: activePane.id, lines });
+  const readTerminalBuffer = (): string => {
+    const addon = serializeAddonRef.current;
+    if (!addon) return "";
+    // Serialize full terminal buffer including scrollback
+    return addon.serialize({ scrollback: 10000 });
   };
 
   const formatPasswordError = (reason: string): string => {
@@ -529,13 +525,7 @@ export const App = () => {
           setSelectedPaneId(null);
           return;
         case "scrollback":
-          debugLog("control_socket.scrollback", {
-            paneId: message.paneId,
-            lines: message.lines,
-            bytes: message.text.length
-          });
-          setScrollbackText(message.text);
-          setScrollbackPaneWidth(message.paneWidth);
+          // Legacy handler — scroll mode now reads from xterm buffer directly
           return;
         case "error":
           debugLog("control_socket.error", { message: message.message });
@@ -611,6 +601,7 @@ export const App = () => {
     const themeConfig = themes[theme];
     const terminal = new Terminal({
       cursorBlink: true,
+      scrollback: 10000,
       fontFamily: "'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', 'FiraCode Nerd Font', 'JetBrainsMono Nerd Font', 'DejaVu Sans Mono Nerd Font', 'Symbols Nerd Font Mono', Menlo, Monaco, 'Courier New', monospace",
       fontSize: initialFontSize,
       theme: themeConfig?.xterm ?? {
@@ -620,7 +611,9 @@ export const App = () => {
       }
     });
     const fitAddon = new FitAddon();
+    const serializeAddon = new SerializeAddon();
     terminal.loadAddon(fitAddon);
+    terminal.loadAddon(serializeAddon);
     terminal.open(terminalContainerRef.current);
     requestAnimationFrame(() => {
       fitAddon.fit();
@@ -633,6 +626,7 @@ export const App = () => {
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
+    serializeAddonRef.current = serializeAddon;
 
     const fitAndNotifyResize = () => {
       // Skip resize when container is hidden (e.g. scroll mode sets display:none)
@@ -660,6 +654,7 @@ export const App = () => {
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
+      serializeAddonRef.current = null;
     };
   }, []);
 
@@ -672,64 +667,58 @@ export const App = () => {
 
   const scrollViewActive = viewMode === "scroll";
 
-  // Scrollback auto-refresh and scroll-to-bottom
-  useEffect(() => {
-    if (!scrollViewActive || !authReady) {
-      if (scrollbackRefreshRef.current) {
-        clearInterval(scrollbackRefreshRef.current);
-        scrollbackRefreshRef.current = null;
-      }
-      return;
-    }
-
-    // Initial fetch + scroll to bottom
-    lastScrollbackHashRef.current = "";
-    requestScrollback(scrollbackLines);
-    requestAnimationFrame(() => {
-      const el = scrollbackContentRef.current;
-      if (el) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-
-    // Adaptive refresh scheduled via scrollbackText effect
-    return () => {
-      if (scrollbackRefreshRef.current) {
-        clearTimeout(scrollbackRefreshRef.current);
-        scrollbackRefreshRef.current = null;
-      }
-    };
-  }, [scrollViewActive, authReady, activePane?.id]);
-
-  // Update scrollback content + schedule next adaptive refresh
-  useEffect(() => {
+  // Read xterm buffer and update scroll view HTML
+  const refreshScrollView = (): void => {
     const el = scrollbackContentRef.current;
-    if (!el || !scrollViewActive || !scrollbackText) {
-      return;
-    }
-
-    // Detect content change for adaptive timing
-    const hash = scrollbackText.length + ":" + scrollbackText.slice(-200);
-    const changed = hash !== lastScrollbackHashRef.current;
-    lastScrollbackHashRef.current = hash;
-
+    if (!el) return;
+    const raw = readTerminalBuffer();
+    if (!raw) return;
     const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-    el.innerHTML = ansiToHtml(reflowText(scrollbackText, scrollbackPaneWidth));
-    if (isAtBottom) {
+    const html = ansiToHtml(raw);
+    if (html !== scrollbackHtml) {
+      setScrollbackHtml(html);
+      el.innerHTML = html;
+      if (isAtBottom) {
+        requestAnimationFrame(() => {
+          el.scrollTop = el.scrollHeight;
+        });
+      }
+    }
+  };
+
+  // When entering scroll mode: read buffer + subscribe to terminal writes
+  useEffect(() => {
+    if (!scrollViewActive || !authReady) return;
+
+    // Initial read + scroll to bottom
+    const raw = readTerminalBuffer();
+    if (raw) {
+      const html = ansiToHtml(raw);
+      setScrollbackHtml(html);
       requestAnimationFrame(() => {
-        el.scrollTop = el.scrollHeight;
+        const el = scrollbackContentRef.current;
+        if (el) {
+          el.innerHTML = html;
+          el.scrollTop = el.scrollHeight;
+        }
       });
     }
 
-    // Schedule next refresh: 1s if content changed, ramp up to 5s if idle
-    if (scrollbackRefreshRef.current) {
-      clearTimeout(scrollbackRefreshRef.current);
-    }
-    const delay = changed ? 1000 : 5000;
-    scrollbackRefreshRef.current = setTimeout(() => {
-      requestScrollback(scrollbackLines);
-    }, delay);
-  }, [scrollbackText, scrollbackPaneWidth, scrollViewActive]);
+    // Subscribe to terminal writes — update scroll view when new data arrives
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const disposable = terminal.onWriteParsed(() => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => refreshScrollView(), 80);
+    });
+
+    return () => {
+      disposable.dispose();
+      if (debounceTimer) clearTimeout(debounceTimer);
+    };
+  }, [scrollViewActive, authReady]);
 
   // Re-fit terminal when switching to terminal mode
   useEffect(() => {
@@ -825,8 +814,13 @@ export const App = () => {
   };
 
   const copySelection = async (): Promise<void> => {
-    const selected = window.getSelection()?.toString() || scrollbackText;
-    await navigator.clipboard.writeText(selected);
+    let text = window.getSelection()?.toString() || "";
+    if (!text) {
+      // Fallback: copy terminal buffer with ANSI codes stripped
+      const raw = readTerminalBuffer();
+      text = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+    }
+    await navigator.clipboard.writeText(text);
     setStatusMessage("Copied to clipboard");
   };
 
@@ -1090,9 +1084,6 @@ export const App = () => {
               if (event.key === "Enter") {
                 sendControl({ type: "send_compose", text: composeText });
                 setComposeText("");
-                if (scrollViewActive) {
-                  setTimeout(() => requestScrollback(scrollbackLines), 300);
-                }
               }
             }}
             onPaste={(event) => {
@@ -1113,9 +1104,6 @@ export const App = () => {
             onClick={() => {
               sendControl({ type: "send_compose", text: composeText });
               setComposeText("");
-              if (scrollViewActive) {
-                setTimeout(() => requestScrollback(scrollbackLines), 300);
-              }
             }}
           >
             Send

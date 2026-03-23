@@ -437,6 +437,8 @@ export const createRemuxServer = (
         await attachControlToBaseSession(context, message.name);
         return;
       case "new_window":
+        // new_window is additive (no session-group destruction risk),
+        // so target the mobile session to auto-switch the client's active window.
         if (!attachedSession) {
           throw new Error("no attached session");
         }
@@ -456,11 +458,13 @@ export const createRemuxServer = (
         }
         return;
       case "kill_window": {
-        if (!attachedSession) {
+        // Structural operations target the base session to avoid destroying
+        // the grouped mobile session when the last window is killed.
+        const baseForKill = context.baseSession;
+        if (!baseForKill) {
           throw new Error("no attached session");
         }
-        // Prevent killing the last window — tmux destroys the entire session group
-        const windows = await deps.tmux.listWindows(attachedSession);
+        const windows = await deps.tmux.listWindows(baseForKill);
         if (windows.length <= 1) {
           sendJson(context.socket, {
             type: "info",
@@ -468,7 +472,7 @@ export const createRemuxServer = (
           });
           return;
         }
-        await deps.tmux.killWindow(attachedSession, message.windowIndex);
+        await deps.tmux.killWindow(baseForKill, message.windowIndex);
         return;
       }
       case "select_pane":
@@ -480,9 +484,29 @@ export const createRemuxServer = (
       case "split_pane":
         await deps.tmux.splitWindow(message.paneId, message.orientation);
         return;
-      case "kill_pane":
+      case "kill_pane": {
+        // Guard: prevent killing the last pane of the last window (would destroy session group)
+        const baseForKillPane = context.baseSession;
+        if (baseForKillPane) {
+          const allWindows = await deps.tmux.listWindows(baseForKillPane);
+          if (allWindows.length <= 1) {
+            // Find which window this pane belongs to and check its pane count
+            const windowForPane = allWindows[0];
+            if (windowForPane) {
+              const panes = await deps.tmux.listPanes(baseForKillPane, windowForPane.index);
+              if (panes.length <= 1) {
+                sendJson(context.socket, {
+                  type: "info",
+                  message: "cannot kill the last pane"
+                });
+                return;
+              }
+            }
+          }
+        }
         await deps.tmux.killPane(message.paneId);
         return;
+      }
       case "zoom_pane":
         await deps.tmux.zoomPane(message.paneId);
         return;
@@ -513,10 +537,11 @@ export const createRemuxServer = (
         return;
       }
       case "rename_window": {
-        if (!attachedSession) {
+        const baseForRename = context.baseSession;
+        if (!baseForRename) {
           throw new Error("no attached session");
         }
-        await deps.tmux.renameWindow(attachedSession, message.windowIndex, message.newName);
+        await deps.tmux.renameWindow(baseForRename, message.windowIndex, message.newName);
         return;
       }
       case "auth":
