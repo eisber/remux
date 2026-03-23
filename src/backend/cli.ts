@@ -11,6 +11,7 @@ import type { CliArgs, RuntimeConfig } from "./config.js";
 import { createRemuxServer } from "./server.js";
 import { detectSessionBackend } from "./providers/detect.js";
 import { createTunnelProvider, type TunnelProviderKind } from "./tunnels/index.js";
+import { createExtensions } from "./extensions.js";
 import { createLogger } from "./util/file-logger.js";
 import { randomToken } from "./util/random.js";
 
@@ -150,11 +151,14 @@ const main = async (): Promise<void> => {
   });
   logger.log(`Session backend: ${backend.kind}`);
 
+  const extensions = createExtensions(logger);
+
   const runningServer = createRemuxServer(config, {
     tmux: backend.gateway,
     ptyFactory: backend.ptyFactory,
     authService,
-    logger
+    logger,
+    extensions
   });
 
   if (debugLogPath) {
@@ -187,6 +191,7 @@ const main = async (): Promise<void> => {
 
     shutdownPromise = (async () => {
       tunnelProvider.stop();
+      extensions.dispose();
       await runningServer.stop();
     })();
 
