@@ -661,7 +661,8 @@ button.danger {
   margin-top: 0.45rem;
 }
 
-.drawer ul button {
+[data-testid="sessions-list"] button,
+[data-testid="windows-list"] button {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;

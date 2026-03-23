@@ -17,8 +17,12 @@ export const deriveContext = (panes: TmuxPaneState[]): { project: string; activi
       break;
     }
   }
-  // If path is home or root, use tilde or slash
-  if (parts.length <= 2) project = pane.currentPath === "/" ? "/" : "~";
+  // Show tilde only for paths that look like a user home directory
+  if (pane.currentPath === "/") {
+    project = "/";
+  } else if (/^\/(Users|home)\/[^/]+\/?$/.test(pane.currentPath)) {
+    project = "~";
+  }
 
   const isShell = SHELL_COMMANDS.has(pane.currentCommand);
   const activity = isShell ? "" : pane.currentCommand;

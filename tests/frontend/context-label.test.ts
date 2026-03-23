@@ -35,9 +35,24 @@ describe("deriveContext", () => {
     expect(ctx).toEqual({ project: "remux", activity: "" });
   });
 
-  test("returns tilde for short home-like paths", () => {
+  test("returns tilde for macOS home path", () => {
     const ctx = deriveContext([makePane({ currentPath: "/Users/user" })]);
     expect(ctx).toEqual({ project: "~", activity: "" });
+  });
+
+  test("returns tilde for Linux home path", () => {
+    const ctx = deriveContext([makePane({ currentPath: "/home/user" })]);
+    expect(ctx).toEqual({ project: "~", activity: "" });
+  });
+
+  test("shows basename for shallow non-home paths like /tmp", () => {
+    const ctx = deriveContext([makePane({ currentPath: "/tmp" })]);
+    expect(ctx).toEqual({ project: "tmp", activity: "" });
+  });
+
+  test("shows basename for /var/log", () => {
+    const ctx = deriveContext([makePane({ currentPath: "/var/log" })]);
+    expect(ctx).toEqual({ project: "log", activity: "" });
   });
 
   test("returns slash for root", () => {
