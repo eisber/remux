@@ -169,8 +169,9 @@ const main = async (): Promise<void> => {
 
   await runningServer.start();
 
-  // Detect dev mode: VITE_DEV_MODE env var, or if frontend dist doesn't exist (running via tsx watch)
-  const isDevMode = process.env.VITE_DEV_MODE === "1" || !fs.existsSync(path.join(frontendDir, "index.html"));
+  // Detect dev mode: VITE_DEV_MODE env var, frontend dist missing, or running via tsx
+  const isTsx = process.argv[1]?.includes("tsx") || process.argv[0]?.includes("tsx");
+  const isDevMode = process.env.VITE_DEV_MODE === "1" || isTsx || !fs.existsSync(path.join(frontendDir, "index.html"));
 
   let tunnelUrl: string | undefined;
   if (args.tunnel && !isDevMode) {

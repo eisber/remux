@@ -33,7 +33,7 @@
     "remux": "dist/backend/cli.js"
   },
   "scripts": {
-    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev": "concurrently -n back,vite -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:backend": "tsx watch src/backend/cli.ts --no-tunnel --no-require-password",
     "dev:frontend": "vite --config vite.config.ts",
     "build": "npm run build:frontend && npm run build:backend",
