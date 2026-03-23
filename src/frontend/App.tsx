@@ -524,18 +524,12 @@ export const App = () => {
       sendTerminalResize();
     };
 
-    const onResize = () => {
-      fitAndNotifyResize();
-    };
-
-    window.addEventListener("resize", onResize);
     const resizeObserver = new ResizeObserver(() => {
       fitAndNotifyResize();
     });
     resizeObserver.observe(terminalContainerRef.current);
 
     return () => {
-      window.removeEventListener("resize", onResize);
       resizeObserver.disconnect();
       disposable.dispose();
       terminal.dispose();
@@ -675,13 +669,12 @@ export const App = () => {
       </main>
 
       <section className="toolbar" onMouseUp={focusTerminal}>
-        {/* Row 1: Esc, Ctrl, Alt, Cmd, Meta, /, @, Hm, ↑, Ed */}
+        {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
           <button onClick={() => sendTerminal("\u001b")}>Esc</button>
           <button className={`modifier ${modifiers.ctrl}`} onClick={() => toggleModifier("ctrl")}>Ctrl</button>
           <button className={`modifier ${modifiers.alt}`} onClick={() => toggleModifier("alt")}>Alt</button>
           <button className={`modifier ${modifiers.meta}`} onClick={() => toggleModifier("meta")}>Cmd</button>
-          <button onClick={() => sendTerminal("\u001b")}>Meta</button>
           <button onClick={() => sendTerminal("/")}>/</button>
           <button onClick={() => sendTerminal("@")}>@</button>
           <button onClick={() => sendTerminal("\u001b[H")}>Hm</button>
@@ -719,8 +712,12 @@ export const App = () => {
           <button onClick={() => sendTerminal("\u000c", false)}>^L</button>
           <button
             onClick={async () => {
-              const clip = await navigator.clipboard.readText();
-              sendTerminal(clip, false);
+              try {
+                const clip = await navigator.clipboard.readText();
+                sendTerminal(clip, false);
+              } catch {
+                setStatusMessage("clipboard read failed");
+              }
             }}
           >
             Paste
@@ -729,7 +726,6 @@ export const App = () => {
           <button onClick={() => sendTerminal("\u001b[2~")}>Insert</button>
           <button onClick={() => sendTerminal("\u001b[5~")}>PgUp</button>
           <button onClick={() => sendTerminal("\u001b[6~")}>PgDn</button>
-          <button onClick={() => sendTerminal("")}>CapsLk</button>
           <button
             className="toolbar-expand-btn"
             onClick={() => setToolbarDeepExpanded((v) => !v)}
