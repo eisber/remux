@@ -1079,6 +1079,9 @@ export const App = () => {
               if (event.key === "Enter") {
                 sendControl({ type: "send_compose", text: composeText });
                 setComposeText("");
+                if (scrollViewActive) {
+                  setTimeout(() => requestScrollback(scrollbackLines), 300);
+                }
               }
             }}
             onPaste={(event) => {
@@ -1099,6 +1102,9 @@ export const App = () => {
             onClick={() => {
               sendControl({ type: "send_compose", text: composeText });
               setComposeText("");
+              if (scrollViewActive) {
+                setTimeout(() => requestScrollback(scrollbackLines), 300);
+              }
             }}
           >
             Send
