@@ -8,3 +8,7 @@ playwright-report
 screenshots
 .playwright-mcp/
 .worktrees/
+
+# AI agent 本地指令文件（不入库）
+CLAUDE.md
+AGENTS.md
