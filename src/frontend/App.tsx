@@ -118,7 +118,10 @@ export const App = () => {
   const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
   const scrollbackRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [viewMode, setViewMode] = useState<"scroll" | "terminal">("scroll");
+  // Start in terminal mode so xterm.js can initialize with correct dimensions,
+  // then auto-switch to scroll mode after first tmux_state arrives.
+  const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
+  const hasAutoSwitchedRef = useRef(false);
 
   const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
     ctrl: "off",
@@ -364,10 +367,21 @@ export const App = () => {
         JSON.stringify({ type: "auth", token, password: passwordValue || undefined, clientId })
       );
       setStatusMessage("terminal connected");
-      if (fitAddonRef.current && terminalRef.current) {
-        fitAddonRef.current.fit();
-      }
-      sendTerminalResize();
+      // Delay fit to ensure CSS layout is settled, then send resize + auto-switch
+      setTimeout(() => {
+        if (fitAddonRef.current && terminalRef.current) {
+          fitAddonRef.current.fit();
+          // Fallback: if cols is unreasonably small, force a minimum
+          if (terminalRef.current.cols < 20) {
+            terminalRef.current.resize(80, 24);
+          }
+        }
+        sendTerminalResize();
+        if (!hasAutoSwitchedRef.current) {
+          hasAutoSwitchedRef.current = true;
+          setTimeout(() => setViewMode("scroll"), 200);
+        }
+      }, 300);
     };
 
     socket.onmessage = (event) => {
@@ -689,6 +703,42 @@ export const App = () => {
       });
     }
   }, [viewMode]);
+
+  // Adjust scrollback font-size so captured content fits the container width
+  useEffect(() => {
+    if (viewMode !== "scroll") return;
+    const el = scrollbackContentRef.current;
+    if (!el || !scrollbackText) return;
+
+    const fitFont = (): void => {
+      // Find the longest visible line (strip ANSI escapes)
+      const stripped = scrollbackText.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+      const lines = stripped.split("\n");
+      let maxCols = 0;
+      for (const line of lines) {
+        if (line.length > maxCols) maxCols = line.length;
+      }
+      if (maxCols < 10) return;
+
+      // Measure actual monospace char width at a reference font-size
+      const probe = document.createElement("span");
+      probe.style.cssText = `font-family:${getComputedStyle(el).fontFamily};font-size:100px;position:absolute;visibility:hidden;white-space:pre`;
+      probe.textContent = "M";
+      document.body.appendChild(probe);
+      const charWidthAt100 = probe.getBoundingClientRect().width;
+      document.body.removeChild(probe);
+      if (charWidthAt100 <= 0) return;
+
+      const containerWidth = el.clientWidth - 16;
+      const targetFontSize = (containerWidth / maxCols) * (100 / charWidthAt100);
+      el.style.fontSize = `${Math.max(5, Math.min(16, targetFontSize)).toFixed(1)}px`;
+    };
+
+    fitFont();
+    const observer = new ResizeObserver(fitFont);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [viewMode, scrollbackText]);
 
   // Persist toolbar expanded state
   useEffect(() => {

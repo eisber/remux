@@ -486,11 +486,10 @@ input {
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
-  white-space: pre-wrap;
-  word-break: break-all;
+  white-space: pre;
   font-family: 'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', Menlo, Monaco, 'Courier New', monospace;
-  font-size: 0.8rem;
-  line-height: 1.35;
+  font-size: 12px; /* overridden dynamically by JS to fit terminal columns */
+  line-height: 1.3;
   background: var(--bg-terminal);
   border-radius: 10px;
   border: 1px solid var(--border-subtle);

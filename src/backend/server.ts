@@ -27,6 +27,8 @@ interface ControlContext {
   attachedSession?: string;
   baseSession?: string;
   terminalClients: Set<DataContext>;
+  /** Pending resize from terminal WS received before runtime was created */
+  pendingResize?: { cols: number; rows: number };
 }
 
 interface DataContext {
@@ -353,6 +355,10 @@ export const createRemuxServer = (
       sendJson(context.socket, { type: "info", message: "tmux client exited" });
     });
     context.runtime = runtime;
+    // Apply any pending resize received before runtime existed
+    if (context.pendingResize) {
+      runtime.resize(context.pendingResize.cols, context.pendingResize.rows);
+    }
     return runtime;
   };
 
@@ -684,7 +690,13 @@ export const createRemuxServer = (
             typeof payload.cols === "number" &&
             typeof payload.rows === "number"
           ) {
-            ctx.controlContext?.runtime?.resize(payload.cols, payload.rows);
+            if (ctx.controlContext?.runtime) {
+              ctx.controlContext.runtime.resize(payload.cols, payload.rows);
+            }
+            // Store resize so it can be applied when runtime is created later
+            if (ctx.controlContext) {
+              ctx.controlContext.pendingResize = { cols: payload.cols, rows: payload.rows };
+            }
             verboseLog("terminal ws resize", `${payload.cols}x${payload.rows}`);
             return;
           }
