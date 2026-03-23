@@ -12,6 +12,7 @@ export interface RuntimeConfig {
 
 export interface CliArgs {
   port: number;
+  host: string;
   password?: string;
   requirePassword: boolean;
   tunnel: boolean;

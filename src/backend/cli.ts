@@ -24,6 +24,11 @@ const parseCliArgs = async (): Promise<CliArgs> => {
       default: 8767,
       describe: "Local port"
     })
+    .option("host", {
+      type: "string",
+      default: "127.0.0.1",
+      describe: "Bind address (use 0.0.0.0 for LAN access)"
+    })
     .option("password", {
       type: "string",
       describe: "Password for authentication (auto-generated when protection is enabled)"
@@ -58,6 +63,7 @@ const parseCliArgs = async (): Promise<CliArgs> => {
 
   return {
     port: argv.port,
+    host: argv.host,
     password: argv.password,
     requirePassword: argv.requirePassword,
     tunnel: argv.tunnel,
@@ -114,7 +120,7 @@ const main = async (): Promise<void> => {
 
   const config: RuntimeConfig = {
     port: args.port,
-    host: "127.0.0.1",
+    host: args.host,
     password: effectivePassword,
     tunnel: args.tunnel,
     defaultSession: args.session,
