@@ -418,7 +418,12 @@ export const App = () => {
 
     socket.onopen = () => {
       debugLog("control_socket.onopen");
-      socket.send(JSON.stringify({ type: "auth", token, password: passwordValue || undefined }));
+      socket.send(JSON.stringify({
+        type: "auth",
+        token,
+        password: passwordValue || undefined,
+        ...(attachedSession ? { session: attachedSession } : {})
+      }));
     };
 
     socket.onmessage = (event) => {
@@ -1092,6 +1097,18 @@ export const App = () => {
               if (event.key === "Enter") {
                 sendControl({ type: "send_compose", text: composeText });
                 setComposeText("");
+              }
+            }}
+            onPaste={(event) => {
+              const items = event.clipboardData?.items;
+              if (!items) return;
+              for (const item of items) {
+                if (item.kind === "file") {
+                  event.preventDefault();
+                  const file = item.getAsFile();
+                  if (file) uploadFile(file);
+                  return;
+                }
               }
             }}
             placeholder="Compose command"

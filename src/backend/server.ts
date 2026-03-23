@@ -60,7 +60,7 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
 const controlClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional() }),
+  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
   z.object({ type: z.literal("new_session"), name: z.string() }),
   z.object({ type: z.literal("new_window"), session: z.string() }),
@@ -581,7 +581,7 @@ export const createRemuxServer = (
             requiresPassword: authService.requiresPassword()
           });
           try {
-            await ensureAttachedSession(context);
+            await ensureAttachedSession(context, message.session);
           } catch (error) {
             logger.error("initial attach failed", error);
             sendJson(socket, {
