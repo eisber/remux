@@ -117,7 +117,8 @@ export const App = () => {
   const [scrollbackText, setScrollbackText] = useState("");
   const [scrollbackLines, setScrollbackLines] = useState(1000);
   const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
-  const scrollbackRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scrollbackRefreshRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastScrollbackHashRef = useRef("");
 
   // Start in terminal mode so xterm.js can initialize with correct dimensions,
   // then auto-switch to scroll mode after first tmux_state arrives.
@@ -667,6 +668,7 @@ export const App = () => {
     }
 
     // Initial fetch + scroll to bottom
+    lastScrollbackHashRef.current = "";
     requestScrollback(scrollbackLines);
     requestAnimationFrame(() => {
       const el = scrollbackContentRef.current;
@@ -675,33 +677,43 @@ export const App = () => {
       }
     });
 
-    // Auto-refresh every 3s
-    scrollbackRefreshRef.current = setInterval(() => {
-      requestScrollback(scrollbackLines);
-    }, 3000);
-
+    // Adaptive refresh scheduled via scrollbackText effect
     return () => {
       if (scrollbackRefreshRef.current) {
-        clearInterval(scrollbackRefreshRef.current);
+        clearTimeout(scrollbackRefreshRef.current);
         scrollbackRefreshRef.current = null;
       }
     };
   }, [scrollViewActive, authReady, activePane?.id]);
 
-  // Scroll to bottom when new scrollback text arrives (only if already at bottom)
+  // Update scrollback content + schedule next adaptive refresh
   useEffect(() => {
     const el = scrollbackContentRef.current;
     if (!el || !scrollViewActive || !scrollbackText) {
       return;
     }
+
+    // Detect content change for adaptive timing
+    const hash = scrollbackText.length + ":" + scrollbackText.slice(-200);
+    const changed = hash !== lastScrollbackHashRef.current;
+    lastScrollbackHashRef.current = hash;
+
     const isAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-    // Update HTML content
     el.innerHTML = ansiToHtml(scrollbackText);
     if (isAtBottom) {
       requestAnimationFrame(() => {
         el.scrollTop = el.scrollHeight;
       });
     }
+
+    // Schedule next refresh: 1s if content changed, ramp up to 5s if idle
+    if (scrollbackRefreshRef.current) {
+      clearTimeout(scrollbackRefreshRef.current);
+    }
+    const delay = changed ? 1000 : 5000;
+    scrollbackRefreshRef.current = setTimeout(() => {
+      requestScrollback(scrollbackLines);
+    }, delay);
   }, [scrollbackText]);
 
   // Re-fit terminal when switching to terminal mode
