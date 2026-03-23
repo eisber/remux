@@ -109,7 +109,8 @@ export const App = () => {
   const [attachedSession, setAttachedSession] = useState<string>("");
   const [sessionChoices, setSessionChoices] = useState<TmuxSessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [composeEnabled, setComposeEnabled] = useState(true);
+  const isMobile = window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
+  const [composeEnabled, setComposeEnabled] = useState(isMobile);
   const [composeText, setComposeText] = useState("");
 
   const [scrollbackVisible, setScrollbackVisible] = useState(false);
@@ -969,7 +970,7 @@ export const App = () => {
         </div>
       </main>
 
-      <section className="toolbar" onMouseUp={focusTerminal}>
+      <section className={`toolbar${isMobile ? "" : " desktop-hidden"}`} onMouseUp={focusTerminal}>
         {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
           <button onClick={() => sendTerminal("\u001b")} title="Escape key — cancel current operation or exit insert mode">Esc</button>
