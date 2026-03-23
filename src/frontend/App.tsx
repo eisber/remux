@@ -907,17 +907,6 @@ export const App = () => {
             data-testid="top-status-indicator"
           />
           <button
-            className={`top-zoom-indicator${activePane?.zoomed ? " on" : ""}`}
-            title={activePane?.zoomed ? "Active pane is zoomed" : "Active pane is not zoomed"}
-            aria-label={`Pane zoom: ${activePane?.zoomed ? "on" : "off"}`}
-            data-testid="top-zoom-indicator"
-            onClick={() => activePane && sendControl({ type: "zoom_pane", paneId: activePane.id })}
-            disabled={!activePane || !activeWindow || activeWindow.paneCount <= 1}
-            style={viewMode !== "terminal" ? { display: "none" } : undefined}
-          >
-            🔍
-          </button>
-          <button
             className={`top-btn${viewMode === "terminal" ? " active" : ""}`}
             onClick={() => {
               setViewMode((m) => m === "scroll" ? "terminal" : "scroll");
