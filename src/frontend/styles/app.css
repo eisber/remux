@@ -340,10 +340,12 @@ input {
 .app-shell {
   position: relative;
   width: 100%;
+  max-width: 100vw;
   height: 100%;
   display: grid;
   grid-template-rows: auto minmax(10rem, 1fr) auto auto;
   background: var(--bg-shell);
+  overflow: hidden;
 }
 
 .topbar {
@@ -482,9 +484,10 @@ input {
 
 .scrollback-main {
   width: 100%;
+  min-width: 0;
   height: 100%;
   overflow-y: auto;
-  overflow-x: hidden;
+  overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   white-space: pre;
   font-family: 'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', Menlo, Monaco, 'Courier New', monospace;
@@ -496,6 +499,10 @@ input {
   padding: 0.5rem;
   color: var(--text-primary);
   user-select: text;
+}
+
+.scrollback-wrap {
+  min-width: 0;
 }
 
 .toolbar {

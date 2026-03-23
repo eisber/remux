@@ -731,7 +731,10 @@ export const App = () => {
 
       const containerWidth = el.clientWidth - 16;
       const targetFontSize = (containerWidth / maxCols) * (100 / charWidthAt100);
-      el.style.fontSize = `${Math.max(5, Math.min(16, targetFontSize)).toFixed(1)}px`;
+      // On mobile (narrow screens), enforce readable minimum font size
+      const isMobile = window.innerWidth < 768;
+      const minSize = isMobile ? 10 : 7;
+      el.style.fontSize = `${Math.max(minSize, Math.min(16, targetFontSize)).toFixed(1)}px`;
     };
 
     fitFont();
@@ -966,6 +969,7 @@ export const App = () => {
             <div className="scrollback-bar">
               <button onClick={() => requestScrollback(scrollbackLines + 1000)}>More</button>
               <button onClick={() => void copySelection()}>Copy</button>
+              <button onClick={() => fileInputRef.current?.click()}>Upload</button>
               <button onClick={() => {
                 const el = scrollbackContentRef.current;
                 if (el) el.scrollTop = el.scrollHeight;
@@ -979,6 +983,19 @@ export const App = () => {
           </div>
         )}
       </main>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        style={{ display: "none" }}
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            uploadFile(file);
+          }
+          event.target.value = "";
+        }}
+      />
 
       {viewMode === "terminal" && <section className="toolbar" onMouseUp={focusTerminal}>
         {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
@@ -1039,18 +1056,7 @@ export const App = () => {
           >
             Upload
           </button>
-          <input
-            ref={fileInputRef}
-            type="file"
-            style={{ display: "none" }}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) {
-                uploadFile(file);
-              }
-              event.target.value = "";
-            }}
-          />
+          {/* file input moved outside toolbar for scroll mode access */}
           <button onClick={() => sendTerminal("\u001b[3~")}>Del</button>
           <button onClick={() => sendTerminal("\u001b[2~")}>Insert</button>
           <button onClick={() => sendTerminal("\u001b[5~")}>PgUp</button>
