@@ -120,13 +120,10 @@ export const App = () => {
   const [scrollbackHtml, setScrollbackHtml] = useState("");
   const scrollbackContentRef = useRef<HTMLDivElement | null>(null);
 
-  // Start in terminal mode so xterm.js can initialize with correct dimensions,
-  // then auto-switch to scroll mode after first tmux_state arrives.
   const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
   const [scrollFontSize, setScrollFontSize] = useState<number>(
     Number(localStorage.getItem("remux-scroll-font-size")) || 0
   );
-  const hasAutoSwitchedRef = useRef(false);
 
   const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
     ctrl: "off",
@@ -387,10 +384,6 @@ export const App = () => {
           }
         }
         sendTerminalResize();
-        if (!hasAutoSwitchedRef.current) {
-          hasAutoSwitchedRef.current = true;
-          setTimeout(() => setViewMode("scroll"), 200);
-        }
       };
       setTimeout(tryFit, 300);
     };
