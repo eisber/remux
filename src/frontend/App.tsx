@@ -826,6 +826,7 @@ export const App = () => {
           onClick={() => setDrawerOpen((value) => !value)}
           className="icon-btn"
           data-testid="drawer-toggle"
+          title="Open sidebar — manage sessions, windows, panes, and themes"
         >
           =
         </button>
@@ -849,10 +850,14 @@ export const App = () => {
           >
             🔍
           </button>
-          <button className="top-btn" onClick={() => requestScrollback(serverConfig?.scrollbackLines ?? 1000)}>
+          <button className="top-btn" onClick={() => requestScrollback(serverConfig?.scrollbackLines ?? 1000)}
+            title="View scrollback history — see previous terminal output with auto-refresh"
+          >
             Scroll
           </button>
-          <button className="top-btn" onClick={() => setComposeEnabled((value) => !value)}>
+          <button className="top-btn" onClick={() => setComposeEnabled((value) => !value)}
+            title="Toggle compose bar — type commands with full keyboard before sending"
+          >
             {composeEnabled ? "Compose On" : "Compose Off"}
           </button>
         </div>
@@ -889,27 +894,28 @@ export const App = () => {
       <section className="toolbar" onMouseUp={focusTerminal}>
         {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
-          <button onClick={() => sendTerminal("\u001b")}>Esc</button>
-          <button className={`modifier ${modifiers.ctrl}`} onClick={() => toggleModifier("ctrl")}>Ctrl</button>
-          <button className={`modifier ${modifiers.alt}`} onClick={() => toggleModifier("alt")}>Alt</button>
-          <button className={`modifier ${modifiers.meta}`} onClick={() => toggleModifier("meta")}>Cmd</button>
-          <button onClick={() => sendTerminal("/")}>/</button>
-          <button onClick={() => sendTerminal("@")}>@</button>
-          <button onClick={() => sendTerminal("\u001b[H")}>Hm</button>
-          <button onClick={() => sendTerminal("\u001b[A")}>↑</button>
-          <button onClick={() => sendTerminal("\u001b[F")}>Ed</button>
+          <button onClick={() => sendTerminal("\u001b")} title="Escape key — cancel current operation or exit insert mode">Esc</button>
+          <button className={`modifier ${modifiers.ctrl}`} onClick={() => toggleModifier("ctrl")} title="Ctrl modifier — tap for sticky (one use), double-tap for locked">Ctrl</button>
+          <button className={`modifier ${modifiers.alt}`} onClick={() => toggleModifier("alt")} title="Alt modifier — tap for sticky, double-tap for locked">Alt</button>
+          <button className={`modifier ${modifiers.meta}`} onClick={() => toggleModifier("meta")} title="Cmd/Meta modifier — tap for sticky, double-tap for locked">Cmd</button>
+          <button onClick={() => sendTerminal("/")} title="Forward slash — useful for search and file paths">/</button>
+          <button onClick={() => sendTerminal("@")} title="At sign">@</button>
+          <button onClick={() => sendTerminal("\u001b[H")} title="Home key — move cursor to start of line">Hm</button>
+          <button onClick={() => sendTerminal("\u001b[A")} title="Up arrow — previous command or move cursor up">↑</button>
+          <button onClick={() => sendTerminal("\u001b[F")} title="End key — move cursor to end of line">Ed</button>
         </div>
 
         {/* Row 2: ^C, ^B, ^R, Sft, Tab, Enter, ..., ←, ↓, → */}
         <div className="toolbar-main">
-          <button className="danger" onClick={() => sendTerminal("\u0003", false)}>^C</button>
-          <button onClick={() => sendTerminal("\u0002", false)}>^B</button>
-          <button onClick={() => sendTerminal("\u0012", false)}>^R</button>
-          <button className={`modifier ${modifiers.shift}`} onClick={() => toggleModifier("shift")}>Sft</button>
-          <button onClick={() => sendTerminal("\t")}>Tab</button>
-          <button onClick={() => sendTerminal("\r")}>Enter</button>
+          <button className="danger" onClick={() => sendTerminal("\u0003", false)} title="Ctrl+C — interrupt current process">^C</button>
+          <button onClick={() => sendTerminal("\u0002", false)} title="Ctrl+B — tmux prefix key (for tmux commands)">^B</button>
+          <button onClick={() => sendTerminal("\u0012", false)} title="Ctrl+R — reverse history search">^R</button>
+          <button className={`modifier ${modifiers.shift}`} onClick={() => toggleModifier("shift")} title="Shift modifier — tap for sticky, double-tap for locked">Sft</button>
+          <button onClick={() => sendTerminal("\t")} title="Tab — autocomplete commands and file paths">Tab</button>
+          <button onClick={() => sendTerminal("\r")} title="Enter — execute command or confirm">Enter</button>
           <button
             className="toolbar-expand-btn"
+            title="Show more keys — Del, Insert, PgUp, PgDn, Paste, Upload, F-keys"
             onClick={() => {
               setToolbarExpanded((v) => !v);
               if (toolbarExpanded) {
@@ -919,16 +925,17 @@ export const App = () => {
           >
             {toolbarExpanded ? "..." : "..."}
           </button>
-          <button onClick={() => sendTerminal("\u001b[D")}>←</button>
-          <button onClick={() => sendTerminal("\u001b[B")}>↓</button>
-          <button onClick={() => sendTerminal("\u001b[C")}>→</button>
+          <button onClick={() => sendTerminal("\u001b[D")} title="Left arrow — move cursor left">←</button>
+          <button onClick={() => sendTerminal("\u001b[B")} title="Down arrow — next command or move cursor down">↓</button>
+          <button onClick={() => sendTerminal("\u001b[C")} title="Right arrow — move cursor right">→</button>
         </div>
 
         {/* Expanded section (collapsible) */}
         <div className={`toolbar-row-secondary ${toolbarExpanded ? "expanded" : ""}`}>
-          <button onClick={() => sendTerminal("\u0004", false)}>^D</button>
-          <button onClick={() => sendTerminal("\u000c", false)}>^L</button>
+          <button onClick={() => sendTerminal("\u0004", false)} title="Ctrl+D — end of input / logout">^D</button>
+          <button onClick={() => sendTerminal("\u000c", false)} title="Ctrl+L — clear screen">^L</button>
           <button
+            title="Paste clipboard contents into the terminal"
             onClick={async () => {
               try {
                 const clip = await navigator.clipboard.readText();
@@ -941,6 +948,7 @@ export const App = () => {
             Paste
           </button>
           <button
+            title="Upload a file from your device to the terminal's working directory"
             onClick={() => fileInputRef.current?.click()}
           >
             Upload
@@ -957,10 +965,10 @@ export const App = () => {
               event.target.value = "";
             }}
           />
-          <button onClick={() => sendTerminal("\u001b[3~")}>Del</button>
-          <button onClick={() => sendTerminal("\u001b[2~")}>Insert</button>
-          <button onClick={() => sendTerminal("\u001b[5~")}>PgUp</button>
-          <button onClick={() => sendTerminal("\u001b[6~")}>PgDn</button>
+          <button onClick={() => sendTerminal("\u001b[3~")} title="Delete key — delete character under cursor">Del</button>
+          <button onClick={() => sendTerminal("\u001b[2~")} title="Insert key — toggle insert/overwrite mode">Insert</button>
+          <button onClick={() => sendTerminal("\u001b[5~")} title="Page Up — scroll up one page">PgUp</button>
+          <button onClick={() => sendTerminal("\u001b[6~")} title="Page Down — scroll down one page">PgDn</button>
           <button
             className="toolbar-expand-btn"
             onClick={() => setToolbarDeepExpanded((v) => !v)}
@@ -1000,12 +1008,14 @@ export const App = () => {
               }
             }}
             placeholder="Compose command"
+            title="Type a command here and press Enter to send it to the terminal"
           />
           <button
             onClick={() => {
               sendControl({ type: "send_compose", text: composeText });
               setComposeText("");
             }}
+            title="Send the composed command to the terminal"
           >
             Send
           </button>
@@ -1045,6 +1055,7 @@ export const App = () => {
               className="drawer-section-action"
               onClick={createSession}
               data-testid="new-session-button"
+              title="Create a new terminal session"
             >
               + New Session
             </button>
@@ -1072,6 +1083,7 @@ export const App = () => {
               }
               disabled={!activeSession}
               data-testid="new-window-button"
+              title="Create a new window in the current session"
             >
               + New Window
             </button>
@@ -1118,6 +1130,7 @@ export const App = () => {
                   sendControl({ type: "split_pane", paneId: activePane.id, orientation: "h" })
                 }
                 disabled={!activePane}
+                title="Split pane horizontally — create a side-by-side layout"
               >
                 Split H
               </button>
@@ -1127,6 +1140,7 @@ export const App = () => {
                   sendControl({ type: "split_pane", paneId: activePane.id, orientation: "v" })
                 }
                 disabled={!activePane}
+                title="Split pane vertically — create a top-bottom layout"
               >
                 Split V
               </button>
@@ -1137,6 +1151,7 @@ export const App = () => {
                 activePane && sendControl({ type: "zoom_pane", paneId: activePane.id })
               }
               disabled={!activePane || !activeWindow || activeWindow.paneCount <= 1}
+              title="Toggle zoom — expand active pane to fill the entire window"
             >
               Zoom Pane
             </button>
@@ -1144,6 +1159,7 @@ export const App = () => {
               className={`drawer-section-action${stickyZoom ? " active" : ""}`}
               onClick={() => setStickyZoom((v) => !v)}
               data-testid="sticky-zoom-toggle"
+              title="Sticky zoom — automatically zoom the pane when switching windows or panes"
             >
               Sticky Zoom: {stickyZoom ? "On" : "Off"}
             </button>
@@ -1156,6 +1172,7 @@ export const App = () => {
                 sendControl({ type: "kill_pane", paneId: activePane.id });
               }}
               disabled={!activePane}
+              title="Close the active pane"
             >
               Close Pane
             </button>
@@ -1172,6 +1189,7 @@ export const App = () => {
                 });
               }}
               disabled={!activeSession || !activeWindow}
+              title="Kill the active window and all its panes"
             >
               Kill Window
             </button>
@@ -1212,9 +1230,9 @@ export const App = () => {
         <div className="overlay">
           <div className="card scrollback-card">
             <div className="scrollback-actions">
-              <button onClick={() => setScrollbackVisible(false)}>Close</button>
-              <button onClick={() => requestScrollback(scrollbackLines + 1000)}>Load More</button>
-              <button onClick={() => void copySelection()}>Copy</button>
+              <button onClick={() => setScrollbackVisible(false)} title="Close scrollback viewer and return to live terminal">Close</button>
+              <button onClick={() => requestScrollback(scrollbackLines + 1000)} title="Load 1000 more lines of history">Load More</button>
+              <button onClick={() => void copySelection()} title="Copy selected text (or all scrollback) to clipboard">Copy</button>
             </div>
             <div className="scrollback-content" ref={scrollbackContentRef} />
           </div>
@@ -1251,15 +1269,15 @@ export const App = () => {
           <span className="upload-toast-path">{uploadToast.path}</span>
           <button
             onClick={() => {
-              // Shell-quote the path to handle spaces and metacharacters
               const quoted = `'${uploadToast.path.replace(/'/g, "'\\''")}'`;
               sendTerminal(quoted, false);
               setUploadToast(null);
             }}
+            title="Insert the uploaded file path into the terminal"
           >
             Insert
           </button>
-          <button onClick={() => setUploadToast(null)}>×</button>
+          <button onClick={() => setUploadToast(null)} title="Dismiss this notification">×</button>
         </div>
       )}
 
