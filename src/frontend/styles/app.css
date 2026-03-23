@@ -664,6 +664,13 @@ button.danger {
   margin-top: 0.45rem;
 }
 
+.drawer-version {
+  margin-top: 1.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  opacity: 0.4;
+}
+
 [data-testid="sessions-list"] button,
 [data-testid="windows-list"] button {
   display: flex;

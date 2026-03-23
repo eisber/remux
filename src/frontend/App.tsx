@@ -15,6 +15,7 @@ import type {
 } from "../shared/protocol";
 
 interface ServerConfig {
+  version?: string;
   passwordRequired: boolean;
   scrollbackLines: number;
   pollIntervalMs: number;
@@ -1387,6 +1388,10 @@ export const App = () => {
               setScrollFontSize(0);
               localStorage.removeItem("remux-scroll-font-size");
             }}>Reset to Auto</button>
+
+            {serverConfig?.version && (
+              <p className="drawer-version">v{serverConfig.version}</p>
+            )}
           </aside>
         </div>
       )}
