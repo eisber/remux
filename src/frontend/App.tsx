@@ -92,6 +92,12 @@ const debugLog = (event: string, payload?: unknown): void => {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+};
+
 export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -142,6 +148,23 @@ export const App = () => {
   );
   const [toolbarDeepExpanded, setToolbarDeepExpanded] = useState(false);
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
+
+  // Bandwidth stats
+  const [bandwidthStats, setBandwidthStats] = useState<{
+    rawBytesPerSec: number;
+    compressedBytesPerSec: number;
+    savedPercent: number;
+    fullSnapshotsSent: number;
+    diffUpdatesSent: number;
+    avgChangedRowsPerDiff: number;
+    totalRawBytes: number;
+    totalCompressedBytes: number;
+    totalSavedBytes: number;
+    rttMs: number | null;
+    protocol: string;
+  } | null>(null);
+  const [statsVisible, setStatsVisible] = useState(false);
+  const rttTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameSessionValue, setRenameSessionValue] = useState("");
@@ -486,6 +509,21 @@ export const App = () => {
 
     socket.onmessage = (event) => {
       debugLog("control_socket.onmessage.raw", { bytes: String(event.data).length });
+
+      // Handle bandwidth_stats and pong (not in typed protocol).
+      try {
+        const raw = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (raw.type === "bandwidth_stats" && raw.stats) {
+          setBandwidthStats(raw.stats as typeof bandwidthStats & object);
+          return;
+        }
+        if (raw.type === "pong" && typeof raw.timestamp === "number") {
+          const rtt = Math.round(performance.now() - raw.timestamp);
+          setBandwidthStats((prev) => prev ? { ...prev, rttMs: rtt } : null);
+          return;
+        }
+      } catch { /* not our extension message — continue */ }
+
       const message = parseMessage(String(event.data));
       if (!message) {
         debugLog("control_socket.onmessage.parse_error", { raw: String(event.data) });
@@ -511,6 +549,13 @@ export const App = () => {
             sessionStorage.removeItem("remux-password");
           }
           openTerminalSocket(passwordValue, message.clientId);
+          // Start RTT measurement pings.
+          if (rttTimerRef.current) clearInterval(rttTimerRef.current);
+          rttTimerRef.current = setInterval(() => {
+            if (controlSocketRef.current?.readyState === WebSocket.OPEN) {
+              controlSocketRef.current.send(JSON.stringify({ type: "ping", timestamp: performance.now() }));
+            }
+          }, 10_000);
           return;
         case "auth_error":
           debugLog("control_socket.auth_error", { reason: message.reason });
@@ -1003,6 +1048,16 @@ export const App = () => {
             aria-label={`Status: ${topStatus.label}`}
             data-testid="top-status-indicator"
           />
+          {bandwidthStats && (
+            <button
+              className={`bandwidth-indicator ${bandwidthStats.savedPercent > 50 ? "good" : bandwidthStats.savedPercent > 20 ? "ok" : "low"}`}
+              onClick={() => setStatsVisible((v) => !v)}
+              title={`Bandwidth: ${formatBytes(bandwidthStats.compressedBytesPerSec)}/s (${bandwidthStats.savedPercent}% saved). Click for details.`}
+            >
+              ↓{formatBytes(bandwidthStats.compressedBytesPerSec)}/s
+              {bandwidthStats.savedPercent > 0 && <span className="saved-badge">{bandwidthStats.savedPercent}%</span>}
+            </button>
+          )}
           <button
             className={`top-btn${viewMode === "terminal" ? " active" : ""}`}
             title="Toggle between terminal view and scrollback history"
@@ -1506,6 +1561,42 @@ export const App = () => {
       )}
 
       {/* Legacy overlay scrollback removed — now inline in scroll viewMode */}
+
+      {statsVisible && bandwidthStats && (
+        <div className="overlay" onClick={() => setStatsVisible(false)}>
+          <div className="card stats-card" onClick={(e) => e.stopPropagation()}>
+            <div className="stats-header">
+              <h2>Bandwidth Stats</h2>
+              <button onClick={() => setStatsVisible(false)} title="Close">×</button>
+            </div>
+            <div className="stats-grid">
+              <div className="stats-section">
+                <h3>Terminal Stream</h3>
+                <div className="stats-row"><span>Raw</span><span>{formatBytes(bandwidthStats.rawBytesPerSec)}/s</span></div>
+                <div className="stats-row"><span>Compressed</span><span>{formatBytes(bandwidthStats.compressedBytesPerSec)}/s</span></div>
+                <div className="stats-row highlight"><span>Saved</span><span>{bandwidthStats.savedPercent}%</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>State Diffs</h3>
+                <div className="stats-row"><span>Full snapshots</span><span>{bandwidthStats.fullSnapshotsSent}</span></div>
+                <div className="stats-row"><span>Diff updates</span><span>{bandwidthStats.diffUpdatesSent}</span></div>
+                <div className="stats-row"><span>Avg rows/diff</span><span>{bandwidthStats.avgChangedRowsPerDiff}</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>Totals</h3>
+                <div className="stats-row"><span>Raw data</span><span>{formatBytes(bandwidthStats.totalRawBytes)}</span></div>
+                <div className="stats-row"><span>Transferred</span><span>{formatBytes(bandwidthStats.totalCompressedBytes)}</span></div>
+                <div className="stats-row highlight"><span>Saved</span><span>{formatBytes(bandwidthStats.totalSavedBytes)}</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>Connection</h3>
+                <div className="stats-row"><span>RTT</span><span>{bandwidthStats.rttMs !== null ? `${bandwidthStats.rttMs}ms` : "measuring..."}</span></div>
+                <div className="stats-row"><span>Protocol</span><span>{bandwidthStats.protocol}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {needsPasswordInput && (
         <div className="overlay">

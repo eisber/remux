@@ -20,6 +20,7 @@ import { TerminalStateTracker, type TerminalSnapshot, type TerminalDiffMessage }
 import { NotificationManager } from "./notifications/push-manager.js";
 import { createTerminalNotifier } from "./notifications/terminal-notifier.js";
 import { EventWatcher, type ConversationEvent } from "./events/index.js";
+import { BandwidthTracker, type BandwidthStats } from "./stats/index.js";
 import {
   detectGastownWorkspace,
   enrichSessionWithGastown,
@@ -65,6 +66,18 @@ export interface Extensions {
   /** Get structured conversation events for a session. */
   getEventWatcher(sessionId: string): EventWatcher;
 
+  /** Record raw bytes sent (before compression). */
+  recordRawBytes(bytes: number): void;
+
+  /** Record compressed bytes sent (wire bytes). */
+  recordCompressedBytes(bytes: number): void;
+
+  /** Update RTT measurement. */
+  setRtt(ms: number): void;
+
+  /** Get current bandwidth stats. */
+  getBandwidthStats(): BandwidthStats;
+
   /** Clean up all resources. */
   dispose(): void;
 }
@@ -77,6 +90,7 @@ export function createExtensions(
   logger?: Pick<Console, "log" | "error">
 ): Extensions {
   const notifications = new NotificationManager(logger);
+  const bandwidthTracker = new BandwidthTracker();
   const stateTrackers = new Map<string, TerminalStateTracker>();
   const terminalNotifiers = new Map<string, ReturnType<typeof createTerminalNotifier>>();
   const eventWatchers = new Map<string, EventWatcher>();
@@ -107,9 +121,22 @@ export function createExtensions(
     },
 
     onTerminalData(sessionName: string, data: string): void {
+      // Track raw bytes.
+      bandwidthTracker.recordRawBytes(Buffer.byteLength(data, "utf8"));
+
       // Feed into state tracker.
       const tracker = stateTrackers.get(sessionName);
-      tracker?.write(data);
+      if (tracker) {
+        tracker.write(data);
+        const diff = tracker.diff();
+        if (diff) {
+          if (diff.full) {
+            bandwidthTracker.recordFullSnapshot();
+          } else {
+            bandwidthTracker.recordDiffUpdate(diff.changedRows.length);
+          }
+        }
+      }
 
       // Check for notification triggers.
       const notifier = terminalNotifiers.get(sessionName);
@@ -165,6 +192,22 @@ export function createExtensions(
         eventWatchers.set(sessionId, watcher);
       }
       return watcher;
+    },
+
+    recordRawBytes(bytes: number): void {
+      bandwidthTracker.recordRawBytes(bytes);
+    },
+
+    recordCompressedBytes(bytes: number): void {
+      bandwidthTracker.recordCompressedBytes(bytes);
+    },
+
+    setRtt(ms: number): void {
+      bandwidthTracker.setRtt(ms);
+    },
+
+    getBandwidthStats(): BandwidthStats {
+      return bandwidthTracker.getStats();
     },
 
     dispose(): void {

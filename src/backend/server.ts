@@ -271,6 +271,10 @@ export const createRemuxServer = (
       res.json(info);
     });
 
+    app.get("/api/stats/bandwidth", (_req, res) => {
+      res.json(deps.extensions!.getBandwidthStats());
+    });
+
     // File browser API: list and read files in the working directory.
     app.get("/api/files", (_req, res) => {
       try {
@@ -669,7 +673,20 @@ export const createRemuxServer = (
     logger.log("control ws connected", context.clientId);
 
     socket.on("message", async (rawData) => {
-      const message = parseClientMessage(rawData.toString("utf8"));
+      const raw = rawData.toString("utf8");
+
+      // Handle ping/pong for RTT measurement (bypass zod validation).
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed.type === "ping" && typeof parsed.timestamp === "number") {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "pong", timestamp: parsed.timestamp }));
+          }
+          return;
+        }
+      } catch { /* not JSON or not a ping — continue to normal parsing */ }
+
+      const message = parseClientMessage(raw);
       if (!message) {
         sendJson(socket, { type: "error", message: "invalid message format" });
         return;
@@ -889,6 +906,19 @@ export const createRemuxServer = (
           resolve();
         });
       });
+
+      // Broadcast bandwidth stats every 5 seconds to all authed control clients.
+      if (deps.extensions) {
+        setInterval(() => {
+          const stats = deps.extensions!.getBandwidthStats();
+          const msg = JSON.stringify({ type: "bandwidth_stats", stats });
+          for (const client of controlClients) {
+            if (client.authed && client.socket.readyState === client.socket.OPEN) {
+              client.socket.send(msg);
+            }
+          }
+        }, 5000);
+      }
     },
     async stop() {
       if (!started) {
