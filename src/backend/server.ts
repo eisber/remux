@@ -288,7 +288,8 @@ export const createRemuxServer = (
 
     context.baseSession = baseSession;
     context.attachedSession = mobileSession;
-    runtime.attachToSession(mobileSession);
+    // Force re-attach when the mobile session was recreated (same name, different target)
+    runtime.attachToSession(mobileSession, needsRecreate === true);
     sendJson(context.socket, { type: "attached", session: baseSession });
   };
 
