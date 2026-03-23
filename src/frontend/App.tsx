@@ -137,6 +137,9 @@ export const App = () => {
   const [uploadToast, setUploadToast] = useState<{ path: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Bell tracking: sessions that have rung the bell since last viewed.
+  const [bellSessions, setBellSessions] = useState<Set<string>>(new Set());
+
   // Local selection state for instant UI feedback before server snapshot arrives
   const [selectedWindowIndex, setSelectedWindowIndex] = useState<number | null>(null);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
@@ -197,6 +200,49 @@ export const App = () => {
     }
     return { kind: "pending", label: "connecting" };
   }, [authReady, errorMessage, statusMessage]);
+
+  // Session color palette for tab bar color-coding.
+  const sessionColors = useMemo(() => {
+    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4", "#ef4444", "#84cc16"];
+    const colorMap = new Map<string, string>();
+    snapshot.sessions.forEach((session, i) => {
+      colorMap.set(session.name, palette[i % palette.length]);
+    });
+    return colorMap;
+  }, [snapshot.sessions]);
+
+  // Build flat tab list: one tab per window across all sessions.
+  const tabs = useMemo(() => {
+    const result: Array<{
+      key: string;
+      label: string;
+      sessionName: string;
+      windowIndex: number;
+      isActive: boolean;
+      hasBell: boolean;
+      color: string;
+    }> = [];
+
+    for (const session of snapshot.sessions) {
+      for (const win of session.windowStates) {
+        const isActive =
+          session.name === (attachedSession || activeSession?.name) &&
+          win.index === activeWindow?.index;
+        result.push({
+          key: `${session.name}:${win.index}`,
+          label: session.windowStates.length > 1
+            ? `${session.name}/${win.name}`
+            : session.name,
+          sessionName: session.name,
+          windowIndex: win.index,
+          isActive,
+          hasBell: bellSessions.has(session.name) && !isActive,
+          color: sessionColors.get(session.name) ?? "#3b82f6",
+        });
+      }
+    }
+    return result;
+  }, [snapshot.sessions, attachedSession, activeSession, activeWindow, bellSessions, sessionColors]);
 
   const sendControl = (payload: Record<string, unknown>): void => {
     if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
@@ -367,7 +413,12 @@ export const App = () => {
         type: typeof event.data,
         bytes: typeof event.data === "string" ? event.data.length : 0
       });
-      terminalRef.current?.write(typeof event.data === "string" ? event.data : "");
+      const data = typeof event.data === "string" ? event.data : "";
+      terminalRef.current?.write(data);
+      // Detect bell character — mark the current session as having a bell.
+      if (data.includes("\x07") && attachedSession) {
+        setBellSessions((prev) => new Set(prev).add(attachedSession));
+      }
     };
 
     socket.onclose = (event) => {
@@ -821,44 +872,71 @@ export const App = () => {
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <button
-          onClick={() => setDrawerOpen((value) => !value)}
-          className="icon-btn"
-          data-testid="drawer-toggle"
-          title="Open sidebar — manage sessions, windows, panes, and themes"
-        >
-          =
-        </button>
-        <div className="top-title">
-          Window: {activeWindow ? `${activeWindow.index}: ${activeWindow.name}` : "-"}
+      <header className="tab-bar">
+        <div className="tab-list" role="tablist">
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              role="tab"
+              aria-selected={tab.isActive}
+              className={`tab${tab.isActive ? " active" : ""}${tab.hasBell ? " bell" : ""}`}
+              style={{
+                borderBottomColor: tab.isActive ? tab.color : "transparent",
+                ["--tab-color" as string]: tab.color,
+              }}
+              title={`Session: ${tab.sessionName}, Window: ${tab.windowIndex}${tab.hasBell ? " (bell)": ""}`}
+              onClick={() => {
+                // Clear bell for this session when switching to it.
+                setBellSessions((prev) => {
+                  const next = new Set(prev);
+                  next.delete(tab.sessionName);
+                  return next;
+                });
+                if (tab.sessionName !== (attachedSession || activeSession?.name)) {
+                  sendControl({ type: "select_session", session: tab.sessionName });
+                } else if (tab.windowIndex !== activeWindow?.index) {
+                  sendControl({
+                    type: "select_window",
+                    session: tab.sessionName,
+                    windowIndex: tab.windowIndex,
+                    ...(stickyZoom ? { stickyZoom: true } : {}),
+                  });
+                  setSelectedWindowIndex(tab.windowIndex);
+                }
+              }}
+            >
+              <span className="tab-dot" style={{ backgroundColor: tab.color }} />
+              {tab.hasBell && <span className="tab-bell">🔔</span>}
+              <span className="tab-label">{tab.label}</span>
+            </button>
+          ))}
+          <button
+            className="tab tab-new"
+            onClick={createSession}
+            title="Create a new terminal session"
+          >
+            +
+          </button>
         </div>
-        <div className="top-actions">
+        <div className="tab-bar-actions">
           <span
             className={`top-status ${topStatus.kind}`}
             title={topStatus.label}
             aria-label={`Status: ${topStatus.label}`}
             data-testid="top-status-indicator"
           />
-          <button
-            className={`top-zoom-indicator${activePane?.zoomed ? " on" : ""}`}
-            title={activePane?.zoomed ? "Active pane is zoomed" : "Active pane is not zoomed"}
-            aria-label={`Pane zoom: ${activePane?.zoomed ? "on" : "off"}`}
-            data-testid="top-zoom-indicator"
-            onClick={() => activePane && sendControl({ type: "zoom_pane", paneId: activePane.id })}
-            disabled={!activePane || !activeWindow || activeWindow.paneCount <= 1}
-          >
-            🔍
-          </button>
           <button className="top-btn" onClick={() => requestScrollback(serverConfig?.scrollbackLines ?? 1000)}
             title="View scrollback history — see previous terminal output with auto-refresh"
           >
             Scroll
           </button>
-          <button className="top-btn" onClick={() => setComposeEnabled((value) => !value)}
-            title="Toggle compose bar — type commands with full keyboard before sending"
+          <button
+            onClick={() => setDrawerOpen((value) => !value)}
+            className="icon-btn"
+            data-testid="drawer-toggle"
+            title="Open sidebar — manage panes, themes, and advanced options"
           >
-            {composeEnabled ? "Compose On" : "Compose Off"}
+            ☰
           </button>
         </div>
       </header>

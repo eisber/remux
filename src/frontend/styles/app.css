@@ -346,6 +346,106 @@ input {
   background: var(--bg-shell);
 }
 
+/* Tab bar — replaces the old topbar */
+.tab-bar {
+  display: flex;
+  align-items: center;
+  background: var(--bg-topbar);
+  backdrop-filter: var(--topbar-blur);
+  -webkit-backdrop-filter: var(--topbar-blur);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.tab-list {
+  display: flex;
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  gap: 0;
+}
+
+.tab-list::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.5rem 0.75rem;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-bottom: 2.5px solid transparent;
+  border-radius: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.8rem;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+}
+
+.tab.active {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+.tab.bell {
+  animation: tab-bell-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes tab-bell-pulse {
+  0%, 100% { background: transparent; }
+  50% { background: rgba(250, 204, 21, 0.15); }
+}
+
+.tab-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.tab-bell {
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 10rem;
+}
+
+.tab-new {
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  padding: 0.4rem 0.6rem;
+}
+
+.tab-new:hover {
+  color: var(--accent);
+}
+
+.tab-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Keep the old topbar styles as fallback */
 .topbar {
   display: flex;
   align-items: center;
