@@ -206,28 +206,33 @@ export const createRemuxServer = (
         () => process.cwd()
       );
 
-      // Avoid overwrites by prepending timestamp if file exists
-      let finalName = filename;
-      const targetPath = path.join(resolvedDir, finalName);
-      try {
-        await fs.promises.access(targetPath);
-        // File exists, prepend timestamp
-        finalName = `upload-${Date.now()}-${filename}`;
-      } catch {
-        // File doesn't exist, use original name
-      }
-
-      const finalPath = path.join(resolvedDir, finalName);
       const body = req.body as Buffer;
 
+      // Atomic write with wx flag to avoid overwrites and race conditions.
+      // If the file exists, retry with a timestamped name.
+      let finalName = filename;
+      let finalPath = path.join(resolvedDir, finalName);
       try {
-        await fs.promises.writeFile(finalPath, body);
-        logger.log("file uploaded", finalPath, `bytes=${body.length}`);
-        res.json({ ok: true, path: finalPath, filename: finalName });
-      } catch (error) {
-        logger.error("file upload write error", error);
-        res.status(500).json({ ok: false, error: "failed to write file" });
+        await fs.promises.writeFile(finalPath, body, { flag: "wx" });
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") {
+          finalName = `upload-${Date.now()}-${filename}`;
+          finalPath = path.join(resolvedDir, finalName);
+          try {
+            await fs.promises.writeFile(finalPath, body);
+          } catch (retryErr) {
+            logger.error("file upload write error (retry)", retryErr);
+            res.status(500).json({ ok: false, error: "failed to write file" });
+            return;
+          }
+        } else {
+          logger.error("file upload write error", err);
+          res.status(500).json({ ok: false, error: "failed to write file" });
+          return;
+        }
       }
+      logger.log("file uploaded", finalPath, `bytes=${body.length}`);
+      res.json({ ok: true, path: finalPath, filename: finalName });
     }
   );
 

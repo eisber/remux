@@ -1201,7 +1201,9 @@ export const App = () => {
           <span className="upload-toast-path">{uploadToast.path}</span>
           <button
             onClick={() => {
-              sendTerminal(uploadToast.path, false);
+              // Shell-quote the path to handle spaces and metacharacters
+              const quoted = `'${uploadToast.path.replace(/'/g, "'\\''")}'`;
+              sendTerminal(quoted, false);
               setUploadToast(null);
             }}
           >
