@@ -175,14 +175,20 @@ export const createTmuxMobileServer = (
   let stopPromise: Promise<void> | null = null;
 
   const broadcastState = (state: TmuxStateSnapshot): void => {
+    const filteredState: TmuxStateSnapshot = {
+      ...state,
+      sessions: state.sessions.filter(
+        (session) => !isManagedMobileSession(session.name)
+      )
+    };
     verboseLog(
       "broadcast tmux_state",
       `authedControlClients=${[...controlClients].filter((client) => client.authed).length}`,
-      summarizeState(state)
+      summarizeState(filteredState)
     );
     for (const client of controlClients) {
       if (client.authed) {
-        sendJson(client.socket, { type: "tmux_state", state });
+        sendJson(client.socket, { type: "tmux_state", state: filteredState });
       }
     }
   };
@@ -498,16 +504,18 @@ export const createTmuxMobileServer = (
       }
 
       if (isBinary) {
-        const binaryBytes =
-          typeof rawData === "string"
-            ? Buffer.byteLength(rawData, "utf8")
-            : rawData instanceof ArrayBuffer
-              ? rawData.byteLength
-              : Array.isArray(rawData)
-                ? rawData.reduce((sum, chunk) => sum + chunk.length, 0)
-                : rawData.length;
-        verboseLog("terminal ws binary input", `bytes=${binaryBytes}`);
-        ctx.controlContext?.runtime?.write(rawData.toString());
+        let buf: Buffer;
+        if (Buffer.isBuffer(rawData)) {
+          buf = rawData;
+        } else if (rawData instanceof ArrayBuffer) {
+          buf = Buffer.from(rawData);
+        } else if (Array.isArray(rawData)) {
+          buf = Buffer.concat(rawData);
+        } else {
+          buf = Buffer.from(rawData);
+        }
+        verboseLog("terminal ws binary input", `bytes=${buf.length}`);
+        ctx.controlContext?.runtime?.write(buf.toString("utf8"));
         return;
       }
 
