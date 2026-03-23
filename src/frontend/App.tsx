@@ -873,6 +873,14 @@ export const App = () => {
   return (
     <div className="app-shell">
       <header className="tab-bar">
+        <button
+          onClick={() => setDrawerOpen((value) => !value)}
+          className="tab-bar-burger"
+          data-testid="drawer-toggle"
+          title="Open sidebar — manage panes, themes, and advanced options"
+        >
+          ☰
+        </button>
         <div className="tab-list" role="tablist">
           {tabs.map((tab) => (
             <button
@@ -929,14 +937,6 @@ export const App = () => {
             title="View scrollback history — see previous terminal output with auto-refresh"
           >
             Scroll
-          </button>
-          <button
-            onClick={() => setDrawerOpen((value) => !value)}
-            className="icon-btn"
-            data-testid="drawer-toggle"
-            title="Open sidebar — manage panes, themes, and advanced options"
-          >
-            ☰
           </button>
         </div>
       </header>
