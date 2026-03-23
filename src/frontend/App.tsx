@@ -122,6 +122,9 @@ export const App = () => {
   // Start in terminal mode so xterm.js can initialize with correct dimensions,
   // then auto-switch to scroll mode after first tmux_state arrives.
   const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
+  const [scrollFontSize, setScrollFontSize] = useState<number>(
+    Number(localStorage.getItem("remux-scroll-font-size")) || 0
+  );
   const hasAutoSwitchedRef = useRef(false);
 
   const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
@@ -711,39 +714,7 @@ export const App = () => {
     }
   }, [viewMode]);
 
-  // On desktop, fit font-size so terminal columns fill the container width
-  useEffect(() => {
-    if (viewMode !== "scroll" || window.innerWidth < 768) return;
-    const el = scrollbackContentRef.current;
-    if (!el || !scrollbackText) return;
-
-    const fitFont = (): void => {
-      const stripped = scrollbackText.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-      const lines = stripped.split("\n");
-      let maxCols = 0;
-      for (const line of lines) {
-        if (line.length > maxCols) maxCols = line.length;
-      }
-      if (maxCols < 10) return;
-
-      const probe = document.createElement("span");
-      probe.style.cssText = `font-family:${getComputedStyle(el).fontFamily};font-size:100px;position:absolute;visibility:hidden;white-space:pre`;
-      probe.textContent = "M";
-      document.body.appendChild(probe);
-      const charWidthAt100 = probe.getBoundingClientRect().width;
-      document.body.removeChild(probe);
-      if (charWidthAt100 <= 0) return;
-
-      const containerWidth = el.clientWidth - 16;
-      const targetFontSize = (containerWidth / maxCols) * (100 / charWidthAt100);
-      el.style.fontSize = `${Math.max(7, Math.min(16, targetFontSize)).toFixed(1)}px`;
-    };
-
-    fitFont();
-    const observer = new ResizeObserver(fitFont);
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [viewMode, scrollbackText]);
+  // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
   // Persist toolbar expanded state
   useEffect(() => {
@@ -969,6 +940,7 @@ export const App = () => {
             className="scrollback-main"
             ref={scrollbackContentRef}
             data-testid="scrollback-main"
+            style={scrollFontSize > 0 ? { fontSize: `${scrollFontSize}px` } as React.CSSProperties : undefined}
           />
         )}
       </main>
@@ -1359,6 +1331,25 @@ export const App = () => {
                 </button>
               ))}
             </div>
+
+            <h3>Font Size</h3>
+            <div className="drawer-grid" style={{ gridTemplateColumns: "auto 1fr auto", alignItems: "center" }}>
+              <button onClick={() => {
+                const v = Math.max(8, (scrollFontSize || 14) - 1);
+                setScrollFontSize(v);
+                localStorage.setItem("remux-scroll-font-size", String(v));
+              }}>A-</button>
+              <span style={{ textAlign: "center" }}>{scrollFontSize || "Auto"}</span>
+              <button onClick={() => {
+                const v = Math.min(24, (scrollFontSize || 14) + 1);
+                setScrollFontSize(v);
+                localStorage.setItem("remux-scroll-font-size", String(v));
+              }}>A+</button>
+            </div>
+            <button className="drawer-section-action" onClick={() => {
+              setScrollFontSize(0);
+              localStorage.removeItem("remux-scroll-font-size");
+            }}>Reset to Auto</button>
           </aside>
         </div>
       )}
