@@ -10,7 +10,7 @@ import { AuthService } from "./auth/auth-service.js";
 import type { CliArgs, RuntimeConfig } from "./config.js";
 import { createRemuxServer } from "./server.js";
 import { detectSessionBackend } from "./providers/detect.js";
-import { createTunnelProvider, type TunnelProviderKind } from "./tunnels/index.js";
+import { CloudflareTunnelProvider } from "./tunnels/index.js";
 import { createLogger } from "./util/file-logger.js";
 import { randomToken } from "./util/random.js";
 
@@ -56,12 +56,6 @@ const parseCliArgs = async (): Promise<CliArgs> => {
       type: "string",
       describe: "Write debug logs to a file"
     })
-    .option("tunnel-provider", {
-      type: "string",
-      choices: ["auto", "devtunnel", "cloudflare"] as const,
-      default: "auto",
-      describe: "Tunnel provider (auto-detects devtunnel, falls back to cloudflare)"
-    })
     .strict()
     .help()
     .parseAsync();
@@ -72,7 +66,6 @@ const parseCliArgs = async (): Promise<CliArgs> => {
     password: argv.password,
     requirePassword: argv.requirePassword,
     tunnel: argv.tunnel,
-    tunnelProvider: argv.tunnelProvider as CliArgs["tunnelProvider"],
     session: argv.session,
     scrollback: argv.scrollback,
     debugLog: argv.debugLog
@@ -118,12 +111,9 @@ const printConnectionInfo = (
 const main = async (): Promise<void> => {
   const args = await parseCliArgs();
   const effectivePassword = args.requirePassword ? args.password ?? randomToken(16) : undefined;
-  const useDevTunnel = args.tunnelProvider === "devtunnel" ||
-    (args.tunnelProvider === "auto" && args.tunnel);
   const authService = new AuthService({
     password: effectivePassword,
     token: process.env.REMUX_TOKEN || undefined,
-    trustEntraTunnel: useDevTunnel,
   });
   const debugLogPath = args.debugLog ?? process.env.REMUX_DEBUG_LOG;
   const logger = createLogger(debugLogPath);
@@ -142,7 +132,7 @@ const main = async (): Promise<void> => {
     frontendDir
   };
 
-  const tunnelProvider = createTunnelProvider(args.tunnelProvider, logger);
+  const tunnelProvider = new CloudflareTunnelProvider();
   const backend = detectSessionBackend(logger, {
     socketName: process.env.REMUX_SOCKET_NAME,
     socketPath: process.env.REMUX_SOCKET_PATH,
