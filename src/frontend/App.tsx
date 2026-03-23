@@ -91,7 +91,7 @@ export const App = () => {
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
-  const [password, setPassword] = useState(localStorage.getItem("tmux-mobile-password") ?? "");
+  const [password, setPassword] = useState(sessionStorage.getItem("tmux-mobile-password") ?? "");
   const [needsPasswordInput, setNeedsPasswordInput] = useState(false);
   const [passwordErrorMessage, setPasswordErrorMessage] = useState("");
   const [authReady, setAuthReady] = useState(false);
@@ -354,9 +354,9 @@ export const App = () => {
           setAuthReady(true);
           setNeedsPasswordInput(false);
           if (message.requiresPassword && passwordValue) {
-            localStorage.setItem("tmux-mobile-password", passwordValue);
+            sessionStorage.setItem("tmux-mobile-password", passwordValue);
           } else {
-            localStorage.removeItem("tmux-mobile-password");
+            sessionStorage.removeItem("tmux-mobile-password");
           }
           openTerminalSocket(passwordValue, message.clientId);
           return;
@@ -369,7 +369,7 @@ export const App = () => {
           if (passwordAuthFailed) {
             setNeedsPasswordInput(true);
             setPasswordErrorMessage(formatPasswordError(message.reason));
-            localStorage.removeItem("tmux-mobile-password");
+            sessionStorage.removeItem("tmux-mobile-password");
           }
           return;
         case "attached":
