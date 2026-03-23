@@ -14,6 +14,9 @@ test.afterAll(async () => {
 test('toolbar layout: unified rows with balanced button distribution', async ({ page }) => {
   await page.goto(`${server.baseUrl}/?token=${server.token}`);
 
+  // Default is terminal mode — wait for terminal to be visible
+  await expect(page.getByTestId('terminal-host')).toBeVisible();
+
   const mainRows = await page.locator('.toolbar-main').all();
   expect(mainRows.length).toBe(2);
 
