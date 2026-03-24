@@ -26,8 +26,6 @@ export class ZellijCliExecutor implements SessionGateway {
   private readonly paneSessionMap = new Map<string, string>();
   /** Path to remux-focus.wasm for focus-pane-by-id via plugin pipe. */
   private readonly focusPluginPath?: string;
-  /** Track whether the focus plugin has been loaded in each session. */
-  private readonly pluginLoadedSessions = new Set<string>();
 
   public constructor(options: ZellijCliExecutorOptions = {}) {
     this.binary = options.zellijBinary ?? "zellij";
@@ -243,7 +241,8 @@ export class ZellijCliExecutor implements SessionGateway {
 
   /**
    * Focus a terminal pane by ID using the remux-focus WASM plugin.
-   * The plugin is loaded lazily on first use per session.
+   * Uses `zellij pipe --plugin file:...` which auto-launches the plugin
+   * if it's not already running (without creating a visible pane).
    * Falls back silently if the plugin path is not configured.
    */
   private async focusPaneViaPlugin(
@@ -255,25 +254,9 @@ export class ZellijCliExecutor implements SessionGateway {
     const numId = extractPaneNumericId(paneId);
     if (numId < 0) return;
 
-    // Ensure the plugin is loaded in this session
-    const sessionKey = session ?? "__default__";
-    if (!this.pluginLoadedSessions.has(sessionKey)) {
-      try {
-        await this.runZellij(
-          ["plugin", "--", `file:${this.focusPluginPath}`],
-          session
-        );
-        this.pluginLoadedSessions.add(sessionKey);
-      } catch (err) {
-        this.logger?.error(`[zellij] failed to load focus plugin: ${err}`);
-        return;
-      }
-    }
-
-    // Send focus command via broadcast pipe
     try {
       await this.runZellij(
-        ["pipe", "--name", "focus", "--", String(numId)],
+        ["pipe", "--plugin", `file:${this.focusPluginPath}`, "--name", "focus", "--", String(numId)],
         session
       );
     } catch (err) {

@@ -139,8 +139,37 @@ export class ZellijPaneIO implements PtyProcess {
       const numericId = parseInt(this.paneId.replace(/^terminal_/, ""), 10);
       const pane = panes.find((p) => !p.is_plugin && p.id === numericId);
       if (pane?.cursor_coordinates_in_pane) {
-        const [col, row] = pane.cursor_coordinates_in_pane;
-        // Send cursor position (1-indexed)
+        let [col, row] = pane.cursor_coordinates_in_pane;
+        // Remap cursor position if viewport was reflowed to narrower columns
+        if (this.clientCols > 0 && col >= this.clientCols) {
+          // Cursor is beyond the reflowed width — wrap it
+          const extraRows = Math.floor(col / this.clientCols);
+          col = col % this.clientCols;
+          row = row + extraRows;
+        }
+        // Account for lines above cursor that were wrapped by reflow
+        if (this.clientCols > 0) {
+          let extraLines = 0;
+          // Count how many extra lines reflow added before the cursor row
+          const panesJson2 = JSON.parse(stdout) as Array<{
+            id: number; is_plugin: boolean; pane_content_columns: number;
+          }>;
+          const paneInfo = panesJson2.find((p2) => !p2.is_plugin && p2.id === numericId);
+          const paneWidth = paneInfo?.pane_content_columns ?? 0;
+          if (paneWidth > this.clientCols) {
+            // Each original line that's wider than clientCols adds floor(width/clientCols) extra lines
+            // Approximate: use the stored prevViewport to count wrapped lines before cursor
+            // For accuracy, count lines in the original (pre-reflow) viewport up to original row
+            const origViewport = this.prevViewport;
+            for (let i = 0; i < Math.min(row, origViewport.length); i++) {
+              const lineLen = visibleLength(origViewport[i] ?? "");
+              if (lineLen > this.clientCols) {
+                extraLines += Math.ceil(lineLen / this.clientCols) - 1;
+              }
+            }
+          }
+          row += extraLines;
+        }
         const cursorSeq = `\x1b[${row + 1};${col + 1}H`;
         for (const h of this.dataHandlers) h(cursorSeq);
       }
@@ -281,7 +310,8 @@ function visibleLength(s: string): number {
 
 /**
  * Wrap a single ANSI-styled line to `cols` visible characters.
- * Preserves ANSI escape sequences across wrap boundaries.
+ * Preserves ANSI escape sequences across wrap boundaries by tracking
+ * active SGR state and re-emitting it at the start of continuation lines.
  */
 function wrapAnsiLine(line: string, cols: number): string[] {
   if (cols <= 0 || visibleLength(line) <= cols) return [line];
@@ -290,31 +320,40 @@ function wrapAnsiLine(line: string, cols: number): string[] {
   let current = "";
   let visCount = 0;
   let i = 0;
+  /** Active SGR sequences to replay on continuation lines. */
+  let activeSgr = "";
 
   while (i < line.length) {
-    // Check for ANSI escape sequence
     const remaining = line.slice(i);
     const ansiMatch = remaining.match(/^\x1b\[[0-9;]*[A-Za-z]/);
     if (ansiMatch) {
-      // ANSI sequences don't consume visible space
-      current += ansiMatch[0];
-      i += ansiMatch[0].length;
+      const seq = ansiMatch[0];
+      current += seq;
+      // Track SGR (m) sequences for replay on continuation lines
+      if (seq.endsWith("m")) {
+        if (seq === "\x1b[m" || seq === "\x1b[0m") {
+          activeSgr = "";
+        } else {
+          activeSgr += seq;
+        }
+      }
+      i += seq.length;
       continue;
     }
 
-    // Regular character
     current += line[i];
     visCount++;
     i++;
 
     if (visCount >= cols) {
       result.push(current);
-      current = "";
+      // Start continuation line with active SGR state
+      current = activeSgr;
       visCount = 0;
     }
   }
 
-  if (current) result.push(current);
+  if (current && current !== activeSgr) result.push(current);
   return result;
 }
 
