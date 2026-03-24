@@ -1,6 +1,6 @@
 {
   "name": "remux",
-  "version": "0.1.19",
+  "version": "0.1.21",
   "description": "Remote tmux web client — monitor and control terminal sessions from any device",
   "license": "MIT",
   "repository": {
@@ -26,6 +26,7 @@
   },
   "files": [
     "dist",
+    "docs",
     "README.md",
     "LICENSE"
   ],
@@ -36,7 +37,7 @@
     "dev": "concurrently -n back,vite -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
     "dev:backend": "tsx watch src/backend/cli.ts --no-tunnel --no-require-password",
     "dev:frontend": "vite --config vite.config.ts",
-    "build": "npm run build:frontend && npm run build:backend && touch dist/backend/cli.js",
+    "build": "npm run build:frontend && npm run build:backend && node -e \"require('fs').utimesSync('dist/backend/cli.js',new Date(),new Date())\"",
     "build:backend": "tsc -p tsconfig.backend.json",
     "build:frontend": "vite build --config vite.config.ts",
     "start": "npm run build && node dist/backend/cli.js",

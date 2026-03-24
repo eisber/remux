@@ -121,12 +121,9 @@ const printConnectionInfo = (
 const main = async (): Promise<void> => {
   const args = await parseCliArgs();
   const effectivePassword = args.requirePassword ? args.password ?? randomToken(16) : undefined;
-  const useDevTunnel = args.tunnelProvider === "devtunnel" ||
-    (args.tunnelProvider === "auto" && args.tunnel);
   const authService = new AuthService({
     password: effectivePassword,
     token: process.env.REMUX_TOKEN || undefined,
-    trustEntraTunnel: useDevTunnel,
   });
   const debugLogPath = args.debugLog ?? process.env.REMUX_DEBUG_LOG;
   const logger = createLogger(debugLogPath);

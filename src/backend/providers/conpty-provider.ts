@@ -198,25 +198,25 @@ export class ConPtySessionProvider implements TmuxGateway {
 
   async capturePane(paneId: string, lines: number): Promise<{ text: string; paneWidth: number }> {
     const sessionName = this.sessionNameFromPaneId(paneId);
-    if (!sessionName) return { text: "", paneWidth: 200 };
+    if (!sessionName) return { text: "", paneWidth: 80 };
     const session = this.sessions.get(sessionName);
-    if (!session) return { text: "", paneWidth: 200 };
+    if (!session) return { text: "", paneWidth: 80 };
 
     const buffer = session.outputBuffer;
     const start = Math.max(0, buffer.length - lines);
     return { text: buffer.slice(start).join(""), paneWidth: session.cols };
   }
 
-  async renameSession(name: string, newName: string): Promise<void> {
-    const session = this.sessions.get(name);
+  async renameSession(_name: string, _newName: string): Promise<void> {
+    const session = this.sessions.get(_name);
     if (!session) return;
-    session.name = newName;
-    this.sessions.delete(name);
-    this.sessions.set(newName, session);
+    session.name = _newName;
+    this.sessions.delete(_name);
+    this.sessions.set(_newName, session);
   }
 
   async renameWindow(_session: string, _windowIndex: number, _newName: string): Promise<void> {
-    // Single-window model — no-op.
+    // No-op: single window per session, name is derived from command.
   }
 
   // ---------------------------------------------------------------------------
