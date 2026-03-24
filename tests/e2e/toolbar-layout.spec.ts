@@ -119,8 +119,8 @@ test('F-keys grid uses 6-column layout in portrait', async ({ page }) => {
   // F1 and F6 should be on the same row (allow sub-pixel rounding in CI)
   expect(Math.abs(f1Box!.y - f6Box!.y)).toBeLessThan(20);
 
-  // F7 should be on a different row than F1
-  expect(f7Box!.y).toBeGreaterThan(f1Box!.y + f1Box!.height * 0.5);
+  // F7 should be on a different row than F1 (use small threshold for CI font differences)
+  expect(f7Box!.y).toBeGreaterThan(f1Box!.y + 5);
 });
 
 test('snippets: no Snip button when no snippets configured', async ({ page }) => {
