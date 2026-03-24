@@ -11,11 +11,11 @@
  * ~/.remux/vapid.json. Clients subscribe via the /api/push/* endpoints.
  */
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import express, { type Router } from "express";
+import webpush from "web-push";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,6 +41,27 @@ interface VapidKeys {
   privateKey: string;
 }
 
+interface PushResultLike {
+  statusCode?: number;
+}
+
+export interface WebPushClient {
+  generateVAPIDKeys(): VapidKeys;
+  sendNotification(
+    subscription: PushSubscription,
+    payload?: string | Buffer,
+    options?: {
+      vapidDetails: {
+        subject: string;
+        publicKey: string;
+        privateKey: string;
+      };
+      TTL?: number;
+      urgency?: "very-low" | "low" | "normal" | "high";
+    }
+  ): Promise<PushResultLike>;
+}
+
 // ---------------------------------------------------------------------------
 // NotificationManager
 // ---------------------------------------------------------------------------
@@ -49,11 +70,14 @@ export class NotificationManager {
   private subscriptions = new Map<string, PushSubscription>();
   private vapidKeys: VapidKeys;
   private readonly configDir: string;
+  private readonly vapidSubject: string;
 
   constructor(
-    private readonly logger?: Pick<Console, "log" | "error">
+    private readonly logger?: Pick<Console, "log" | "error">,
+    private readonly pushClient: WebPushClient = webpush
   ) {
     this.configDir = path.join(os.homedir(), ".remux");
+    this.vapidSubject = process.env.REMUX_PUSH_SUBJECT || "mailto:remux@localhost.invalid";
     this.vapidKeys = this.loadOrGenerateVapidKeys();
   }
 
@@ -214,39 +238,24 @@ export class NotificationManager {
   }
 
   private generateVapidKeys(): VapidKeys {
-    // Generate ECDH P-256 key pair for VAPID.
-    const { publicKey, privateKey } = crypto.generateKeyPairSync("ec", {
-      namedCurve: "P-256",
-    });
-
-    return {
-      publicKey: publicKey
-        .export({ type: "spki", format: "der" })
-        .toString("base64url"),
-      privateKey: privateKey
-        .export({ type: "pkcs8", format: "der" })
-        .toString("base64url"),
-    };
+    return this.pushClient.generateVAPIDKeys();
   }
 
   private async sendPush(
     subscription: PushSubscription,
     body: string
   ): Promise<void> {
-    // Minimal Web Push implementation using fetch.
-    // For production, use the `web-push` npm package.
-    // This is a placeholder that logs the notification.
+    const result = await this.pushClient.sendNotification(subscription, body, {
+      vapidDetails: {
+        subject: this.vapidSubject,
+        publicKey: this.vapidKeys.publicKey,
+        privateKey: this.vapidKeys.privateKey
+      },
+      TTL: 60,
+      urgency: "high"
+    });
     this.logger?.log(
-      `[push] would send to ${subscription.endpoint}: ${body}`
+      `[push] sent notification to ${subscription.endpoint} (status=${result.statusCode ?? "unknown"})`
     );
-
-    // TODO: Implement actual Web Push protocol (RFC 8030 + RFC 8291).
-    // For now, this serves as the wiring — the actual HTTP request to
-    // the push endpoint requires VAPID JWT signing and payload encryption.
-    // Install `web-push` npm package for production use:
-    //
-    //   import webPush from "web-push";
-    //   webPush.setVapidDetails("mailto:you@example.com", publicKey, privateKey);
-    //   await webPush.sendNotification(subscription, body);
   }
 }
