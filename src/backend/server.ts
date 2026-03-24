@@ -20,6 +20,11 @@ import { TerminalRuntime } from "./pty/terminal-runtime.js";
 import type { PtyFactory } from "./pty/pty-adapter.js";
 import { TmuxStateMonitor } from "./state/state-monitor.js";
 
+interface VirtualView {
+  activeWindowIndex: number;
+  activePaneId: string;
+}
+
 interface ControlContext {
   socket: WebSocket;
   authed: boolean;
@@ -30,6 +35,8 @@ interface ControlContext {
   terminalClients: Set<DataContext>;
   /** Pending resize from terminal WS received before runtime was created */
   pendingResize?: { cols: number; rows: number };
+  /** For Zellij: server-side view state (replaces tmux session groups) */
+  virtualView?: VirtualView;
 }
 
 interface DataContext {
@@ -42,6 +49,7 @@ interface DataContext {
 export interface ServerDependencies {
   tmux: SessionGateway;
   ptyFactory: PtyFactory;
+  backendKind?: "tmux" | "zellij" | "conpty";
   authService?: AuthService;
   logger?: Pick<Console, "log" | "error">;
 }
@@ -144,6 +152,7 @@ export const createRemuxServer = (
       logger.log(...args);
     }
   };
+  const isZellij = deps.backendKind === "zellij";
   const authService = deps.authService ?? new AuthService({ password: config.password, token: config.token });
 
   const app = express();
@@ -274,7 +283,31 @@ export const createRemuxServer = (
     fullState: StateSnapshot,
     client: ControlContext
   ): StateSnapshot => {
-    if (!client.attachedSession || !client.baseSession) {
+    if (!client.baseSession) {
+      return { ...fullState, sessions: baseSessions };
+    }
+
+    // Zellij path: use server-side virtual view instead of grouped session
+    if (isZellij && client.virtualView) {
+      const sessions = baseSessions.map((session) => {
+        if (session.name !== client.baseSession) return session;
+        return {
+          ...session,
+          windowStates: session.windowStates.map((window) => ({
+            ...window,
+            active: window.index === client.virtualView!.activeWindowIndex,
+            panes: window.panes.map((pane) => ({
+              ...pane,
+              active: pane.id === client.virtualView!.activePaneId
+            }))
+          }))
+        };
+      });
+      return { ...fullState, sessions };
+    }
+
+    // tmux path: use grouped session's active flags
+    if (!client.attachedSession) {
       return { ...fullState, sessions: baseSessions };
     }
 
@@ -285,7 +318,6 @@ export const createRemuxServer = (
       return { ...fullState, sessions: baseSessions };
     }
 
-    // Override base session's active flags with mobile session's active flags
     const sessions = baseSessions.map((session) => {
       if (session.name !== client.baseSession) {
         return session;
@@ -372,15 +404,45 @@ export const createRemuxServer = (
     baseSession: string
   ): Promise<void> => {
     const runtime = getOrCreateRuntime(context);
+
+    if (isZellij) {
+      // Zellij path: no grouped sessions, use virtual view tracking.
+      // Attach PTY to the first pane of the first tab in this session.
+      if (context.baseSession && context.baseSession !== baseSession) {
+        await runtime.shutdown();
+      }
+      context.baseSession = baseSession;
+      context.attachedSession = baseSession;
+
+      // Initialize virtual view with the first window/pane
+      const windows = await deps.tmux.listWindows(baseSession);
+      const firstWindow = windows[0];
+      let firstPaneId = "terminal_0";
+      if (firstWindow) {
+        const panes = await deps.tmux.listPanes(baseSession, firstWindow.index);
+        const activePaneInWindow = panes.find((p) => p.active) ?? panes[0];
+        if (activePaneInWindow) firstPaneId = activePaneInWindow.id;
+        context.virtualView = {
+          activeWindowIndex: firstWindow.index,
+          activePaneId: firstPaneId
+        };
+      } else {
+        context.virtualView = { activeWindowIndex: 0, activePaneId: firstPaneId };
+      }
+
+      // ZellijPtyFactory expects "session:paneId" format
+      runtime.attachToSession(`${baseSession}:${firstPaneId}`);
+      sendJson(context.socket, { type: "attached", session: baseSession });
+      return;
+    }
+
+    // tmux path: create grouped session for per-client view isolation
     const mobileSession = buildMobileSessionName(context.clientId);
     const sessions = await deps.tmux.listSessions();
     const hasMobileSession = sessions.some((session) => session.name === mobileSession);
     const needsRecreate = hasMobileSession && context.baseSession && context.baseSession !== baseSession;
 
     if (needsRecreate) {
-      // Shutdown PTY first and wait for the old tmux client to fully exit before
-      // killing the session. This avoids a race where the new tmux attach spawns
-      // before the old one fully exits.
       await runtime.shutdown();
       await deps.tmux.killSession(mobileSession);
     }
@@ -441,15 +503,27 @@ export const createRemuxServer = (
         await deps.tmux.createSession(message.name);
         await attachControlToBaseSession(context, message.name);
         return;
-      case "new_window":
-        // new_window is additive (no session-group destruction risk),
-        // so target the mobile session to auto-switch the client's active window.
-        if (!attachedSession) {
+      case "new_window": {
+        const sessionForNew = isZellij ? context.baseSession : attachedSession;
+        if (!sessionForNew) {
           throw new Error("no attached session");
         }
-        await deps.tmux.newWindow(attachedSession);
+        await deps.tmux.newWindow(sessionForNew);
         return;
-      case "select_window":
+      }
+      case "select_window": {
+        if (isZellij && context.virtualView && context.baseSession) {
+          // Zellij: update virtual view, switch pane I/O subscription
+          context.virtualView.activeWindowIndex = message.windowIndex;
+          const panes = await deps.tmux.listPanes(context.baseSession, message.windowIndex);
+          const activePane = panes.find((pane) => pane.active) ?? panes[0];
+          if (activePane) {
+            context.virtualView.activePaneId = activePane.id;
+            const runtime = getOrCreateRuntime(context);
+            runtime.attachToSession(`${context.baseSession}:${activePane.id}`);
+          }
+          return;
+        }
         if (!attachedSession) {
           throw new Error("no attached session");
         }
@@ -462,6 +536,7 @@ export const createRemuxServer = (
           }
         }
         return;
+      }
       case "kill_window": {
         // Structural operations target the base session to avoid destroying
         // the grouped mobile session when the last window is killed.
@@ -481,6 +556,12 @@ export const createRemuxServer = (
         return;
       }
       case "select_pane":
+        if (isZellij && context.virtualView && context.baseSession) {
+          context.virtualView.activePaneId = message.paneId;
+          const runtime = getOrCreateRuntime(context);
+          runtime.attachToSession(`${context.baseSession}:${message.paneId}`);
+          return;
+        }
         await deps.tmux.selectPane(message.paneId);
         if (message.stickyZoom === true && !(await deps.tmux.isPaneZoomed(message.paneId))) {
           await deps.tmux.zoomPane(message.paneId);
@@ -568,13 +649,17 @@ export const createRemuxServer = (
     await context.runtime?.shutdown();
     context.runtime = undefined;
     if (context.attachedSession) {
-      try {
-        await deps.tmux.killSession(context.attachedSession);
-      } catch (error) {
-        logger.error("failed to cleanup mobile session", context.attachedSession, error);
+      // For Zellij, attachedSession IS the base session — don't kill it
+      if (!isZellij) {
+        try {
+          await deps.tmux.killSession(context.attachedSession);
+        } catch (error) {
+          logger.error("failed to cleanup mobile session", context.attachedSession, error);
+        }
       }
       context.attachedSession = undefined;
     }
+    context.virtualView = undefined;
   };
 
   controlWss.on("connection", (socket) => {
