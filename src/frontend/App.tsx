@@ -1306,11 +1306,16 @@ export const App = () => {
                               method: "POST",
                               headers: {
                                 "Content-Type": "application/json",
-                                ...(token ? { Authorization: `Bearer ${token}` } : {})
+                                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                                ...(password ? { "X-Password": password } : {})
                               },
                               body: JSON.stringify({ backend: kind })
                             });
-                            if (!resp.ok) {
+                            if (resp.ok) {
+                              // Refresh config to update backendKind display
+                              const newConfig = await fetch("/api/config").then((r) => r.json());
+                              setServerConfig(newConfig);
+                            } else {
                               const err = await resp.json().catch(() => ({}));
                               setErrorMessage(`Switch failed: ${(err as {error?: string}).error ?? resp.statusText}`);
                             }

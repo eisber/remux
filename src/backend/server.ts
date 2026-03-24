@@ -180,7 +180,8 @@ export const createRemuxServer = (
   app.post("/api/switch-backend", async (req, res) => {
     const authHeader = req.headers.authorization;
     const switchToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
-    const authResult = authService.verify({ token: switchToken });
+    const switchPassword = req.headers["x-password"] as string | undefined;
+    const authResult = authService.verify({ token: switchToken, password: switchPassword });
     if (!authResult.ok) {
       res.status(401).json({ ok: false, error: "unauthorized" });
       return;
@@ -211,9 +212,15 @@ export const createRemuxServer = (
 
     logger.log(`switching backend: ${currentBackendKind} → ${newKind}`);
 
-    // Disconnect all clients (they will auto-reconnect)
+    // Disconnect all clients — close control sockets so they trigger full reconnect
     monitor?.stop();
     await Promise.all(Array.from(controlClients).map((ctx) => shutdownControlContext(ctx)));
+    for (const ctx of controlClients) {
+      if (ctx.socket.readyState === ctx.socket.OPEN) {
+        ctx.socket.close(4000, "backend switching");
+      }
+    }
+    controlClients.clear();
 
     // Swap the backend
     deps.tmux = newDeps.tmux;
