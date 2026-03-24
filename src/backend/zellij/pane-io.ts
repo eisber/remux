@@ -7,10 +7,21 @@ const execFileAsync = promisify(execFile);
 
 /**
  * A PtyProcess that uses `zellij subscribe` for output and
- * `zellij action write-chars` / `send-keys` for input.
+ * `zellij action write` (raw bytes) for input.
  *
  * This avoids attaching to the Zellij session (which would render
  * Zellij's own UI) and instead streams individual pane content.
+ *
+ * Output model:
+ * - `zellij subscribe --pane-id` pushes viewport snapshots as JSON events
+ * - Each event contains an array of rendered lines with ANSI styling
+ * - We convert these into a terminal byte stream using cursor addressing
+ *   so xterm.js can render them correctly
+ *
+ * Input model:
+ * - `zellij action write --pane-id` sends raw bytes to the pane
+ * - This handles control characters (Ctrl+C), escape sequences (arrow keys),
+ *   and regular text equally well
  */
 export class ZellijPaneIO implements PtyProcess {
   private readonly binary: string;
@@ -23,9 +34,8 @@ export class ZellijPaneIO implements PtyProcess {
   private subscribeProc: ReturnType<typeof spawn> | null = null;
   private killed = false;
 
-  /** Last known viewport dimensions from subscribe events. */
-  private lastCols = 80;
-  private lastRows = 24;
+  /** Previous viewport for diffing (avoid sending unchanged lines). */
+  private prevViewport: string[] = [];
 
   constructor(options: {
     binary?: string;
@@ -58,7 +68,6 @@ export class ZellijPaneIO implements PtyProcess {
     let buffer = "";
     this.subscribeProc.stdout?.on("data", (chunk: Buffer) => {
       buffer += chunk.toString();
-      // Each JSON event is a complete line
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
@@ -88,18 +97,21 @@ export class ZellijPaneIO implements PtyProcess {
     }
     if (event.event !== "pane_update") return;
 
-    // Build terminal output from viewport lines.
-    // Clear screen + cursor home, then write each line.
     const viewport = event.viewport ?? [];
     const output = this.renderViewport(viewport, event.scrollback, event.is_initial);
     if (output) {
       for (const h of this.dataHandlers) h(output);
     }
+    this.prevViewport = viewport;
   }
 
   /**
-   * Convert viewport lines (with ANSI codes) into a terminal byte stream
-   * that xterm.js can render.
+   * Convert viewport lines into a terminal byte stream for xterm.js.
+   *
+   * Strategy:
+   * - Initial event: clear screen, write all lines
+   * - Subsequent events: use cursor addressing to update only changed lines
+   *   (avoids full-screen flicker on every keystroke)
    */
   private renderViewport(
     viewport: string[],
@@ -108,23 +120,46 @@ export class ZellijPaneIO implements PtyProcess {
   ): string {
     const parts: string[] = [];
 
-    if (isInitial && scrollback?.length) {
-      // On initial delivery with scrollback, send scrollback first
-      for (const line of scrollback) {
-        parts.push(line + "\r\n");
+    if (isInitial) {
+      // Send scrollback as pre-history (will be in xterm scrollback buffer)
+      if (scrollback?.length) {
+        for (const line of scrollback) {
+          parts.push(line + "\r\n");
+        }
+      }
+      // Full redraw
+      parts.push("\x1b[2J\x1b[H");
+      for (let i = 0; i < viewport.length; i++) {
+        if (i > 0) parts.push("\r\n");
+        parts.push(viewport[i]);
+      }
+      parts.push("\x1b[m");
+      return parts.join("");
+    }
+
+    // Incremental update: only redraw changed lines
+    const maxLines = Math.max(viewport.length, this.prevViewport.length);
+    let hasChanges = false;
+
+    for (let i = 0; i < maxLines; i++) {
+      const newLine = viewport[i] ?? "";
+      const oldLine = this.prevViewport[i] ?? "";
+      if (newLine !== oldLine) {
+        // Move cursor to row i+1, col 1 (1-indexed)
+        parts.push(`\x1b[${i + 1};1H`);
+        // Clear the line
+        parts.push("\x1b[2K");
+        // Write new content
+        parts.push(newLine);
+        hasChanges = true;
       }
     }
 
-    // Clear screen + cursor home
-    parts.push("\x1b[2J\x1b[H");
+    if (!hasChanges) return "";
 
-    // Write viewport lines
-    for (let i = 0; i < viewport.length; i++) {
-      if (i > 0) parts.push("\r\n");
-      parts.push(viewport[i]);
-    }
-
-    // Reset SGR at the end
+    // Position cursor at bottom of viewport content
+    // (in a real terminal this would be the cursor position from the shell)
+    parts.push(`\x1b[${viewport.length};1H`);
     parts.push("\x1b[m");
 
     return parts.join("");
@@ -133,21 +168,22 @@ export class ZellijPaneIO implements PtyProcess {
   write(data: string): void {
     if (this.killed) return;
 
-    // Use write-chars for regular text input
+    // Convert string to byte array for `zellij action write`
+    const bytes = Buffer.from(data, "utf8");
+    const byteArgs = Array.from(bytes).map(String);
+
     const args = [
       "--session", this.session,
-      "action", "write-chars",
+      "action", "write",
       "--pane-id", this.paneId,
-      data
+      ...byteArgs
     ];
     execFileAsync(this.binary, args, { timeout: 3_000 }).catch((err) => {
       this.logger?.error(`[zellij-write] ${err}`);
     });
   }
 
-  resize(cols: number, rows: number): void {
-    this.lastCols = cols;
-    this.lastRows = rows;
+  resize(_cols: number, _rows: number): void {
     // Zellij pane sizes are determined by the layout, not individually
     // settable from CLI. Accept the desktop dimensions.
   }
