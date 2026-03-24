@@ -58,7 +58,8 @@ export class ZellijCliExecutor implements SessionGateway {
         timeout: this.timeoutMs
       });
       // Strip ANSI escape codes unless raw mode requested (e.g. dump-screen --ansi)
-      return options?.raw ? stdout.trim() : stripAnsi(stdout).trim();
+      // Raw mode preserves exact output including leading/trailing whitespace
+      return options?.raw ? stdout : stripAnsi(stdout).trim();
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       throw new Error(

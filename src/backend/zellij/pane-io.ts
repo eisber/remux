@@ -101,10 +101,16 @@ export class ZellijPaneIO implements PtyProcess {
     }
 
     if (event.event === "pane_closed") {
-      // Pane was closed — treat as process exit
-      if (!this.killed) {
-        for (const h of this.exitHandlers) h(0);
+      // Pane was closed — mark as killed to prevent duplicate exit from
+      // the subscribe process exit handler, then notify listeners.
+      this.killed = true;
+      if (this.subscribeProc) {
+        this.subscribeProc.kill("SIGTERM");
+        this.subscribeProc = null;
       }
+      for (const h of this.exitHandlers) h(0);
+      this.dataHandlers = [];
+      this.exitHandlers = [];
       return;
     }
 
