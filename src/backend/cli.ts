@@ -100,21 +100,23 @@ const printConnectionInfo = (
   console.log("═══════════════════════════════════════");
   console.log(`  Frontend: ${frontendUrl}${isDevMode ? " (Vite dev)" : ""}`);
   console.log(`  Backend:  ${localUrl}`);
+  if (tunnelUrl) {
+    console.log(`  Tunnel:   ${tunnelUrl}`);
+  }
   console.log(`  Token:    ${token}`);
   if (password) {
     console.log(`  Password: ${password}`);
   }
   console.log("═══════════════════════════════════════");
-  console.log(`\n  Open: ${localWithToken}\n`);
 
   if (tunnelUrl) {
     const tunnelWithToken = buildLaunchUrl(tunnelUrl, token);
-    console.log(`  Tunnel: ${tunnelWithToken}\n`);
-    qrcode.generate(tunnelWithToken, { small: true });
-    return;
+    console.log(`\n  Remote:  ${tunnelWithToken}`);
   }
+  console.log(`  Local:   ${localWithToken}\n`);
 
-  qrcode.generate(localWithToken, { small: true });
+  const qrTarget = tunnelUrl ? buildLaunchUrl(tunnelUrl, token) : localWithToken;
+  qrcode.generate(qrTarget, { small: true });
   console.log("");
 };
 
@@ -171,7 +173,7 @@ const main = async (): Promise<void> => {
   const isDevMode = process.env.VITE_DEV_MODE === "1" || isTsx || !fs.existsSync(path.join(frontendDir, "index.html"));
 
   let tunnelUrl: string | undefined;
-  if (args.tunnel && !isDevMode) {
+  if (args.tunnel) {
     try {
       const tunnel = await tunnelProvider.start(args.port);
       tunnelUrl = tunnel.publicUrl;
