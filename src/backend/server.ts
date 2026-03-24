@@ -902,6 +902,14 @@ export const createRemuxServer = (
         ctx.controlContext = controlContext;
         controlContext.terminalClients.add(ctx);
         logger.log("terminal ws auth ok");
+
+        // Replay cached viewport to this late-joining client (fixes blank
+        // terminal when subscribe initial event fired before WS connected)
+        controlContext.runtime?.replayLast((data) => {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(data);
+          }
+        });
         return;
       }
 
