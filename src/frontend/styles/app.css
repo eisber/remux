@@ -345,6 +345,7 @@ input {
   max-width: 100vw;
   height: 100%;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(10rem, 1fr) auto auto;
   background: var(--bg-shell);
   overflow: hidden;
