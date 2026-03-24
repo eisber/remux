@@ -61,10 +61,13 @@ export const isWebSocketPath = (requestPath: string): boolean => requestPath.sta
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+// Rejects control characters, newlines, and tabs to prevent tmux parsing issues
+const safeNameSchema = z.string().min(1).max(256).regex(/^[^\x00-\x1f]+$/);
+
 const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
-  z.object({ type: z.literal("new_session"), name: z.string() }),
+  z.object({ type: z.literal("new_session"), name: safeNameSchema }),
   z.object({ type: z.literal("new_window"), session: z.string() }),
   z.object({ type: z.literal("select_window"), session: z.string(), windowIndex: z.number(), stickyZoom: z.boolean().optional() }),
   z.object({ type: z.literal("kill_window"), session: z.string(), windowIndex: z.number() }),
@@ -72,10 +75,9 @@ const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("split_pane"), paneId: z.string(), orientation: z.enum(["h", "v"]) }),
   z.object({ type: z.literal("kill_pane"), paneId: z.string() }),
   z.object({ type: z.literal("zoom_pane"), paneId: z.string() }),
-  z.object({ type: z.literal("capture_scrollback"), paneId: z.string(), lines: z.number().optional() }),
   z.object({ type: z.literal("send_compose"), text: z.string() }),
-  z.object({ type: z.literal("rename_session"), session: z.string(), newName: z.string() }),
-  z.object({ type: z.literal("rename_window"), session: z.string(), windowIndex: z.number(), newName: z.string() })
+  z.object({ type: z.literal("rename_session"), session: z.string(), newName: safeNameSchema }),
+  z.object({ type: z.literal("rename_window"), session: z.string(), windowIndex: z.number(), newName: safeNameSchema })
 ]);
 
 const parseClientMessage = (raw: string): ControlClientMessage | null => {
@@ -520,6 +522,9 @@ export const createRemuxServer = (
     const attachedSession = context.attachedSession;
     switch (message.type) {
       case "select_session":
+        if (isManagedMobileSession(message.session)) {
+          throw new Error("cannot attach to internal mobile sessions");
+        }
         await attachControlToBaseSession(context, message.session);
         return;
       case "new_session":
@@ -600,22 +605,13 @@ export const createRemuxServer = (
       case "zoom_pane":
         await deps.tmux.zoomPane(message.paneId);
         return;
-      case "capture_scrollback": {
-        const lines = message.lines ?? config.scrollbackLines;
-        const { text, paneWidth } = await deps.tmux.capturePane(message.paneId, lines);
-        sendJson(context.socket, {
-          type: "scrollback",
-          paneId: message.paneId,
-          lines,
-          text,
-          paneWidth
-        });
-        return;
-      }
       case "send_compose":
         context.runtime?.write(`${message.text}\r`);
         return;
       case "rename_session": {
+        if (context.baseSession !== message.session) {
+          throw new Error("cannot rename a session you are not attached to");
+        }
         await deps.tmux.renameSession(message.session, message.newName);
         // Update all clients attached to the renamed session
         for (const client of controlClients) {

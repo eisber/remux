@@ -9,7 +9,6 @@ export type ControlClientMessage =
   | { type: "split_pane"; paneId: string; orientation: "h" | "v" }
   | { type: "kill_pane"; paneId: string }
   | { type: "zoom_pane"; paneId: string }
-  | { type: "capture_scrollback"; paneId: string; lines?: number }
   | { type: "send_compose"; text: string }
   | { type: "rename_session"; session: string; newName: string }
   | { type: "rename_window"; session: string; windowIndex: number; newName: string };
@@ -54,6 +53,5 @@ export type ControlServerMessage =
   | { type: "attached"; session: string }
   | { type: "session_picker"; sessions: TmuxSessionSummary[] }
   | { type: "tmux_state"; state: TmuxStateSnapshot }
-  | { type: "scrollback"; paneId: string; text: string; lines: number; paneWidth: number }
   | { type: "error"; message: string }
   | { type: "info"; message: string };

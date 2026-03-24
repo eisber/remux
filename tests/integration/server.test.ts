@@ -238,14 +238,7 @@ describe("tmux mobile server", () => {
 
     control.send(JSON.stringify({ type: "split_pane", paneId, orientation: "h" }));
     control.send(JSON.stringify({ type: "send_compose", text: "echo hi" }));
-    const capturePromise = waitForMessage<{ type: string; text: string }>(
-      control,
-      (msg) => msg.type === "scrollback"
-    );
-    control.send(JSON.stringify({ type: "capture_scrollback", paneId, lines: 222 }));
-
-    const capture = await capturePromise;
-    expect(capture.text).toContain("captured 222 lines");
+    await waitForTmuxCall((call) => call === `splitWindow:${paneId}:h`);
     expect(tmux.calls).toContain(`splitWindow:${paneId}:h`);
     expect(ptyFactory.latestProcess().writes).toContain("echo hi\r");
 
@@ -498,6 +491,114 @@ describe("tmux mobile server", () => {
     expect(
       tmux.calls.some((c) => c === "renameWindow:work:0:editor")
     ).toBe(true);
+
+    control.close();
+  });
+
+  test("auth with session param reconnects to specified session", async () => {
+    await runningServer.stop();
+    await startWithSessions(["alpha", "beta"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const authOkPromise = waitForMessage<{ type: string; clientId: string }>(
+      control,
+      (msg) => msg.type === "auth_ok"
+    );
+    const attachedPromise = waitForMessage<{ type: string; session: string }>(
+      control,
+      (msg) => msg.type === "attached"
+    );
+    control.send(JSON.stringify({ type: "auth", token: "test-token", session: "beta" }));
+    await authOkPromise;
+    const attached = await attachedPromise;
+
+    expect(attached.session).toBe("beta");
+
+    control.close();
+  });
+
+  test("auth with non-existent session falls back to picker", async () => {
+    await runningServer.stop();
+    await startWithSessions(["alpha", "beta"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const authOkPromise = waitForMessage<{ type: string }>(
+      control,
+      (msg) => msg.type === "auth_ok"
+    );
+    const pickerPromise = waitForMessage<{ type: string; sessions: Array<{ name: string }> }>(
+      control,
+      (msg) => msg.type === "session_picker"
+    );
+    control.send(JSON.stringify({ type: "auth", token: "test-token", session: "nonexistent" }));
+    await authOkPromise;
+    const picker = await pickerPromise;
+
+    expect(picker.sessions.map((s) => s.name).sort()).toEqual(["alpha", "beta"]);
+
+    control.close();
+  });
+
+  test("rename_session rejected when not attached to that session", async () => {
+    await runningServer.stop();
+    await startWithSessions(["mine"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const { attachedSession } = await authControl(control);
+    expect(attachedSession).toBe("mine");
+
+    // Try to rename a session we're not attached to
+    tmux.calls.length = 0;
+    control.send(JSON.stringify({ type: "rename_session", session: "other", newName: "hacked" }));
+
+    const errorMsg = await waitForMessage<{ type: string; message: string }>(
+      control,
+      (msg) => msg.type === "error"
+    );
+    expect(errorMsg.message).toContain("not attached");
+
+    // renameSession should NOT have been called
+    expect(tmux.calls.some((c) => c.includes("renameSession:"))).toBe(false);
+
+    control.close();
+  });
+
+  test("select_session rejects internal mobile session names", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    await authControl(control);
+
+    control.send(JSON.stringify({ type: "select_session", session: "remux-client-fake123" }));
+
+    const errorMsg = await waitForMessage<{ type: string; message: string }>(
+      control,
+      (msg) => msg.type === "error"
+    );
+    expect(errorMsg.message).toContain("mobile session");
+
+    control.close();
+  });
+
+  test("rename rejects names with control characters", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    await authControl(control);
+
+    // Send a rename with newline in the name — should be rejected by Zod validation
+    control.send(JSON.stringify({ type: "rename_session", session: "main", newName: "bad\nname" }));
+
+    const errorMsg = await waitForMessage<{ type: string; message: string }>(
+      control,
+      (msg) => msg.type === "error"
+    );
+    expect(errorMsg.message).toBeDefined();
+
+    // renameSession should NOT have been called
+    expect(tmux.calls.some((c) => c.includes("renameSession:"))).toBe(false);
 
     control.close();
   });

@@ -617,9 +617,6 @@ export const App = () => {
           setSelectedWindowIndex(null);
           setSelectedPaneId(null);
           return;
-        case "scrollback":
-          // Legacy handler — scroll mode now reads from xterm buffer directly
-          return;
         case "error":
           debugLog("control_socket.error", { message: message.message });
           setErrorMessage(message.message);
