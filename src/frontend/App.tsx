@@ -726,17 +726,16 @@ export const App = () => {
 
   // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
-  // Persist sticky zoom state (skip initial render to avoid overwriting defaults)
-  const stickyZoomMountedRef = useRef(false);
+  // Persist sticky zoom state — only when user explicitly toggles (not on
+  // programmatic defaults like the zellij fallback below).
+  const stickyZoomUserSetRef = useRef(false);
   useEffect(() => {
-    if (!stickyZoomMountedRef.current) {
-      stickyZoomMountedRef.current = true;
-      return;
-    }
+    if (!stickyZoomUserSetRef.current) return;
     localStorage.setItem("remux-sticky-zoom", stickyZoom ? "true" : "false");
   }, [stickyZoom]);
 
-  // Default sticky zoom OFF for zellij when user has no stored preference
+  // Default sticky zoom OFF for zellij when user has no stored preference.
+  // Does NOT persist to localStorage so it won't affect other backends.
   useEffect(() => {
     if (!serverConfig) return;
     const stored = localStorage.getItem("remux-sticky-zoom");
@@ -1237,7 +1236,7 @@ export const App = () => {
             </button>
             <button
               className={`drawer-section-action${stickyZoom ? " active" : ""}`}
-              onClick={() => setStickyZoom((v) => !v)}
+              onClick={() => { stickyZoomUserSetRef.current = true; setStickyZoom((v) => !v); }}
               disabled={!capabilities?.supportsFullscreenPane}
               data-testid="sticky-zoom-toggle"
             >
