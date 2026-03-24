@@ -36,6 +36,10 @@ export class ZellijPaneIO implements PtyProcess {
 
   /** Previous viewport for diffing (avoid sending unchanged lines). */
   private prevViewport: string[] = [];
+  /** Debounce flag for cursor position queries. */
+  private cursorQueryPending = false;
+  /** Client terminal column count for reflowing wide viewport lines. */
+  private clientCols = 0;
 
   constructor(options: {
     binary?: string;
@@ -97,12 +101,52 @@ export class ZellijPaneIO implements PtyProcess {
     }
     if (event.event !== "pane_update") return;
 
-    const viewport = event.viewport ?? [];
+    let viewport = event.viewport ?? [];
+    // Reflow wide lines to client's column count (for narrow mobile screens)
+    if (this.clientCols > 0) {
+      viewport = reflowViewport(viewport, this.clientCols);
+    }
     const output = this.renderViewport(viewport, event.scrollback, event.is_initial);
     if (output) {
       for (const h of this.dataHandlers) h(output);
     }
     this.prevViewport = viewport;
+
+    // Query cursor position asynchronously and send cursor addressing
+    this.queryCursorPosition();
+  }
+
+  /**
+   * Query cursor_coordinates_in_pane from list-panes and send cursor
+   * positioning escape to xterm.js so the cursor appears at the right place.
+   */
+  private queryCursorPosition(): void {
+    if (this.killed || this.cursorQueryPending) return;
+    this.cursorQueryPending = true;
+
+    execFileAsync(this.binary, [
+      "--session", this.session,
+      "action", "list-panes", "--json", "--all"
+    ], { timeout: 3_000 }).then(({ stdout }) => {
+      this.cursorQueryPending = false;
+      if (this.killed) return;
+
+      const panes = JSON.parse(stdout) as Array<{
+        id: number;
+        is_plugin: boolean;
+        cursor_coordinates_in_pane: [number, number] | null;
+      }>;
+      const numericId = parseInt(this.paneId.replace(/^terminal_/, ""), 10);
+      const pane = panes.find((p) => !p.is_plugin && p.id === numericId);
+      if (pane?.cursor_coordinates_in_pane) {
+        const [col, row] = pane.cursor_coordinates_in_pane;
+        // Send cursor position (1-indexed)
+        const cursorSeq = `\x1b[${row + 1};${col + 1}H`;
+        for (const h of this.dataHandlers) h(cursorSeq);
+      }
+    }).catch(() => {
+      this.cursorQueryPending = false;
+    });
   }
 
   /**
@@ -159,9 +203,7 @@ export class ZellijPaneIO implements PtyProcess {
 
     if (!hasChanges) return "";
 
-    // Position cursor at bottom of viewport content
-    // (in a real terminal this would be the cursor position from the shell)
-    parts.push(`\x1b[${viewport.length};1H`);
+    // Reset SGR; cursor position is set by queryCursorPosition() async
     parts.push("\x1b[m");
 
     return parts.join("");
@@ -201,9 +243,10 @@ export class ZellijPaneIO implements PtyProcess {
     }
   }
 
-  resize(_cols: number, _rows: number): void {
-    // Zellij pane sizes are determined by the layout, not individually
-    // settable from CLI. Accept the desktop dimensions.
+  resize(cols: number, _rows: number): void {
+    // Zellij pane sizes can't be set from CLI, but we use the client's
+    // column count to reflow wide viewport lines for narrow screens.
+    if (cols > 0) this.clientCols = cols;
   }
 
   onData(handler: (data: string) => void): void {
@@ -223,6 +266,68 @@ export class ZellijPaneIO implements PtyProcess {
     this.dataHandlers = [];
     this.exitHandlers = [];
   }
+}
+
+// ── ANSI-aware line wrapping ──
+
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+
+/**
+ * Measure visible (non-ANSI) character width of a string.
+ */
+function visibleLength(s: string): number {
+  return s.replace(ANSI_RE, "").length;
+}
+
+/**
+ * Wrap a single ANSI-styled line to `cols` visible characters.
+ * Preserves ANSI escape sequences across wrap boundaries.
+ */
+function wrapAnsiLine(line: string, cols: number): string[] {
+  if (cols <= 0 || visibleLength(line) <= cols) return [line];
+
+  const result: string[] = [];
+  let current = "";
+  let visCount = 0;
+  let i = 0;
+
+  while (i < line.length) {
+    // Check for ANSI escape sequence
+    const remaining = line.slice(i);
+    const ansiMatch = remaining.match(/^\x1b\[[0-9;]*[A-Za-z]/);
+    if (ansiMatch) {
+      // ANSI sequences don't consume visible space
+      current += ansiMatch[0];
+      i += ansiMatch[0].length;
+      continue;
+    }
+
+    // Regular character
+    current += line[i];
+    visCount++;
+    i++;
+
+    if (visCount >= cols) {
+      result.push(current);
+      current = "";
+      visCount = 0;
+    }
+  }
+
+  if (current) result.push(current);
+  return result;
+}
+
+/**
+ * Reflow viewport lines to target column width.
+ */
+function reflowViewport(viewport: string[], targetCols: number): string[] {
+  if (targetCols <= 0) return viewport;
+  const result: string[] = [];
+  for (const line of viewport) {
+    result.push(...wrapAnsiLine(line, targetCols));
+  }
+  return result;
 }
 
 /**
