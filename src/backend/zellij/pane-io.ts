@@ -41,6 +41,13 @@ export class ZellijPaneIO implements PtyProcess {
   /** Client terminal column count for reflowing wide viewport lines. */
   private clientCols = 0;
 
+  /** Write buffer for batching keystrokes into fewer process spawns. */
+  private writeBuf = "";
+  private writeTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Whether a write-chars process is currently in flight. */
+  private writeInFlight = false;
+  private static readonly WRITE_BATCH_MS = 8;
+
   constructor(options: {
     binary?: string;
     session: string;
@@ -256,35 +263,55 @@ export class ZellijPaneIO implements PtyProcess {
   write(data: string): void {
     if (this.killed) return;
 
+    // Buffer keystrokes and flush in batches to reduce process spawns.
+    // Each zellij CLI invocation takes ~30-80ms, so batching is critical.
+    this.writeBuf += data;
+    if (!this.writeTimer) {
+      // If nothing is in-flight, flush on next tick (near-zero delay for first char).
+      // Otherwise, batch within a short window.
+      const delay = this.writeInFlight ? ZellijPaneIO.WRITE_BATCH_MS : 0;
+      this.writeTimer = setTimeout(() => this.flushWriteBuffer(), delay);
+    }
+  }
+
+  private flushWriteBuffer(): void {
+    this.writeTimer = null;
+    if (this.killed || !this.writeBuf) return;
+
+    const data = this.writeBuf;
+    this.writeBuf = "";
+    this.writeInFlight = true;
+
     // Use `action write` (raw bytes) for small payloads with control chars,
     // `write-chars` (string) for regular text to avoid ARG_MAX on large pastes.
     const hasControlChars = /[\x00-\x1f]/.test(data);
     const bytes = Buffer.from(data, "utf8");
 
-    if (hasControlChars && bytes.length <= 256) {
-      // Raw byte mode: each byte as a separate arg
-      const byteArgs = Array.from(bytes).map(String);
-      const args = [
-        "--session", this.session,
-        "action", "write",
-        "--pane-id", this.paneId,
-        ...byteArgs
-      ];
-      execFileAsync(this.binary, args, { timeout: 3_000 }).catch((err) => {
+    const args = (hasControlChars && bytes.length <= 256)
+      ? [
+          "--session", this.session,
+          "action", "write",
+          "--pane-id", this.paneId,
+          ...Array.from(bytes).map(String)
+        ]
+      : [
+          "--session", this.session,
+          "action", "write-chars",
+          "--pane-id", this.paneId,
+          data
+        ];
+
+    execFileAsync(this.binary, args, { timeout: 3_000 })
+      .catch((err) => {
         this.logger?.error(`[zellij-write] ${err}`);
+      })
+      .finally(() => {
+        this.writeInFlight = false;
+        // If more data buffered while we were in-flight, flush immediately
+        if (this.writeBuf && !this.writeTimer) {
+          this.writeTimer = setTimeout(() => this.flushWriteBuffer(), 0);
+        }
       });
-    } else {
-      // String mode: single argument, safe for large payloads
-      const args = [
-        "--session", this.session,
-        "action", "write-chars",
-        "--pane-id", this.paneId,
-        data
-      ];
-      execFileAsync(this.binary, args, { timeout: 3_000 }).catch((err) => {
-        this.logger?.error(`[zellij-write-chars] ${err}`);
-      });
-    }
   }
 
   resize(cols: number, _rows: number): void {
@@ -303,6 +330,10 @@ export class ZellijPaneIO implements PtyProcess {
 
   kill(): void {
     this.killed = true;
+    if (this.writeTimer) {
+      clearTimeout(this.writeTimer);
+      this.writeTimer = null;
+    }
     if (this.subscribeProc) {
       this.subscribeProc.kill("SIGTERM");
       this.subscribeProc = null;
