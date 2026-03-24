@@ -103,6 +103,8 @@ export const App = () => {
   const suppressReconnectRef = useRef(false);
   /** Zellij pane viewport width — used to match xterm cols to pane content. */
   const paneViewportColsRef = useRef(0);
+  /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
+  const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
 
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -406,7 +408,9 @@ export const App = () => {
             sessionStorage.removeItem("remux-password");
           }
           if (message.capabilities) setCapabilities(message.capabilities);
-          openTerminalSocket(passwordValue, message.clientId);
+          // Defer terminal WS until "attached" — the server hasn't created
+          // the PTY runtime until session attach completes.
+          pendingTerminalAuthRef.current = { password: passwordValue, clientId: message.clientId };
           return;
         case "auth_error":
           debugLog("control_socket.auth_error", { reason: message.reason });
@@ -430,6 +434,14 @@ export const App = () => {
           setSessionChoices(null);
           setDrawerOpen(false);
           setStatusMessage(`attached: ${message.session}`);
+          // Now open terminal socket — PTY runtime is ready
+          if (pendingTerminalAuthRef.current) {
+            openTerminalSocket(
+              pendingTerminalAuthRef.current.password,
+              pendingTerminalAuthRef.current.clientId
+            );
+            pendingTerminalAuthRef.current = null;
+          }
           if (fitAddonRef.current) {
             fitAddonRef.current.fit();
           }
