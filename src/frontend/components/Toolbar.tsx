@@ -12,10 +12,11 @@ export interface ToolbarProps {
   onFocusTerminal: () => void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   setStatusMessage: (msg: string) => void;
+  hidden?: boolean;
 }
 
 export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
-  function Toolbar({ sendRaw, onFocusTerminal, fileInputRef, setStatusMessage }, ref) {
+  function Toolbar({ sendRaw, onFocusTerminal, fileInputRef, setStatusMessage, hidden }, ref) {
     const [modifiers, setModifiers] = useState<Record<ModifierKey, ModifierMode>>({
       ctrl: "off",
       alt: "off",
@@ -104,7 +105,7 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
     }, [toolbarExpanded]);
 
     return (
-      <section className="toolbar" onMouseUp={onFocusTerminal}>
+      <section className="toolbar" onMouseUp={onFocusTerminal} style={hidden ? { display: "none" } : undefined}>
         {/* Row 1: Esc, Ctrl, Alt, Cmd, /, @, Hm, ↑, Ed */}
         <div className="toolbar-main">
           <button onClick={() => sendTerminal("\u001b")}>Esc</button>

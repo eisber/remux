@@ -893,15 +893,14 @@ export const App = () => {
         }}
       />
 
-      {viewMode === "terminal" && (
-        <Toolbar
-          ref={toolbarRef}
-          sendRaw={sendRawToSocket}
-          onFocusTerminal={focusTerminal}
-          fileInputRef={fileInputRef}
-          setStatusMessage={setStatusMessage}
-        />
-      )}
+      <Toolbar
+        ref={toolbarRef}
+        sendRaw={sendRawToSocket}
+        onFocusTerminal={focusTerminal}
+        fileInputRef={fileInputRef}
+        setStatusMessage={setStatusMessage}
+        hidden={viewMode !== "terminal"}
+      />
 
       {composeEnabled && (
         <section className="compose-bar">
