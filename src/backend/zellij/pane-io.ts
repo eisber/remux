@@ -31,6 +31,8 @@ export class ZellijPaneIO implements PtyProcess {
 
   /** Previous viewport for diffing (avoid sending unchanged lines). */
   private prevViewport: string[] = [];
+  /** Raw (un-reflowed) viewport from the last subscribe event. */
+  private rawViewport: string[] = [];
   /** Client terminal column count for reflowing wide viewport lines. */
   private clientCols = 0;
 
@@ -113,7 +115,9 @@ export class ZellijPaneIO implements PtyProcess {
 
     if (event.event !== "pane_update") return;
 
-    let viewport = event.viewport ?? [];
+    const rawViewport = event.viewport ?? [];
+    this.rawViewport = rawViewport;
+    let viewport = rawViewport;
     if (this.clientCols > 0) {
       viewport = reflowViewport(viewport, this.clientCols);
     }
@@ -219,7 +223,24 @@ export class ZellijPaneIO implements PtyProcess {
   resize(cols: number, _rows: number): void {
     // Zellij pane sizes can't be set from CLI, but we track client columns
     // to reflow wide viewport lines for narrow screens.
-    if (cols > 0) this.clientCols = cols;
+    if (cols <= 0 || cols === this.clientCols) return;
+    const prevCols = this.clientCols;
+    this.clientCols = cols;
+
+    // Re-render with new column width if we have a cached viewport.
+    // This is critical for the initial load: the subscribe event arrives
+    // before the terminal WS sends resize, so the first render has no
+    // reflow. When resize arrives, we must re-render with correct cols.
+    if (this.rawViewport.length > 0 && (prevCols === 0 || prevCols !== cols)) {
+      const viewport = reflowViewport(this.rawViewport, cols);
+      // Force full redraw by clearing prevViewport
+      this.prevViewport = [];
+      const output = this.renderViewport(viewport, null, true);
+      if (output) {
+        for (const h of this.dataHandlers) h(output);
+      }
+      this.prevViewport = viewport;
+    }
   }
 
   onData(handler: (data: string) => void): void {
