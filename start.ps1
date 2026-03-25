@@ -28,6 +28,18 @@ if ($isProd) {
     # Production mode: always rebuild to ensure dist/ is current.
     Write-Host "Building remux..." -ForegroundColor Yellow
     npm run build
+    # Use a stable token so the URL doesn't change on restart.
+    if (-not $env:REMUX_TOKEN) {
+        $tokenFile = Join-Path $env:USERPROFILE ".remux" "token"
+        if (Test-Path $tokenFile) {
+            $env:REMUX_TOKEN = (Get-Content $tokenFile -Raw).Trim()
+        } else {
+            $env:REMUX_TOKEN = -join ((48..57) + (65..90) + (97..122) | Get-Random -Count 24 | ForEach-Object { [char]$_ })
+            New-Item -ItemType Directory -Path (Split-Path $tokenFile) -Force | Out-Null
+            Set-Content $tokenFile $env:REMUX_TOKEN
+        }
+        Write-Host "  Stable token saved to $tokenFile" -ForegroundColor DarkGray
+    }
     Write-Host "Starting remux (production)..." -ForegroundColor Cyan
     node dist/backend/cli.js @passthrough
     return

@@ -135,7 +135,9 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
   return {
     name: "github-device-flow",
     async send(event) {
-      let token = localStorage.getItem("remux-github-token");
+      try {
+        console.log("[github-adapter] send called with event:", JSON.stringify(event).substring(0, 500));
+        let token = localStorage.getItem("remux-github-token");
 
       // Try server-side storage.
       if (!token) {
@@ -188,6 +190,8 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
       });
 
       if (!resp.ok) {
+        const errBody = await resp.text();
+        console.error("[github-adapter] GitHub API error:", resp.status, errBody);
         if (resp.status === 401) {
           localStorage.removeItem("remux-github-token");
           fetch("/api/auth/github-token", {
@@ -200,7 +204,12 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
       }
 
       const issue = await resp.json() as { number?: number };
+      console.log("[github-adapter] issue created:", issue.number);
       return { ok: true, deliveryId: String(issue.number ?? "") };
+    } catch (err) {
+      console.error("[github-adapter] unexpected error:", err);
+      return { ok: false, error: String(err) };
+    }
     },
   };
 }
