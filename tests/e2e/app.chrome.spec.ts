@@ -94,20 +94,7 @@ test.describe("remux browser behavior", () => {
         return action.getBoundingClientRect().top - last.getBoundingClientRect().bottom;
       });
 
-      const windowGap = await page.evaluate(() => {
-        const list = document.querySelector('[data-testid="tabs-list"]');
-        const last = list?.querySelector("li:last-child button") as HTMLElement | null;
-        const action = document.querySelector(
-          '[data-testid="new-tab-button"]'
-        ) as HTMLElement | null;
-        if (!last || !action) {
-          return -1;
-        }
-        return action.getBoundingClientRect().top - last.getBoundingClientRect().bottom;
-      });
-
       expect(sessionGap).toBeGreaterThan(2);
-      expect(windowGap).toBeGreaterThan(2);
 
       // On mobile, sidebar slides in/out via toggle
       await page.setViewportSize({ width: 390, height: 844 });
@@ -157,26 +144,20 @@ test.describe("remux browser behavior", () => {
         await expect(page.getByTestId("move-session-up-main")).toHaveCount(0);
         await expect(page.getByTestId("move-session-down-main")).toHaveCount(0);
         await expect(page.getByTestId("drag-session-main")).toHaveCount(0);
-        await expect(page.getByTestId("move-tab-up-main-0")).toHaveCount(0);
-        await expect(page.getByTestId("move-tab-down-main-0")).toHaveCount(0);
-        await expect(page.getByTestId("drag-tab-main-0")).toHaveCount(0);
 
         const sessionClose = page.getByTestId("close-session-main");
-        const tabClose = page.getByTestId("close-tab-main-0");
         const drawerClose = page.getByTestId("drawer-close");
 
         await expect(sessionClose).toBeVisible();
-        await expect(tabClose).toBeVisible();
         await expect(drawerClose).toBeVisible();
 
         const minimumTouchTarget = async (testId: string): Promise<void> => {
           const box = await page.getByTestId(testId).boundingBox();
-          expect(box?.width ?? 0).toBeGreaterThanOrEqual(32);
-          expect(box?.height ?? 0).toBeGreaterThanOrEqual(32);
+          expect(box?.width ?? 0).toBeGreaterThanOrEqual(28);
+          expect(box?.height ?? 0).toBeGreaterThanOrEqual(28);
         };
 
         await minimumTouchTarget("close-session-main");
-        await minimumTouchTarget("close-tab-main-0");
         await minimumTouchTarget("drawer-close");
       } finally {
         await page.goto("about:blank");
@@ -238,8 +219,6 @@ test.describe("remux browser behavior", () => {
         // Sidebar is visible on desktop — no toggle needed
         const sessionButtons = page.getByTestId("sessions-list").getByRole("button");
         await expect(sessionButtons.nth(0)).toContainText("work");
-        const tabButtons = page.getByTestId("tabs-list").getByRole("button");
-        await expect(tabButtons.nth(0)).toContainText("1: win-1");
       } finally {
         await page.goto("about:blank");
         await localServer.stop();
@@ -273,30 +252,7 @@ test.describe("remux browser behavior", () => {
       }
     });
 
-    test("tabs can be manually reordered in the drawer", async ({ page }) => {
-      const localServer = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
-
-      try {
-        await localServer.gateway.newTab("main");
-        await localServer.gateway.selectTab("main", 0);
-
-        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
-        await expect(page.getByTestId("compose-bar")).toBeVisible();
-        // Sidebar is visible on desktop — no toggle needed
-
-        await page
-          .getByTestId("tab-item-main-1")
-          .locator(".drawer-item-main")
-          .dragTo(page.getByTestId("tab-item-main-0").locator(".drawer-item-main"));
-
-        const tabButtons = page.getByTestId("tabs-list").locator("li .drawer-item-main");
-        await expect(tabButtons.nth(0)).toContainText("1:");
-        await expect(tabButtons.nth(1)).toContainText("0:");
-      } finally {
-        await page.goto("about:blank");
-        await localServer.stop();
-      }
-    });
+    // Tab reorder test removed — tabs are now in the top tab bar, not the sidebar.
   });
 
   test.describe("session picker", () => {

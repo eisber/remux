@@ -365,38 +365,17 @@ export const App = () => {
     return colorMap;
   }, [snapshot.sessions]);
 
-  // Build flat tab list: one tab per tab across all sessions.
+  // Build tab list for the active session only.
   const tabs = useMemo(() => {
-    const result: Array<{
-      key: string;
-      label: string;
-      sessionName: string;
-      windowIndex: number;
-      isActive: boolean;
-      hasBell: boolean;
-      color: string;
-    }> = [];
-
-    for (const session of snapshot.sessions) {
-      for (const tab of session.tabs) {
-        const isActive =
-          session.name === (attachedSession || activeSession?.name) &&
-          tab.index === activeTab?.index;
-        result.push({
-          key: `${session.name}:${tab.index}`,
-          label: session.tabs.length > 1
-            ? `${session.name}/${tab.name}`
-            : session.name,
-          sessionName: session.name,
-          windowIndex: tab.index,
-          isActive,
-          hasBell: bellSessions.has(session.name) && !isActive,
-          color: sessionColors.get(session.name) ?? "#3b82f6",
-        });
-      }
-    }
-    return result;
-  }, [snapshot.sessions, attachedSession, activeSession, activeTab, bellSessions, sessionColors]);
+    if (!activeSession) return [];
+    return orderedActiveTabs.map((tab) => ({
+      key: `${activeSession.name}:${tab.index}`,
+      label: `${tab.index}: ${tab.name}`,
+      windowIndex: tab.index,
+      isActive: tab.index === activeTab?.index,
+      tab,
+    }));
+  }, [activeSession, orderedActiveTabs, activeTab]);
 
   const sendControl = (payload: Record<string, unknown>): void => {
     if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
@@ -1308,27 +1287,31 @@ export const App = () => {
           {tabs.map((tab) => (
             <button
               key={tab.key}
-              className={`tab${tab.isActive ? " active" : ""}${tab.hasBell ? " bell" : ""}`}
-              onClick={() => {
-                const currentSession = attachedSession || activeSession?.name;
-                if (tab.sessionName !== currentSession) {
-                  sendControl({ type: "select_session", session: tab.sessionName });
-                  setSelectedWindowIndex(tab.windowIndex);
-                  setSelectedPaneId(null);
-                } else {
-                  const tabState = activeSession?.tabs.find((t) => t.index === tab.windowIndex);
-                  if (tabState) {
-                    selectTab(tabState);
-                  } else {
-                    sendControl({ type: "select_tab", session: tab.sessionName, tabIndex: tab.windowIndex });
-                    setSelectedWindowIndex(tab.windowIndex);
-                  }
-                }
-              }}
+              className={`tab${tab.isActive ? " active" : ""}`}
+              onClick={() => selectTab(tab.tab)}
             >
-              <span className="tab-dot" style={{ background: tab.color }} />
-              {tab.hasBell && <span className="tab-bell">🔔</span>}
               <span className="tab-label">{tab.label}</span>
+              {activeSession && activeSession.tabs.length > 1 && (
+                <span
+                  className="tab-close"
+                  role="button"
+                  aria-label={`Close tab ${tab.windowIndex}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (tab.isActive) {
+                      setSelectedWindowIndex(null);
+                      setSelectedPaneId(null);
+                    }
+                    sendControl({
+                      type: "close_tab",
+                      session: activeSession.name,
+                      tabIndex: tab.windowIndex,
+                    });
+                  }}
+                >
+                  ×
+                </span>
+              )}
             </button>
           ))}
           <button
@@ -1733,151 +1716,6 @@ export const App = () => {
             >
               + New Session
             </button>
-            <h3>Tabs ({activeSession?.name ?? "-"})</h3>
-            <ul data-testid="tabs-list">
-              {activeSession
-                ? orderedActiveTabs.map((tab) => (
-                    <li
-                      key={`${activeSession.name}-${tab.index}`}
-                      data-testid={`tab-item-${activeSession.name}-${tab.index}`}
-                      data-tab-key={getTabOrderKey(tab)}
-                      className={tabDropTarget === getTabOrderKey(tab) ? "drawer-sort-target" : undefined}
-                      onDragOver={(event) => {
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                      }}
-                      onDragEnter={(event) => {
-                        event.preventDefault();
-                        const targetKey = getTabOrderKey(tab);
-                        if (draggedTabKey && draggedTabKey !== targetKey) {
-                          setTabDropTarget(targetKey);
-                          setWorkspaceOrder((current) => reorderSessionTabs(
-                            current,
-                            activeSession.name,
-                            draggedTabKey,
-                            targetKey
-                          ));
-                        }
-                      }}
-                      onDragLeave={(event) => {
-                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                          setTabDropTarget((current) => current === getTabOrderKey(tab) ? null : current);
-                        }
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        const targetKey = getTabOrderKey(tab);
-                        if (!draggedTabKey || draggedTabKey === targetKey) {
-                          setTabDropTarget(null);
-                          return;
-                        }
-                        setWorkspaceOrder((current) => reorderSessionTabs(
-                          current,
-                          activeSession.name,
-                          draggedTabKey,
-                          targetKey
-                        ));
-                        setDraggedTabKey(null);
-                        setTabDropTarget(null);
-                      }}
-                    >
-                      {renamingWindow?.session === activeSession.name && renamingWindow?.index === tab.index ? (
-                        <input
-                          className="rename-input"
-                          value={renameWindowValue}
-                          onChange={(e) => setRenameWindowValue(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && renameWindowValue.trim()) {
-                              renameHandledByKeyRef.current = true;
-                              sendControl({ type: "rename_tab", session: activeSession.name, tabIndex: tab.index, newName: renameWindowValue.trim() });
-                              setRenamingWindow(null);
-                            } else if (e.key === "Escape") {
-                              renameHandledByKeyRef.current = true;
-                              setRenamingWindow(null);
-                            }
-                          }}
-                          onBlur={() => {
-                            if (renameHandledByKeyRef.current) {
-                              renameHandledByKeyRef.current = false;
-                              return;
-                            }
-                            if (renameWindowValue.trim() && renameWindowValue.trim() !== tab.name) {
-                              sendControl({ type: "rename_tab", session: activeSession.name, tabIndex: tab.index, newName: renameWindowValue.trim() });
-                            }
-                            setRenamingWindow(null);
-                          }}
-                          autoFocus
-                          data-testid="rename-tab-input"
-                        />
-                      ) : (
-                        <div className="drawer-item-row">
-                          <button
-                            draggable
-                            onClick={() => selectTab(tab)}
-                            onDragStart={(event) => {
-                              beginDrag(event, "tab", getTabOrderKey(tab));
-                              setDraggedTabKey(getTabOrderKey(tab));
-                            }}
-                            onDragEnd={() => {
-                              setDraggedTabKey(null);
-                              setTabDropTarget(null);
-                            }}
-                            onDoubleClick={capabilities?.supportsTabRename ? (e) => {
-                              e.preventDefault();
-                              setRenamingWindow({ session: activeSession.name, index: tab.index });
-                              setRenameWindowValue(tab.name);
-                            } : undefined}
-                            className={`drawer-item-main${tab.index === activeTab?.index ? " active" : ""}`}
-                            data-testid={`tab-drag-target-${activeSession.name}-${tab.index}`}
-                          >
-                            <span className="item-name">
-                              {tab.index}: {tab.name}
-                              {tab.index === activeTab?.index ? " *" : ""}
-                            </span>
-                            {(() => {
-                              const label = formatContext(deriveContext(tab.panes));
-                              return label ? <span className="item-context">{label}</span> : null;
-                            })()}
-                          </button>
-                          <button
-                            type="button"
-                            className="drawer-close-action"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (tab.index === activeTab?.index) {
-                                setSelectedWindowIndex(null);
-                                setSelectedPaneId(null);
-                              }
-                              sendControl({
-                                type: "close_tab",
-                                session: activeSession.name,
-                                tabIndex: tab.index
-                              });
-                            }}
-                            disabled={activeSession.tabs.length <= 1}
-                            data-testid={`close-tab-${activeSession.name}-${tab.index}`}
-                            aria-label={`Close tab ${tab.index} in session ${activeSession.name}`}
-                            title={`Close tab ${tab.index}`}
-                          >
-                            <span aria-hidden="true">×</span>
-                          </button>
-                        </div>
-                      )}
-                    </li>
-                  ))
-                : null}
-            </ul>
-            <button
-              className="drawer-section-action"
-              onClick={() =>
-                activeSession && sendControl({ type: "new_tab", session: activeSession.name })
-              }
-              disabled={!activeSession}
-              data-testid="new-tab-button"
-            >
-              + New Tab
-            </button>
-
             <h3>Appearance</h3>
             <div className="theme-toggle">
               <button
@@ -1914,97 +1752,62 @@ export const App = () => {
             }}>Reset to Auto</button>
 
             <h3>Snippets</h3>
-            {groupedSnippetList.map((group) => {
-              const collapsed = collapsedSnippetGroups[group.name] === true;
-              return (
-                <div className="snippet-group" key={group.name}>
+            <div className="snippet-list">
+              {snippets.map((s) => (
+                <div
+                  className="snippet-item"
+                  key={s.id}
+                  draggable
+                  data-testid={`snippet-item-${s.id}`}
+                  onDragStart={(event) => {
+                    beginDrag(event, "snippet", s.id);
+                    setDraggedSnippetId(s.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedSnippetId(null);
+                    setSnippetDropTarget(null);
+                  }}
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDragEnter={(event) => {
+                    event.preventDefault();
+                    if (draggedSnippetId && draggedSnippetId !== s.id) {
+                      setSnippetDropTarget(s.id);
+                      persistSnippetPatch((current) => reorderById(current, draggedSnippetId, s.id));
+                    }
+                  }}
+                  onDragLeave={(event) => {
+                    if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                      setSnippetDropTarget((current) => current === s.id ? null : current);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    if (!draggedSnippetId || draggedSnippetId === s.id) {
+                      setSnippetDropTarget(null);
+                      return;
+                    }
+                    persistSnippetPatch((current) => reorderById(current, draggedSnippetId, s.id));
+                    setDraggedSnippetId(null);
+                    setSnippetDropTarget(null);
+                  }}
+                  style={snippetDropTarget === s.id ? { borderColor: "var(--border-active)" } : undefined}
+                >
+                  <div className="snippet-item-info">
+                    <span className="snippet-label">{s.icon ? `${s.icon} ` : ""}{s.label}</span>
+                    <span className="snippet-cmd">{s.command}{s.autoEnter ? " ↵" : ""}</span>
+                  </div>
+                  <button onClick={() => setEditingSnippet({ ...s })}>&#x270E;</button>
                   <button
-                    type="button"
-                    className="snippet-group-toggle"
-                    onClick={() => setCollapsedSnippetGroups((current) => ({
-                      ...current,
-                      [group.name]: !collapsed
-                    }))}
+                    onClick={() => persistSnippetPatch((current) => current.filter((x) => x.id !== s.id))}
                   >
-                    {group.name} {collapsed ? "▼" : "▲"}
+                    &times;
                   </button>
-                  {!collapsed && (
-                    <div className="snippet-list">
-                      {group.snippets.map((s) => (
-                        <div
-                          className="snippet-item"
-                          key={s.id}
-                          draggable
-                          data-testid={`snippet-item-${s.id}`}
-                          onDragStart={(event) => {
-                            beginDrag(event, "snippet", s.id);
-                            setDraggedSnippetId(s.id);
-                          }}
-                          onDragEnd={() => {
-                            setDraggedSnippetId(null);
-                            setSnippetDropTarget(null);
-                          }}
-                          onDragOver={(event) => {
-                            event.preventDefault();
-                            event.dataTransfer.dropEffect = "move";
-                          }}
-                          onDragEnter={(event) => {
-                            event.preventDefault();
-                            if (draggedSnippetId && draggedSnippetId !== s.id) {
-                              setSnippetDropTarget(s.id);
-                              persistSnippetPatch((current) => reorderById(
-                                current.map((snippet) => (
-                                  snippet.id === draggedSnippetId
-                                    ? { ...snippet, group: s.group }
-                                    : snippet
-                                )),
-                                draggedSnippetId,
-                                s.id
-                              ));
-                            }
-                          }}
-                          onDragLeave={(event) => {
-                            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                              setSnippetDropTarget((current) => current === s.id ? null : current);
-                            }
-                          }}
-                          onDrop={(event) => {
-                            event.preventDefault();
-                            if (!draggedSnippetId || draggedSnippetId === s.id) {
-                              setSnippetDropTarget(null);
-                              return;
-                            }
-                            persistSnippetPatch((current) => reorderById(
-                              current.map((snippet) => (
-                                snippet.id === draggedSnippetId
-                                  ? { ...snippet, group: s.group }
-                                  : snippet
-                              )),
-                              draggedSnippetId,
-                              s.id
-                            ));
-                            setDraggedSnippetId(null);
-                            setSnippetDropTarget(null);
-                          }}
-                          style={snippetDropTarget === s.id ? { borderColor: "var(--border-active)" } : undefined}
-                        >
-                          <span className="snippet-label">{s.icon ? `${s.icon} ` : ""}{s.label}</span>
-                          <span className="snippet-cmd">
-                            [{s.group?.trim() || "Ungrouped"}] {s.command}{s.autoEnter ? " ↵" : ""}
-                          </span>
-                          <button onClick={() => setEditingSnippet({ ...s })}>&#x270E;</button>
-                          <button
-                            onClick={() => persistSnippetPatch((current) => current.filter((x) => x.id !== s.id))}
-                          >
-                            &times;
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
                 </div>
-              );
-            })}
+              ))}
+            </div>
             {editingSnippet ? (
               <div className="snippet-form">
                 <input
@@ -2016,11 +1819,6 @@ export const App = () => {
                   placeholder="Emoji / icon"
                   value={editingSnippet.icon ?? ""}
                   onChange={(e) => setEditingSnippet({ ...editingSnippet, icon: e.target.value || undefined })}
-                />
-                <input
-                  placeholder="Group"
-                  value={editingSnippet.group ?? ""}
-                  onChange={(e) => setEditingSnippet({ ...editingSnippet, group: e.target.value || undefined })}
                 />
                 <input
                   placeholder="Command"
