@@ -104,7 +104,7 @@ export const App = () => {
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [statusMessage, setStatusMessage] = useState<string>("");
-  const [password, setPassword] = useState(sessionStorage.getItem("remux-password") ?? "");
+  const [password, setPassword] = useState(localStorage.getItem("remux-password") ?? "");
   const [needsPasswordInput, setNeedsPasswordInput] = useState(false);
   const [passwordErrorMessage, setPasswordErrorMessage] = useState("");
   const [authReady, setAuthReady] = useState(false);
@@ -480,9 +480,9 @@ export const App = () => {
           setAuthReady(true);
           setNeedsPasswordInput(false);
           if (message.requiresPassword && passwordValue) {
-            sessionStorage.setItem("remux-password", passwordValue);
+            localStorage.setItem("remux-password", passwordValue);
           } else {
-            sessionStorage.removeItem("remux-password");
+            localStorage.removeItem("remux-password");
           }
           if (message.capabilities) setCapabilities(message.capabilities);
           pendingTerminalAuthRef.current = { password: passwordValue, clientId: message.clientId };
@@ -497,7 +497,7 @@ export const App = () => {
           if (passwordAuthFailed) {
             setNeedsPasswordInput(true);
             setPasswordErrorMessage(formatPasswordError(message.reason));
-            sessionStorage.removeItem("remux-password");
+            localStorage.removeItem("remux-password");
           }
           return;
         }
@@ -1226,3 +1226,4 @@ export const App = () => {
     </div>
   );
 };
+
