@@ -157,23 +157,43 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
         if (!token) return { ok: false, error: "User cancelled GitHub authorization" };
       }
 
-      // Create issue via GitHub API.
-      const message = String(event.message ?? event.label ?? "Feedback");
-      const category = String(event.category ?? "feedback");
-      const page = String(event.page ?? window.location.href);
+      // Create issue via GitHub API — match snapfeed event structure.
+      const detail = (event.detail ?? {}) as Record<string, unknown>;
+      const message = String(detail.message || event.target || "No message");
+      const category = String(detail.category ?? "feedback");
+      const page = String(event.page ?? "/");
       const labels = ["feedback"];
       const categoryMap: Record<string, string> = { bug: "bug", idea: "enhancement", question: "question" };
       if (categoryMap[category]) labels.push(categoryMap[category]);
 
-      const body = [
+      const lines = [
         `**Category:** ${category}`,
         `**Page:** ${page}`,
-        `**Time:** ${new Date().toISOString()}`,
+        `**Timestamp:** ${String(event.ts ?? new Date().toISOString())}`,
+        "",
+        "### Message",
         "",
         message,
-        "",
-        event.screenshot ? `![screenshot](${event.screenshot})` : "",
-      ].filter(Boolean).join("\n");
+      ];
+
+      // Console errors.
+      const consoleErrors = detail.console_errors;
+      if (Array.isArray(consoleErrors) && consoleErrors.length > 0) {
+        lines.push("", "### Console Errors", "");
+        for (const err of consoleErrors) {
+          lines.push(`- \`${String(err)}\``);
+        }
+      }
+
+      // Screenshot.
+      const screenshot = event.screenshot as string | undefined;
+      if (screenshot) {
+        const dataUrl = screenshot.startsWith("data:") ? screenshot : `data:image/jpeg;base64,${screenshot}`;
+        lines.push("", "### Screenshot", "", `![feedback screenshot](${dataUrl})`);
+      }
+
+      const body = lines.join("\n");
+      const title = `[Feedback] ${message.substring(0, 80)}${message.length > 80 ? "…" : ""}`;
 
       const resp = await fetch("https://api.github.com/repos/eisber/remux/issues", {
         method: "POST",
@@ -182,11 +202,7 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
           "Content-Type": "application/json",
           Accept: "application/vnd.github.v3+json",
         },
-        body: JSON.stringify({
-          title: `[Feedback] ${message.substring(0, 80)}`,
-          body,
-          labels,
-        }),
+        body: JSON.stringify({ title, body, labels }),
       });
 
       if (!resp.ok) {

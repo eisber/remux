@@ -1382,15 +1382,25 @@ export const createRemuxServer = (
         return;
       }
 
-      // Initialize snapfeed telemetry (optional).
+      // Initialize snapfeed telemetry (optional) — must be before server.listen.
       try {
         const { openDb } = await import("@microsoft/snapfeed-server");
         const { createExpressRouter } = await import("@microsoft/snapfeed-server/express");
         fs.mkdirSync(path.join(os.homedir(), ".remux"), { recursive: true });
         const feedbackDb = openDb({ path: path.join(os.homedir(), ".remux", "feedback.db") });
-        app.use(createExpressRouter(feedbackDb) as unknown as express.RequestHandler);
+        // Insert before static middleware by re-stacking the router.
+        const telemetryRouter = createExpressRouter(feedbackDb);
+        app.post("/api/telemetry/events", (req, res, next) => {
+          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
+        });
+        app.get("/api/telemetry/events", (req, res, next) => {
+          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
+        });
+        app.get("/api/telemetry/sessions", (req, res, next) => {
+          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
+        });
         logger.log("snapfeed telemetry enabled");
-      } catch { /* snapfeed not installed */ }
+      } catch (err) { logger.error("snapfeed init failed:", String(err)); }
 
       logger.log("server start requested", `${config.host}:${config.port}`);
       monitor = new TmuxStateMonitor(
