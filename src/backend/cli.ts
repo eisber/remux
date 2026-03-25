@@ -11,7 +11,7 @@ import type { CliArgs, RuntimeConfig } from "./config.js";
 import { createRemuxServer } from "./server.js";
 import { createExtensions } from "./extensions.js";
 import { detectSessionBackend } from "./providers/detect.js";
-import { CloudflareTunnelProvider } from "./tunnels/index.js";
+import { createTunnelProvider } from "./tunnels/index.js";
 import { createLogger } from "./util/file-logger.js";
 import { randomToken } from "./util/random.js";
 
@@ -63,6 +63,12 @@ const parseCliArgs = async (): Promise<CliArgs> => {
       default: "auto",
       describe: "Session backend (auto-detect by default)"
     })
+    .option("tunnel-provider", {
+      type: "string",
+      choices: ["auto", "devtunnel", "cloudflare"] as const,
+      default: "auto",
+      describe: "Tunnel provider (auto-detects devtunnel, falls back to cloudflare)"
+    })
     .strict()
     .help()
     .parseAsync();
@@ -73,6 +79,7 @@ const parseCliArgs = async (): Promise<CliArgs> => {
     password: argv.password,
     requirePassword: argv.requirePassword,
     tunnel: argv.tunnel,
+    tunnelProvider: argv.tunnelProvider as CliArgs["tunnelProvider"],
     session: argv.session,
     scrollback: argv.scrollback,
     debugLog: argv.debugLog,
@@ -140,7 +147,9 @@ const main = async (): Promise<void> => {
     frontendDir
   };
 
-  const tunnelProvider = new CloudflareTunnelProvider();
+  const tunnelProvider = createTunnelProvider(args.tunnelProvider, logger);
+
+  const extensions = createExtensions(logger);
   const forceBackend = args.backend !== "auto"
     ? (args.backend as "tmux" | "zellij" | "conpty")
     : undefined;
@@ -152,7 +161,6 @@ const main = async (): Promise<void> => {
     scrollbackLines: args.scrollback,
   });
   logger.log(`Session backend: ${backend.kind}`);
-  const extensions = createExtensions(logger);
 
   const runningServer = createRemuxServer(config, {
     backend: backend.gateway,

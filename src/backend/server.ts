@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -165,7 +166,34 @@ export const createRemuxServer = (
   const app = express();
   app.use(express.json());
 
-  const readAuthHeaders = (req: express.Request): { token?: string; password?: string } => {
+  // GitHub token storage — persists across origins/sessions.
+  const tokenFile = path.join(os.homedir(), ".remux", "github-token");
+
+  app.get("/api/auth/github-token", (_req, res) => {
+    try {
+      const token = fs.readFileSync(tokenFile, "utf8").trim();
+      res.json({ token });
+    } catch {
+      res.json({ token: null });
+    }
+  });
+
+  app.post("/api/auth/github-token", (req, res) => {
+    const { token } = req.body as { token?: string };
+    if (!token || typeof token !== "string") {
+      res.status(400).json({ error: "missing token" });
+      return;
+    }
+    try {
+      fs.mkdirSync(path.dirname(tokenFile), { recursive: true });
+      fs.writeFileSync(tokenFile, token, { mode: 0o600 });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  const readAuthHeaders= (req: express.Request): { token?: string; password?: string } => {
     const authHeader = req.headers.authorization;
     return {
       token: authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined,
@@ -1320,6 +1348,17 @@ export const createRemuxServer = (
       if (started) {
         return;
       }
+
+      // Initialize snapfeed telemetry (optional).
+      try {
+        const { openDb } = await import("@microsoft/snapfeed-server");
+        const { createExpressRouter } = await import("@microsoft/snapfeed-server/express");
+        fs.mkdirSync(path.join(os.homedir(), ".remux"), { recursive: true });
+        const feedbackDb = openDb({ path: path.join(os.homedir(), ".remux", "feedback.db") });
+        app.use(createExpressRouter(feedbackDb) as unknown as express.RequestHandler);
+        logger.log("snapfeed telemetry enabled");
+      } catch { /* snapfeed not installed */ }
+
       logger.log("server start requested", `${config.host}:${config.port}`);
       monitor = new TmuxStateMonitor(
         deps.backend,
