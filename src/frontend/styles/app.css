@@ -177,6 +177,19 @@ button, input {
   grid-template-rows: 1fr;
   background: var(--bg-app);
   overflow: hidden;
+  transition: grid-template-columns var(--transition-normal);
+}
+
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 0px minmax(0, 1fr);
+}
+
+.app-shell.sidebar-collapsed .sidebar {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-right: none;
+  visibility: hidden;
 }
 
 .main-content {
@@ -228,19 +241,19 @@ button, input {
 
 .sidebar-close {
   display: none;
-  min-width: 2.5rem;
-  min-height: 2.5rem;
-  border-radius: 999px;
+  width: 1.75rem;
+  height: 1.75rem;
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  border-radius: 6px;
   border: 1px solid var(--btn-border);
   background: var(--btn-bg);
   color: var(--text-muted);
   cursor: pointer;
   align-items: center;
   justify-content: center;
-  gap: 0.35rem;
-  padding: 0.45rem 0.8rem;
-  font-size: 0.78rem;
-  font-weight: 600;
+  padding: 0;
+  font-size: 0.75rem;
   transition: all var(--transition-fast);
 }
 
@@ -250,12 +263,8 @@ button, input {
 }
 
 .sidebar-close-icon {
-  font-size: 1rem;
+  font-size: 0.9rem;
   line-height: 1;
-}
-
-.sidebar-close-label {
-  letter-spacing: 0.01em;
 }
 
 .sidebar-backdrop {
@@ -640,6 +649,28 @@ button, input {
 }
 
 .tab-bar-burger:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tab-bar-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 100%;
+  background: transparent;
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  font-size: 0.6rem;
+  flex-shrink: 0;
+  padding: 0;
+  transition: all var(--transition-fast);
+}
+
+.tab-bar-sidebar-toggle:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -1469,9 +1500,9 @@ button.danger {
     left: 0;
     top: 0;
     bottom: 0;
-    width: min(90vw, 24rem);
+    width: min(75vw, 20rem);
     transform: translateX(-100%);
-    visibility: hidden;
+    visibility: visible;
     transition: transform var(--transition-slow), visibility var(--transition-slow);
     z-index: 30;
     background: var(--bg-app);
@@ -1487,9 +1518,25 @@ button.danger {
 
   .sidebar-close {
     display: inline-flex;
-    min-width: 3rem;
-    min-height: 3rem;
-    padding-inline: 0.95rem;
+    width: 2rem;
+    height: 2rem;
+    min-width: 2rem;
+    min-height: 2rem;
+  }
+
+  .tab-bar-sidebar-toggle {
+    display: none;
+  }
+
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell.sidebar-collapsed .sidebar {
+    width: min(75vw, 20rem);
+    padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom));
+    visibility: visible;
+    border-right: 1px solid var(--glass-border);
   }
 
   .drawer-close-action {

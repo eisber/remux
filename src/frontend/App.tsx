@@ -169,6 +169,9 @@ export const App = () => {
   const [pendingSessionAttachment, setPendingSessionAttachment] = useState<string | null>(null);
   const [sessionChoices, setSessionChoices] = useState<SessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    localStorage.getItem("remux-sidebar-collapsed") === "true"
+  );
   const [composeText, setComposeText] = useState("");
 
   const [scrollbackHtml, setScrollbackHtml] = useState("");
@@ -795,6 +798,11 @@ export const App = () => {
       });
   }, []);
 
+  // Persist sidebar collapsed state
+  useEffect(() => {
+    localStorage.setItem("remux-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
+  }, [sidebarCollapsed]);
+
   // Theme effect: apply data-theme attribute, persist, update xterm theme
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -1275,24 +1283,53 @@ export const App = () => {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <div className="main-content">
       <header className="tab-bar">
         <button
           onClick={() => setDrawerOpen((value) => !value)}
           className="tab-bar-burger"
           data-testid="drawer-toggle"
-          title="Open sidebar — manage panes, themes, and advanced options"
+          title="Open sidebar"
         >
           ☰
         </button>
-        <div className="top-title">
-          {awaitingSessionSelection
-            ? "Select Session"
-            : `Tab: ${activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}`}
-          {serverConfig?.backendKind === "zellij" && (
-            <span className="experimental-badge" title="Zellij support is experimental">(experimental)</span>
-          )}
+        <button
+          onClick={() => setSidebarCollapsed((v) => !v)}
+          className="tab-bar-sidebar-toggle"
+          title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {sidebarCollapsed ? "▶" : "◀"}
+        </button>
+        {awaitingSessionSelection && (
+          <div className="top-title">Select Session</div>
+        )}
+        <div className="tab-list" data-testid="tab-list" style={awaitingSessionSelection ? { display: "none" } : undefined}>
+          {tabs.map((tab) => (
+            <button
+              key={tab.key}
+              className={`tab${tab.isActive ? " active" : ""}${tab.hasBell ? " bell" : ""}`}
+              onClick={() => {
+                if (tab.sessionName !== (attachedSession || activeSession?.name)) {
+                  sendControl({ type: "select_session", session: tab.sessionName });
+                }
+                sendControl({ type: "select_tab", session: tab.sessionName, tabIndex: tab.windowIndex });
+                setSelectedWindowIndex(tab.windowIndex);
+              }}
+            >
+              <span className="tab-dot" style={{ background: tab.color }} />
+              {tab.hasBell && <span className="tab-bell">🔔</span>}
+              <span className="tab-label">{tab.label}</span>
+            </button>
+          ))}
+          <button
+            className="tab tab-new"
+            onClick={() => activeSession && sendControl({ type: "new_tab", session: activeSession.name })}
+            disabled={!activeSession}
+            title="New tab"
+          >
+            +
+          </button>
         </div>
         <div className="tab-bar-actions">
           <span
@@ -1556,7 +1593,6 @@ export const App = () => {
             aria-label="Close sidebar"
           >
             <span className="sidebar-close-icon" aria-hidden="true">×</span>
-            <span className="sidebar-close-label">Done</span>
           </button>
         </div>
 
@@ -1831,100 +1867,6 @@ export const App = () => {
               data-testid="new-tab-button"
             >
               + New Tab
-            </button>
-
-            <h3>Panes ({activeTab ? `${activeTab.index}` : "-"})</h3>
-            <ul>
-              {activeTab
-                ? activeTab.panes.map((pane) => {
-                    const isActive = pane.id === activePane?.id;
-                    return (
-                      <li key={pane.id}>
-                        <div className="drawer-item-row">
-                          <button
-                            onClick={() => {
-                              setSelectedPaneId(pane.id);
-                              sendControl({ type: "select_pane", paneId: pane.id });
-                              if (stickyZoom && capabilities?.supportsFullscreenPane && !isActive && !pane.zoomed) {
-                                sendControl({ type: "toggle_fullscreen", paneId: pane.id });
-                              }
-                            }}
-                            className={`drawer-item-main${isActive ? " active" : ""}`}
-                          >
-                            <span className="item-name">%{pane.index}: {pane.currentCommand} {isActive ? "*" : ""}</span>
-                            {isActive && pane.zoomed ? (
-                              <span
-                                className="pane-zoom-indicator on"
-                                title="Active pane is zoomed"
-                                aria-label="Pane zoom: on"
-                                data-testid="active-pane-zoom-indicator"
-                              >
-                                🔍
-                              </span>
-                            ) : null}
-                          </button>
-                          <button
-                            type="button"
-                            className="drawer-close-action"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (isActive) {
-                                setSelectedPaneId(null);
-                              }
-                              sendControl({ type: "close_pane", paneId: pane.id });
-                            }}
-                            disabled={activeTab.panes.length <= 1}
-                            data-testid={`close-pane-${pane.id}`}
-                            aria-label={`Close pane ${pane.id}`}
-                            title={`Close pane ${pane.id}`}
-                          >
-                            <span aria-hidden="true">×</span>
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })
-                : null}
-            </ul>
-            <div className="drawer-grid">
-              <button
-                onClick={() =>
-                  activePane &&
-                  sendControl({ type: "split_pane", paneId: activePane.id, direction: "right" })
-                }
-                disabled={!activePane}
-                title="Split pane horizontally — create a side-by-side layout"
-              >
-                Split H
-              </button>
-              <button
-                onClick={() =>
-                  activePane &&
-                  sendControl({ type: "split_pane", paneId: activePane.id, direction: "down" })
-                }
-                disabled={!activePane}
-                title="Split pane vertically — create a top-bottom layout"
-              >
-                Split V
-              </button>
-            </div>
-            <button
-              className="drawer-section-action"
-              onClick={() =>
-                activePane && sendControl({ type: "toggle_fullscreen", paneId: activePane.id })
-              }
-              disabled={!activePane || !activeTab || activeTab.paneCount <= 1 || !capabilities?.supportsFullscreenPane}
-            >
-              Zoom Pane
-            </button>
-            <button
-              className={`drawer-section-action${stickyZoom ? " active" : ""}`}
-              onClick={() => { stickyZoomUserSetRef.current = true; setStickyZoom((v) => !v); }}
-              disabled={!capabilities?.supportsFullscreenPane}
-              data-testid="sticky-zoom-toggle"
-              title="Sticky zoom — automatically zoom the pane when switching windows or panes"
-            >
-              Sticky Zoom: {stickyZoom ? "On" : "Off"}
             </button>
 
             <h3>Appearance</h3>
