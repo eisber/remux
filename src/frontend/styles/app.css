@@ -631,12 +631,15 @@ button, input {
 /* --- Tab Bar --- */
 .tab-bar {
   display: flex;
-  align-items: center;
+  align-items: stretch;
   background: var(--bg-topbar);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border-bottom: 1px solid var(--border);
   overflow: hidden;
+  gap: 0.35rem;
+  min-height: 2.8rem;
+  padding-right: 0.35rem;
 }
 
 .tab-bar-burger {
@@ -685,6 +688,7 @@ button, input {
 
 .top-title {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -706,8 +710,9 @@ button, input {
   display: flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0 0.5rem;
+  padding: 0 0 0 0.3rem;
   flex-shrink: 0;
+  border-left: 1px solid var(--border);
 }
 
 /* Tab bar buttons */
@@ -828,45 +833,81 @@ button, input {
 /* --- Tab list (currently in tab-bar but also used as standalone tabs) --- */
 .tab-list {
   display: flex;
+  align-items: flex-end;
   flex: 1;
+  min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
   -ms-overflow-style: none;
-  gap: 0;
+  gap: 0.18rem;
+  padding-top: 0.28rem;
 }
 
 .tab-list::-webkit-scrollbar { display: none; }
 
+.tab-shell {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 13rem;
+  min-width: 5.75rem;
+  max-width: 14rem;
+  min-height: 2.3rem;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-panel) 88%, transparent) 0%, color-mix(in srgb, var(--bg-panel) 68%, transparent) 100%);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 12px 12px 0 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
+}
+
+.tab-shell::after {
+  content: "";
+  position: absolute;
+  left: 0.7rem;
+  right: 0.7rem;
+  bottom: -1px;
+  height: 1px;
+  background: color-mix(in srgb, var(--bg-topbar) 80%, transparent);
+}
+
+.tab-shell:hover {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-hover) 92%, transparent) 0%, color-mix(in srgb, var(--bg-active) 78%, transparent) 100%);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}
+
+.tab-shell.active {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 96%, transparent) 0%, color-mix(in srgb, var(--bg-panel) 94%, transparent) 100%);
+  border-color: color-mix(in srgb, var(--border-active) 55%, var(--border));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 -6px 20px rgba(0, 0, 0, 0.12);
+  color: var(--text-primary);
+  transform: translateY(1px);
+}
+
+.tab-shell.drag-target {
+  border-color: var(--border-active);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-glow) 80%, var(--bg-panel)) 0%, color-mix(in srgb, var(--accent-subtle) 90%, var(--bg-panel)) 100%);
+}
+
 .tab {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 0.3rem;
-  padding: 0.5rem 0.75rem;
+  padding: 0.58rem 0.45rem 0.48rem 0.85rem;
   background: transparent;
-  color: var(--text-muted);
+  color: inherit;
   border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
   cursor: pointer;
   white-space: nowrap;
   font-family: 'Space Grotesk', sans-serif;
   font-size: 0.72rem;
   font-weight: 500;
-  transition: all var(--transition-fast);
-  flex-shrink: 0;
-}
-
-.tab:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.tab.active {
-  color: var(--text-primary);
-  background: var(--bg-active);
-  border-bottom-color: var(--accent);
-  font-weight: 600;
+  transition: color var(--transition-fast);
 }
 
 .tab.bell {
@@ -879,21 +920,23 @@ button, input {
 }
 
 .tab-close {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  height: 1rem;
-  border-radius: 3px;
-  font-size: 0.7rem;
+  width: 1.45rem;
+  height: 1.45rem;
+  border-radius: 999px;
+  border: none;
+  background: transparent;
+  font-size: 0.82rem;
   line-height: 1;
   text-align: center;
   color: var(--text-muted);
   flex-shrink: 0;
   cursor: pointer;
-  margin-left: 0.15rem;
+  margin: 0 0.35rem 0 0;
   opacity: 0;
-  transition: opacity var(--transition-fast);
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
 }
 
 .tab-close:hover {
@@ -901,14 +944,14 @@ button, input {
   color: var(--text-primary);
 }
 
-.tab:hover .tab-close,
-.tab.active .tab-close {
+.tab-shell:hover .tab-close,
+.tab-shell.active .tab-close {
   opacity: 1;
 }
 
 /* Touch devices: always show close on active tab */
 @media (pointer: coarse) {
-  .tab.active .tab-close {
+  .tab-shell.active .tab-close {
     opacity: 1;
   }
 }
@@ -928,16 +971,39 @@ button, input {
 .tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 10rem;
+  min-width: 0;
+}
+
+.tab-rename-input {
+  width: 100%;
+  min-width: 0;
+  margin: 0.35rem 0.45rem 0.28rem;
+  padding: 0.42rem 0.62rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-active);
+  background: color-mix(in srgb, var(--bg-input) 92%, transparent);
+  color: var(--text-primary);
 }
 
 .tab-new {
+  align-self: center;
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  border-radius: 999px;
+  border: 1px solid var(--btn-border);
+  background: color-mix(in srgb, var(--btn-bg) 85%, transparent);
   color: var(--text-muted);
   font-size: 1rem;
-  padding: 0.4rem 0.6rem;
+  padding: 0;
+  margin-left: 0.15rem;
+  flex-shrink: 0;
+  transition: all var(--transition-fast);
 }
 
 .tab-new:hover {
+  background: var(--btn-hover);
+  border-color: var(--border-active);
   color: var(--accent);
 }
 

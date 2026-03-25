@@ -119,6 +119,61 @@ test.describe("remux browser behavior", () => {
       await expect(page.locator(".sidebar")).not.toHaveClass(/open/);
     });
 
+    test("sidebar stays slim and tab management lives in the header", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
+
+      try {
+        await localServer.gateway.newTab("main");
+        await localServer.gateway.selectTab("main", 0);
+
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+        await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+        await expect(page.getByRole("heading", { name: /^Tabs/ })).toHaveCount(0);
+        await expect(page.getByRole("heading", { name: /^Panes/ })).toHaveCount(0);
+        await expect(page.getByTestId("header-tab-close-1")).toBeVisible();
+
+        await page.getByTestId("header-tab-close-1").click();
+
+        await expect(page.getByTestId("tab-list")).not.toContainText("1: win-1");
+      } finally {
+        await page.goto("about:blank");
+        await localServer.stop();
+      }
+    });
+
+    test("header tabs shrink as more tabs are opened", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
+
+      try {
+        await localServer.gateway.newTab("main");
+        await localServer.gateway.selectTab("main", 0);
+
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+        await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+        await expect(page.locator(".tab-list .tab-shell")).toHaveCount(2);
+
+        const wideTabWidth = await page.locator(".tab-list .tab-shell").first().evaluate((element) =>
+          Math.round(element.getBoundingClientRect().width)
+        );
+
+        for (let index = 0; index < 6; index += 1) {
+          await localServer.gateway.newTab("main");
+        }
+
+        await expect(page.locator(".tab-list .tab-shell")).toHaveCount(8);
+
+        const narrowTabWidth = await page.locator(".tab-list .tab-shell").first().evaluate((element) =>
+          Math.round(element.getBoundingClientRect().width)
+        );
+
+        expect(narrowTabWidth).toBeLessThan(wideTabWidth - 20);
+      } finally {
+        await page.goto("about:blank");
+        await localServer.stop();
+      }
+    });
+
     test("viewport changes propagate terminal resize to the backend", async ({ page }) => {
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.goto(`${server.baseUrl}/?token=${server.token}`);

@@ -5,8 +5,6 @@ import { TerminalStage } from "./components/TerminalStage";
 import { ComposeBar } from "./components/ComposeBar";
 import { PinnedSnippetsBar, SnippetPicker, SnippetTemplatePanel } from "./components/SnippetPanels";
 import { SessionSection } from "./components/sidebar/SessionSection";
-import { TabSection } from "./components/sidebar/TabSection";
-import { PaneSection } from "./components/sidebar/PaneSection";
 import { AppearanceSection } from "./components/sidebar/AppearanceSection";
 import { SnippetsSection } from "./components/sidebar/SnippetsSection";
 import {
@@ -28,6 +26,7 @@ import {
   type SnippetRecord as Snippet
 } from "./snippets";
 import {
+  getTabOrderKey,
   normalizeWorkspaceOrder,
   orderSessions,
   orderTabs,
@@ -281,11 +280,15 @@ export const App = () => {
   );
   const headerTabs = useMemo(
     () => orderedActiveTabs.map((tab) => ({
+      canClose: orderedActiveTabs.length > 1,
       index: tab.index,
       isActive: tab.index === activeTab?.index,
-      label: `${tab.index}: ${tab.name}`
+      isRenaming: renamingWindow?.session === activeSession?.name && renamingWindow?.index === tab.index,
+      key: getTabOrderKey(tab),
+      label: `${tab.index}: ${tab.name}`,
+      name: tab.name
     })),
-    [activeTab?.index, orderedActiveTabs]
+    [activeSession?.name, activeTab?.index, orderedActiveTabs, renamingWindow]
   );
   const groupedSnippetList: SnippetGroup[] = useMemo(
     () => groupSnippets(snippets),
@@ -823,6 +826,34 @@ export const App = () => {
     }
   };
 
+  const closeHeaderTab = (tabIndex: number): void => {
+    if (!activeSession) {
+      return;
+    }
+    if (tabIndex === activeTab?.index) {
+      setSelectedWindowIndex(null);
+      setSelectedPaneId(null);
+    }
+    if (renamingWindow?.session === activeSession.name && renamingWindow.index === tabIndex) {
+      setRenamingWindow(null);
+    }
+    sendControl({ type: "close_tab", session: activeSession.name, tabIndex });
+  };
+
+  const renameHeaderTab = (tabIndex: number, newName: string): void => {
+    if (!activeSession || !newName.trim()) {
+      return;
+    }
+    sendControl({ type: "rename_tab", session: activeSession.name, tabIndex, newName: newName.trim() });
+  };
+
+  const reorderHeaderTabs = (draggedKey: string, targetKey: string): void => {
+    if (!activeSession || draggedKey === targetKey) {
+      return;
+    }
+    setWorkspaceOrder((current) => reorderSessionTabs(current, activeSession.name, draggedKey, targetKey));
+  };
+
   const sendCompose = (): void => {
     const text = composeText.trim();
     if (!text) {
@@ -893,19 +924,38 @@ export const App = () => {
         activeTabLabel={activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}
         awaitingSessionSelection={awaitingSessionSelection}
         bandwidthStats={bandwidthStats}
+        beginDrag={beginDrag}
+        draggedTabKey={draggedTabKey}
+        onCloseTab={closeHeaderTab}
         onCreateTab={activeSession ? () => sendControl({ type: "new_tab", session: activeSession.name }) : undefined}
+        onRenameTab={renameHeaderTab}
+        onReorderTabs={reorderHeaderTabs}
         onSelectTab={(tabIndex) => {
           const tab = orderedActiveTabs.find((entry) => entry.index === tabIndex);
           if (tab) {
             selectTab(tab);
           }
         }}
+        onSetDraggedTabKey={setDraggedTabKey}
+        onSetRenameTabValue={setRenameWindowValue}
+        onSetRenamingTab={(tabIndex) => {
+          if (!activeSession || tabIndex === null) {
+            setRenamingWindow(null);
+            return;
+          }
+          setRenamingWindow({ session: activeSession.name, index: tabIndex });
+        }}
+        onSetTabDropTarget={setTabDropTarget}
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
         onToggleSidebarCollapsed={() => setSidebarCollapsed((value) => !value)}
         onToggleStats={() => setStatsVisible((value) => !value)}
         onToggleViewMode={() => setViewMode((mode) => mode === "scroll" ? "terminal" : "scroll")}
+        renameHandledByKeyRef={renameHandledByKeyRef}
+        renameTabValue={renameWindowValue}
         sidebarCollapsed={sidebarCollapsed}
         serverConfig={serverConfig}
+        supportsTabRename={capabilities?.supportsTabRename ?? false}
+        tabDropTarget={tabDropTarget}
         tabs={headerTabs}
         topStatus={topStatus}
         viewMode={viewMode}
@@ -1036,68 +1086,6 @@ export const App = () => {
           onReorderSessions={(draggedName, targetName) => setWorkspaceOrder((current) => reorderSessionState(current, draggedName, targetName))}
           onSelectSession={(sessionName) => sendControl({ type: "select_session", session: sessionName })}
           supportsSessionRename={capabilities?.supportsSessionRename ?? false}
-        />
-
-        <TabSection
-          activeSession={activeSession}
-          activeTab={activeTab}
-          capabilities={capabilities}
-          beginDrag={beginDrag}
-          draggedTabKey={draggedTabKey}
-          orderedActiveTabs={orderedActiveTabs}
-          renameHandledByKeyRef={renameHandledByKeyRef}
-          renameWindowValue={renameWindowValue}
-          renamingWindow={renamingWindow}
-          selectTab={selectTab}
-          setDraggedTabKey={setDraggedTabKey}
-          setRenameWindowValue={setRenameWindowValue}
-          setRenamingWindow={setRenamingWindow}
-          setSelectedPaneId={setSelectedPaneId}
-          setSelectedWindowIndex={setSelectedWindowIndex}
-          setTabDropTarget={setTabDropTarget}
-          tabDropTarget={tabDropTarget}
-          onCloseTab={(sessionName, tabIndex) => sendControl({ type: "close_tab", session: sessionName, tabIndex })}
-          onRenameTab={(sessionName, tabIndex, newName) => sendControl({ type: "rename_tab", session: sessionName, tabIndex, newName })}
-          onReorderTabs={(sessionName, draggedKey, targetKey) => setWorkspaceOrder((current) => reorderSessionTabs(current, sessionName, draggedKey, targetKey))}
-        />
-
-        <PaneSection
-          activePane={activePane}
-          activeTab={activeTab}
-          capabilities={capabilities}
-          onClosePane={(paneId, isActive) => {
-            if (isActive) {
-              setSelectedPaneId(null);
-            }
-            sendControl({ type: "close_pane", paneId });
-          }}
-          onNewTab={() => {
-            if (activeSession) {
-              sendControl({ type: "new_tab", session: activeSession.name });
-            }
-          }}
-          onSelectPane={(pane, isActive) => {
-            setSelectedPaneId(pane.id);
-            sendControl({ type: "select_pane", paneId: pane.id });
-            if (stickyZoom && capabilities?.supportsFullscreenPane && !isActive && !pane.zoomed) {
-              sendControl({ type: "toggle_fullscreen", paneId: pane.id });
-            }
-          }}
-          onSplitPane={(direction) => {
-            if (activePane) {
-              sendControl({ type: "split_pane", paneId: activePane.id, direction });
-            }
-          }}
-          onToggleFullscreen={() => {
-            if (activePane) {
-              sendControl({ type: "toggle_fullscreen", paneId: activePane.id });
-            }
-          }}
-          onToggleStickyZoom={() => {
-            stickyZoomUserSetRef.current = true;
-            setStickyZoom((value) => !value);
-          }}
-          stickyZoom={stickyZoom}
         />
 
         <AppearanceSection
