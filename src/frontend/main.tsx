@@ -6,6 +6,83 @@ import "./styles/app.css";
 
 const GITHUB_CLIENT_ID = "Ov23ctnKbEALA3WUk14j";
 
+/** Show a styled GitHub Device Flow dialog. Returns true if user wants to proceed. */
+function showDeviceFlowDialog(userCode: string, verificationUri: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "gh-auth-overlay";
+    overlay.innerHTML = `
+      <div class="gh-auth-card">
+        <div class="gh-auth-header">
+          <svg height="32" viewBox="0 0 16 16" width="32" fill="currentColor">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38
+            0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15
+            -.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87
+            .51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12
+            0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82
+            2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65
+            3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013
+            8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          <h2>Sign in with GitHub</h2>
+        </div>
+        <p class="gh-auth-desc">To submit feedback as a GitHub issue, authorize remux with your account.</p>
+        <div class="gh-auth-steps">
+          <div class="gh-auth-step">
+            <span class="gh-auth-step-num">1</span>
+            <span>Open <a href="${verificationUri}" target="_blank" rel="noopener">${verificationUri}</a></span>
+          </div>
+          <div class="gh-auth-step">
+            <span class="gh-auth-step-num">2</span>
+            <span>Enter this code:</span>
+          </div>
+        </div>
+        <div class="gh-auth-code-row">
+          <code class="gh-auth-code">${userCode}</code>
+          <button class="gh-auth-copy" title="Copy code">📋</button>
+        </div>
+        <div class="gh-auth-actions">
+          <a href="${verificationUri}" target="_blank" rel="noopener" class="gh-auth-open-btn">Open GitHub →</a>
+          <button class="gh-auth-cancel">Cancel</button>
+        </div>
+        <p class="gh-auth-waiting">⏳ Waiting for authorization...</p>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const copyBtn = overlay.querySelector(".gh-auth-copy") as HTMLButtonElement;
+    copyBtn.addEventListener("click", () => {
+      navigator.clipboard.writeText(userCode).then(() => {
+        copyBtn.textContent = "✓";
+        setTimeout(() => { copyBtn.textContent = "📋"; }, 2000);
+      });
+    });
+
+    const cancelBtn = overlay.querySelector(".gh-auth-cancel") as HTMLButtonElement;
+    cancelBtn.addEventListener("click", () => {
+      document.body.removeChild(overlay);
+      resolve(false);
+    });
+
+    // Auto-resolve true when user clicks Open GitHub (they'll authorize in the other tab).
+    const openBtn = overlay.querySelector(".gh-auth-open-btn") as HTMLAnchorElement;
+    openBtn.addEventListener("click", () => {
+      // Copy code to clipboard automatically.
+      navigator.clipboard.writeText(userCode).catch(() => {});
+      copyBtn.textContent = "✓";
+    });
+
+    // Store cleanup function so we can dismiss later.
+    (window as unknown as Record<string, () => void>).__ghAuthDismiss = () => {
+      if (overlay.parentNode) document.body.removeChild(overlay);
+    };
+
+    // Resolve true immediately — polling will handle the rest.
+    resolve(true);
+  });
+}
+
 async function githubDeviceFlow(): Promise<string | null> {
   try {
     // Use server proxy to avoid CORS (GitHub doesn't allow browser requests).
@@ -18,12 +95,8 @@ async function githubDeviceFlow(): Promise<string | null> {
       device_code: string; user_code: string; verification_uri: string; interval: number;
     };
 
-    const ok = window.confirm(
-      `To send feedback as a GitHub issue, authorize remux:\n\n` +
-      `1. Go to: ${codeData.verification_uri}\n` +
-      `2. Enter code: ${codeData.user_code}\n\nClick OK after you've authorized.`
-    );
-    if (!ok) return null;
+    const proceed = await showDeviceFlowDialog(codeData.user_code, codeData.verification_uri);
+    if (!proceed) return null;
 
     const interval = (codeData.interval || 5) * 1000;
     for (let i = 0; i < 60; i++) {
@@ -39,6 +112,8 @@ async function githubDeviceFlow(): Promise<string | null> {
       });
       const data = await resp.json() as { access_token?: string; error?: string };
       if (data.access_token) {
+        // Dismiss the auth dialog.
+        (window as unknown as Record<string, (() => void) | undefined>).__ghAuthDismiss?.();
         fetch("/api/auth/github-token", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
