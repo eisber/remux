@@ -44,6 +44,37 @@ test.describe("remux browser behavior", () => {
       await expect(page.getByTestId("compose-input")).toBeVisible();
     });
 
+    test("compose Enter sends immediately without inserting an extra newline", async ({ page }) => {
+      await page.goto(`${server.baseUrl}/?token=${server.token}`);
+      await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+      const process = server.ptyFactory.latestProcess();
+      await page.getByTestId("compose-input").fill("echo hi");
+      await page.getByTestId("compose-input").press("Enter");
+
+      await expect.poll(() => process.writes).toContain("echo hi\r");
+      expect(process.writes.filter((entry) => entry === "\r")).toHaveLength(0);
+      await expect(page.getByTestId("compose-input")).toHaveValue("");
+    });
+
+    test("terminal paste works directly in terminal mode", async ({ page, browserName }) => {
+      test.skip(browserName !== "chromium", "clipboard permissions are only configured for chromium here");
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"], {
+        origin: server.baseUrl
+      });
+
+      await page.goto(`${server.baseUrl}/?token=${server.token}`);
+      await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+      await page.evaluate(async () => {
+        await navigator.clipboard.writeText("from-clipboard");
+      });
+      await page.getByTestId("terminal-host").click();
+      await page.keyboard.press(process.platform === "darwin" ? "Meta+V" : "Control+V");
+
+      await expect.poll(() => server.ptyFactory.latestProcess().writes).toContain("from-clipboard");
+    });
+
     test("drawer closes via backdrop and close button and preserves section spacing", async ({ page }) => {
       await page.goto(`${server.baseUrl}/?token=${server.token}`);
       await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
@@ -159,6 +190,68 @@ test.describe("remux browser behavior", () => {
         await minimumTouchTarget("close-session-main");
         await minimumTouchTarget("close-tab-main-0");
         await minimumTouchTarget(`close-pane-${closablePaneId}`);
+      } finally {
+        await page.goto("about:blank");
+        await localServer.stop();
+      }
+    });
+
+    test("quick phrases support pinned buttons, slash search, templates, and persisted ordering", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["main", "work"], defaultSession: "main" });
+
+      try {
+        await localServer.gateway.newTab("main");
+        await localServer.gateway.selectTab("main", 0);
+
+        await page.addInitScript(() => {
+          localStorage.setItem("remux-snippets", JSON.stringify([
+            {
+              id: "git-status",
+              label: "Status",
+              command: "git status",
+              autoEnter: true,
+              pinned: true,
+              group: "Git",
+              sortOrder: 0
+            },
+            {
+              id: "ssh-host",
+              label: "SSH",
+              command: "ssh {{host}}",
+              autoEnter: true,
+              group: "Ops",
+              sortOrder: 1
+            }
+          ]));
+          localStorage.setItem("remux-workspace-order", JSON.stringify({
+            sessions: ["work", "main"],
+            tabsBySession: {
+              main: ["1:win-1", "0:shell"]
+            }
+          }));
+        });
+
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+        await expect(page.getByTestId("session-picker-overlay")).toBeVisible();
+        await page.getByTestId("session-picker-overlay").getByRole("button", { name: "main" }).click();
+        await expect(page.getByTestId("snippet-pinned-bar")).toContainText("Status");
+
+        await page.getByTestId("pinned-snippet-git-status").click();
+        await expect.poll(() => localServer.ptyFactory.latestProcess().writes).toContain("git status\r");
+
+        await page.getByTestId("compose-input").fill("/ssh");
+        await expect(page.getByTestId("snippet-picker")).toBeVisible();
+        await page.getByTestId("compose-input").press("Enter");
+        await expect(page.getByTestId("snippet-template-panel")).toBeVisible();
+        await page.getByPlaceholder("host").fill("prod-box");
+        await page.getByRole("button", { name: "Run" }).click();
+        await expect.poll(() => localServer.ptyFactory.latestProcess().writes).toContain("ssh prod-box\r");
+
+        await page.getByTestId("drawer-toggle").click();
+        const sessionButtons = page.getByTestId("sessions-list").getByRole("button");
+        await expect(sessionButtons.nth(0)).toContainText("work");
+        const tabButtons = page.getByTestId("tabs-list").getByRole("button");
+        await expect(tabButtons.nth(0)).toContainText("1: win-1");
       } finally {
         await page.goto("about:blank");
         await localServer.stop();
