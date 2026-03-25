@@ -1674,7 +1674,10 @@ export const App = () => {
                         }`}
                         data-testid={`session-drag-target-${session.name}`}
                       >
-                        <span className="item-name">{session.name} {session.attached ? "*" : ""}</span>
+                        <span className="item-name">
+                          {session.name} {session.attached ? "*" : ""}
+                          {bellSessions.has(session.name) && session.name !== (attachedSession || activeSession?.name) && " 🔔"}
+                        </span>
                         {(() => {
                           const aw = session.tabs.find((t) => t.active) ?? session.tabs[0];
                           const label = aw ? formatContext(deriveContext(aw.panes)) : "";

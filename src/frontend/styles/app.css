@@ -879,7 +879,9 @@ button, input {
 }
 
 .tab-close {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1rem;
   height: 1rem;
   border-radius: 3px;
@@ -890,6 +892,8 @@ button, input {
   flex-shrink: 0;
   cursor: pointer;
   margin-left: 0.15rem;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
 }
 
 .tab-close:hover {
@@ -897,10 +901,16 @@ button, input {
   color: var(--text-primary);
 }
 
-.tab:hover .tab-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+/* Touch devices: always show close on active tab */
+@media (pointer: coarse) {
+  .tab.active .tab-close {
+    opacity: 1;
+  }
 }
 
 .tab-dot {
