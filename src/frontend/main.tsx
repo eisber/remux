@@ -8,7 +8,8 @@ const GITHUB_CLIENT_ID = "Ov23ctnKbEALA3WUk14j";
 
 async function githubDeviceFlow(): Promise<string | null> {
   try {
-    const codeResp = await fetch("https://github.com/login/device/code", {
+    // Use server proxy to avoid CORS (GitHub doesn't allow browser requests).
+    const codeResp = await fetch("/api/auth/github/device-code", {
       method: "POST",
       headers: { Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify({ client_id: GITHUB_CLIENT_ID, scope: "public_repo" }),
@@ -27,7 +28,7 @@ async function githubDeviceFlow(): Promise<string | null> {
     const interval = (codeData.interval || 5) * 1000;
     for (let i = 0; i < 60; i++) {
       await new Promise((r) => setTimeout(r, interval));
-      const resp = await fetch("https://github.com/login/oauth/access_token", {
+      const resp = await fetch("/api/auth/github/access-token", {
         method: "POST",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -193,6 +193,39 @@ export const createRemuxServer = (
     }
   });
 
+  // GitHub OAuth Device Flow proxy (GitHub doesn't support CORS).
+  app.post("/api/auth/github/device-code", async (req, res) => {
+    try {
+      const { client_id, scope } = req.body as { client_id: string; scope: string };
+      const resp = await fetch("https://github.com/login/device/code", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id, scope }),
+      });
+      const data = await resp.json();
+      res.json(data);
+    } catch (err) {
+      res.status(502).json({ error: String(err) });
+    }
+  });
+
+  app.post("/api/auth/github/access-token", async (req, res) => {
+    try {
+      const { client_id, device_code, grant_type } = req.body as {
+        client_id: string; device_code: string; grant_type: string;
+      };
+      const resp = await fetch("https://github.com/login/oauth/access_token", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ client_id, device_code, grant_type }),
+      });
+      const data = await resp.json();
+      res.json(data);
+    } catch (err) {
+      res.status(502).json({ error: String(err) });
+    }
+  });
+
   const readAuthHeaders= (req: express.Request): { token?: string; password?: string } => {
     const authHeader = req.headers.authorization;
     return {
