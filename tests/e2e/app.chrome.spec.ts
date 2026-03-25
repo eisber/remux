@@ -269,7 +269,10 @@ test.describe("remux browser behavior", () => {
         }
         await page.getByTestId("drawer-toggle").click();
 
-        await page.getByTestId("move-session-up-work").click();
+        await page
+          .getByTestId("session-item-work")
+          .locator(".drawer-item-main")
+          .dragTo(page.getByTestId("session-item-main").locator(".drawer-item-main"));
 
         const sessionButtons = page.getByTestId("sessions-list").locator("li .drawer-item-main");
         await expect(sessionButtons.nth(0)).toContainText("work");
@@ -291,7 +294,10 @@ test.describe("remux browser behavior", () => {
         await expect(page.getByTestId("compose-bar")).toBeVisible();
         await page.getByTestId("drawer-toggle").click();
 
-        await page.getByTestId("move-tab-up-main-1").click();
+        await page
+          .getByTestId("tab-item-main-1")
+          .locator(".drawer-item-main")
+          .dragTo(page.getByTestId("tab-item-main-0").locator(".drawer-item-main"));
 
         const tabButtons = page.getByTestId("tabs-list").locator("li .drawer-item-main");
         await expect(tabButtons.nth(0)).toContainText("1:");

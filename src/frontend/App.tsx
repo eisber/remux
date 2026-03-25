@@ -243,10 +243,6 @@ export const App = () => {
   const [sessionDropTarget, setSessionDropTarget] = useState<string | null>(null);
   const [tabDropTarget, setTabDropTarget] = useState<string | null>(null);
   const [snippetDropTarget, setSnippetDropTarget] = useState<string | null>(null);
-  const [pointerDraggingSession, setPointerDraggingSession] = useState<string | null>(null);
-  const [pointerDraggingTab, setPointerDraggingTab] = useState<string | null>(null);
-  const pointerDraggingSessionRef = useRef<string | null>(null);
-  const pointerDraggingTabRef = useRef<string | null>(null);
 
   // Local selection state for instant UI feedback before server snapshot arrives
   const [selectedWindowIndex, setSelectedWindowIndex] = useState<number | null>(null);
@@ -437,65 +433,6 @@ export const App = () => {
   useEffect(() => {
     setQuickSnippetIndex(0);
   }, [snippetPickerQuery]);
-
-  useEffect(() => {
-    const clearPointerDrag = (): void => {
-      pointerDraggingSessionRef.current = null;
-      pointerDraggingTabRef.current = null;
-      setPointerDraggingSession(null);
-      setPointerDraggingTab(null);
-    };
-    const handlePointerMove = (event: PointerEvent): void => {
-      const target = document.elementFromPoint(event.clientX, event.clientY);
-      if (!target) {
-        return;
-      }
-
-      const draggingSession = pointerDraggingSessionRef.current;
-      if (draggingSession) {
-        const sessionNode = target.closest<HTMLElement>("[data-session-name]");
-        const targetSession = sessionNode?.dataset.sessionName;
-        if (targetSession && targetSession !== draggingSession) {
-          setSessionDropTarget(targetSession);
-          setWorkspaceOrder((current) => reorderSessionState(current, draggingSession, targetSession));
-          pointerDraggingSessionRef.current = targetSession;
-          setPointerDraggingSession(targetSession);
-        }
-      }
-
-      const draggingTab = pointerDraggingTabRef.current;
-      if (draggingTab) {
-        const tabNode = target.closest<HTMLElement>("[data-tab-key]");
-        const targetTabKey = tabNode?.dataset.tabKey;
-        if (activeSession && targetTabKey && targetTabKey !== draggingTab) {
-          setTabDropTarget(targetTabKey);
-          setWorkspaceOrder((current) =>
-            reorderSessionTabs(current, activeSession.name, draggingTab, targetTabKey)
-          );
-          pointerDraggingTabRef.current = targetTabKey;
-          setPointerDraggingTab(targetTabKey);
-        }
-      }
-    };
-    window.addEventListener("pointermove", handlePointerMove);
-    window.addEventListener("pointerup", clearPointerDrag);
-    window.addEventListener("pointercancel", clearPointerDrag);
-    return () => {
-      window.removeEventListener("pointermove", handlePointerMove);
-      window.removeEventListener("pointerup", clearPointerDrag);
-      window.removeEventListener("pointercancel", clearPointerDrag);
-    };
-  }, [activeSession]);
-
-  const startPointerSessionDrag = (sessionName: string): void => {
-    pointerDraggingSessionRef.current = sessionName;
-    setPointerDraggingSession(sessionName);
-  };
-
-  const startPointerTabDrag = (tabKey: string): void => {
-    pointerDraggingTabRef.current = tabKey;
-    setPointerDraggingTab(tabKey);
-  };
 
   const sendTerminalResize = (): void => {
     const socket = terminalSocketRef.current;
@@ -1623,18 +1560,9 @@ export const App = () => {
               {orderedSessions.map((session) => (
                 <li
                   key={session.name}
-                  draggable
                   data-testid={`session-item-${session.name}`}
                   data-session-name={session.name}
                   className={sessionDropTarget === session.name ? "drawer-sort-target" : undefined}
-                  onDragStart={(event) => {
-                    beginDrag(event, "session", session.name);
-                    setDraggedSessionName(session.name);
-                  }}
-                  onDragEnd={() => {
-                    setDraggedSessionName(null);
-                    setSessionDropTarget(null);
-                  }}
                   onDragOver={(event) => {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "move";
@@ -1693,7 +1621,16 @@ export const App = () => {
                   ) : (
                     <div className="drawer-item-row">
                       <button
+                        draggable
                         onClick={() => sendControl({ type: "select_session", session: session.name })}
+                        onDragStart={(event) => {
+                          beginDrag(event, "session", session.name);
+                          setDraggedSessionName(session.name);
+                        }}
+                        onDragEnd={() => {
+                          setDraggedSessionName(null);
+                          setSessionDropTarget(null);
+                        }}
                         onDoubleClick={capabilities?.supportsSessionRename ? (e) => {
                           e.preventDefault();
                           setRenamingSession(session.name);
@@ -1744,11 +1681,6 @@ export const App = () => {
                         data-testid={`drag-session-${session.name}`}
                         aria-label={`Drag session ${session.name}`}
                         title={`Drag session ${session.name}`}
-                        onPointerDown={(event) => {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          startPointerSessionDrag(session.name);
-                        }}
                       >
                         ≡
                       </button>
@@ -1793,18 +1725,9 @@ export const App = () => {
                 ? orderedActiveTabs.map((tab) => (
                     <li
                       key={`${activeSession.name}-${tab.index}`}
-                      draggable
                       data-testid={`tab-item-${activeSession.name}-${tab.index}`}
                       data-tab-key={getTabOrderKey(tab)}
                       className={tabDropTarget === getTabOrderKey(tab) ? "drawer-sort-target" : undefined}
-                      onDragStart={(event) => {
-                        beginDrag(event, "tab", getTabOrderKey(tab));
-                        setDraggedTabKey(getTabOrderKey(tab));
-                      }}
-                      onDragEnd={() => {
-                        setDraggedTabKey(null);
-                        setTabDropTarget(null);
-                      }}
                       onDragOver={(event) => {
                         event.preventDefault();
                         event.dataTransfer.dropEffect = "move";
@@ -1875,7 +1798,16 @@ export const App = () => {
                       ) : (
                         <div className="drawer-item-row">
                           <button
+                            draggable
                             onClick={() => selectTab(tab)}
+                            onDragStart={(event) => {
+                              beginDrag(event, "tab", getTabOrderKey(tab));
+                              setDraggedTabKey(getTabOrderKey(tab));
+                            }}
+                            onDragEnd={() => {
+                              setDraggedTabKey(null);
+                              setTabDropTarget(null);
+                            }}
                             onDoubleClick={capabilities?.supportsTabRename ? (e) => {
                               e.preventDefault();
                               setRenamingWindow({ session: activeSession.name, index: tab.index });
@@ -1936,11 +1868,6 @@ export const App = () => {
                             data-testid={`drag-tab-${activeSession.name}-${tab.index}`}
                             aria-label={`Drag tab ${tab.index} in session ${activeSession.name}`}
                             title={`Drag tab ${tab.index}`}
-                            onPointerDown={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              startPointerTabDrag(getTabOrderKey(tab));
-                            }}
                           >
                             ≡
                           </button>

@@ -1129,6 +1129,10 @@ button.danger {
   outline-offset: 2px;
 }
 
+.drawer-sorting {
+  opacity: 0.72;
+}
+
 [data-testid^="session-item-"],
 [data-testid^="tab-item-"],
 [data-testid^="snippet-item-"] {
