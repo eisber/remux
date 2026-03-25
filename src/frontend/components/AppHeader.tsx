@@ -6,9 +6,18 @@ interface AppHeaderProps {
   awaitingSessionSelection: boolean;
   bandwidthStats: BandwidthStats | null;
   onToggleDrawer: () => void;
+  onSelectTab: (tabIndex: number) => void;
+  onToggleSidebarCollapsed: () => void;
   onToggleStats: () => void;
   onToggleViewMode: () => void;
+  onCreateTab?: () => void;
+  sidebarCollapsed: boolean;
   serverConfig: ServerConfig | null;
+  tabs: Array<{
+    index: number;
+    isActive: boolean;
+    label: string;
+  }>;
   topStatus: TopStatus;
   viewMode: "scroll" | "terminal";
   supportsPreciseScrollback: boolean;
@@ -20,9 +29,14 @@ export const AppHeader = ({
   awaitingSessionSelection,
   bandwidthStats,
   onToggleDrawer,
+  onSelectTab,
+  onToggleSidebarCollapsed,
   onToggleStats,
   onToggleViewMode,
+  onCreateTab,
+  sidebarCollapsed,
   serverConfig,
+  tabs,
   topStatus,
   viewMode,
   supportsPreciseScrollback,
@@ -37,12 +51,41 @@ export const AppHeader = ({
     >
       ☰
     </button>
+    <button
+      onClick={onToggleSidebarCollapsed}
+      className="tab-bar-sidebar-toggle"
+      title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+    >
+      {sidebarCollapsed ? "▶" : "◀"}
+    </button>
     <div className="top-title">
       {awaitingSessionSelection ? "Select Session" : `Tab: ${activeTabLabel}`}
       {serverConfig?.backendKind === "zellij" && (
         <span className="experimental-badge" title="Zellij support is experimental">(experimental)</span>
       )}
     </div>
+    {!awaitingSessionSelection && tabs.length > 0 ? (
+      <div className="tab-list" data-testid="tab-list">
+        {tabs.map((tab) => (
+          <button
+            key={tab.index}
+            className={`tab${tab.isActive ? " active" : ""}`}
+            onClick={() => onSelectTab(tab.index)}
+          >
+            <span className="tab-label">{tab.label}</span>
+          </button>
+        ))}
+        {onCreateTab ? (
+          <button
+            className="tab tab-new"
+            onClick={onCreateTab}
+            title="New tab"
+          >
+            +
+          </button>
+        ) : null}
+      </div>
+    ) : null}
     <div className="tab-bar-actions">
       <span
         className={`top-status ${topStatus.kind}`}

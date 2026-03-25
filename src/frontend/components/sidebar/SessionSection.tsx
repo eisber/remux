@@ -4,6 +4,7 @@ import type { DragEvent, MutableRefObject } from "react";
 
 interface SessionSectionProps {
   attachedSession: string;
+  bellSessions: Set<string>;
   createSession: () => void;
   renameHandledByKeyRef: MutableRefObject<boolean>;
   renameSessionValue: string;
@@ -29,6 +30,7 @@ interface SessionSectionProps {
 
 export const SessionSection = ({
   attachedSession,
+  bellSessions,
   beginDrag,
   createSession,
   draggedSessionName,
@@ -138,7 +140,10 @@ export const SessionSection = ({
                 }`}
                 data-testid={`session-drag-target-${session.name}`}
               >
-                <span className="item-name">{session.name} {session.attached ? "*" : ""}</span>
+                <span className="item-name">
+                  {session.name} {session.attached ? "*" : ""}
+                  {bellSessions.has(session.name) && session.name !== (attachedSession || selectedSessionName) ? " 🔔" : ""}
+                </span>
                 {(() => {
                   const activeWindow = session.tabs.find((tab) => tab.active) ?? session.tabs[0];
                   const label = activeWindow ? formatContext(deriveContext(activeWindow.panes)) : "";

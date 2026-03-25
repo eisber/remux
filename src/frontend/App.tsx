@@ -117,6 +117,9 @@ export const App = () => {
   const [pendingSessionAttachment, setPendingSessionAttachment] = useState<string | null>(null);
   const [sessionChoices, setSessionChoices] = useState<SessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    localStorage.getItem("remux-sidebar-collapsed") === "true"
+  );
   const [composeText, setComposeText] = useState("");
 
   const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
@@ -202,6 +205,7 @@ export const App = () => {
 
   const [dragOver, setDragOver] = useState(false);
   const [uploadToast, setUploadToast] = useState<{ path: string; filename: string } | null>(null);
+  const [bellSessions, setBellSessions] = useState<Set<string>>(new Set());
 
   const [draggedSessionName, setDraggedSessionName] = useState<string | null>(null);
   const [draggedTabKey, setDraggedTabKey] = useState<string | null>(null);
@@ -273,6 +277,14 @@ export const App = () => {
   const orderedActiveTabs = useMemo(
     () => activeSession ? orderTabs(activeSession.name, activeSession.tabs, workspaceOrder) : [],
     [activeSession, workspaceOrder]
+  );
+  const headerTabs = useMemo(
+    () => orderedActiveTabs.map((tab) => ({
+      index: tab.index,
+      isActive: tab.index === activeTab?.index,
+      label: `${tab.index}: ${tab.name}`
+    })),
+    [activeTab?.index, orderedActiveTabs]
   );
   const groupedSnippetList: SnippetGroup[] = useMemo(
     () => groupSnippets(snippets),
@@ -400,6 +412,9 @@ export const App = () => {
       });
       const data = typeof event.data === "string" ? event.data : "";
       terminalRef.current?.write(data);
+      if (data.includes("\x07") && attachedSession) {
+        setBellSessions((current) => new Set(current).add(attachedSession));
+      }
     };
     socket.onclose = (event) => {
       debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
@@ -607,6 +622,10 @@ export const App = () => {
         setErrorMessage(error.message);
       });
   }, []);
+
+  useEffect(() => {
+    localStorage.setItem("remux-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
+  }, [sidebarCollapsed]);
 
   useEffect(() => {
     if (attachedSession) {
@@ -867,16 +886,26 @@ export const App = () => {
   };
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <div className="main-content">
       <AppHeader
         activeTabLabel={activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}
         awaitingSessionSelection={awaitingSessionSelection}
         bandwidthStats={bandwidthStats}
+        onCreateTab={activeSession ? () => sendControl({ type: "new_tab", session: activeSession.name }) : undefined}
+        onSelectTab={(tabIndex) => {
+          const tab = orderedActiveTabs.find((entry) => entry.index === tabIndex);
+          if (tab) {
+            selectTab(tab);
+          }
+        }}
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
+        onToggleSidebarCollapsed={() => setSidebarCollapsed((value) => !value)}
         onToggleStats={() => setStatsVisible((value) => !value)}
         onToggleViewMode={() => setViewMode((mode) => mode === "scroll" ? "terminal" : "scroll")}
+        sidebarCollapsed={sidebarCollapsed}
         serverConfig={serverConfig}
+        tabs={headerTabs}
         topStatus={topStatus}
         viewMode={viewMode}
         supportsPreciseScrollback={capabilities?.supportsPreciseScrollback ?? true}
@@ -980,11 +1009,11 @@ export const App = () => {
             aria-label="Close sidebar"
           >
             <span className="sidebar-close-icon" aria-hidden="true">×</span>
-            <span className="sidebar-close-label">Done</span>
           </button>
         </div>
         <SessionSection
           attachedSession={attachedSession}
+          bellSessions={bellSessions}
           createSession={createSession}
           renameHandledByKeyRef={renameHandledByKeyRef}
           renameSessionValue={renameSessionValue}
