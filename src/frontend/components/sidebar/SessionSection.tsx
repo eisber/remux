@@ -6,6 +6,7 @@ interface SessionSectionProps {
   attachedSession: string;
   bellSessions: Set<string>;
   createSession: () => void;
+  mobileLayout: boolean;
   renameHandledByKeyRef: MutableRefObject<boolean>;
   renameSessionValue: string;
   renamingSession: string | null;
@@ -34,6 +35,7 @@ export const SessionSection = ({
   beginDrag,
   createSession,
   draggedSessionName,
+  mobileLayout,
   onCloseSession,
   onRenameSession,
   onReorderSessions,
@@ -118,11 +120,14 @@ export const SessionSection = ({
               data-testid="rename-session-input"
             />
           ) : (
-            <div className="drawer-item-row">
+            <div className={`drawer-item-row${mobileLayout && supportsSessionRename ? " mobile-actions" : ""}`}>
               <button
-                draggable
+                draggable={!mobileLayout}
                 onClick={() => onSelectSession(session.name)}
                 onDragStart={(event) => {
+                  if (mobileLayout) {
+                    return;
+                  }
                   beginDrag(event, "session", session.name);
                   setDraggedSessionName(session.name);
                 }}
@@ -139,7 +144,7 @@ export const SessionSection = ({
                   session.name === (attachedSession || selectedSessionName) ? " active" : ""
                 }`}
                 data-testid={`session-drag-target-${session.name}`}
-              >
+                >
                 <span className="item-name">
                   {session.name} {session.attached ? "*" : ""}
                   {bellSessions.has(session.name) && session.name !== (attachedSession || selectedSessionName) ? " 🔔" : ""}
@@ -150,6 +155,22 @@ export const SessionSection = ({
                   return label ? <span className="item-context">{label}</span> : null;
                 })()}
               </button>
+              {supportsSessionRename && mobileLayout ? (
+                <button
+                  type="button"
+                  className="drawer-icon-action"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setRenamingSession(session.name);
+                    setRenameSessionValue(session.name);
+                  }}
+                  data-testid={`rename-session-${session.name}`}
+                  aria-label={`Rename session ${session.name}`}
+                  title={`Rename session ${session.name}`}
+                >
+                  <span aria-hidden="true">✎</span>
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="drawer-close-action"

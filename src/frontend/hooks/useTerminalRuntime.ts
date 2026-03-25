@@ -8,6 +8,7 @@ import type { ServerConfig } from "../app-types";
 import type { ToolbarHandle } from "../components/Toolbar";
 
 interface UseTerminalRuntimeOptions {
+  mobileLayout: boolean;
   onSendRaw: (data: string) => void;
   paneViewportColsRef: MutableRefObject<number>;
   serverConfig: ServerConfig | null;
@@ -31,12 +32,10 @@ interface UseTerminalRuntimeResult {
   terminalRef: MutableRefObject<Terminal | null>;
 }
 
-const isMobileDevice = (): boolean =>
-  window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
-
-const getPreferredTerminalFontSize = (): number => isMobileDevice() ? 12 : 14;
+const getPreferredTerminalFontSize = (mobileLayout: boolean): number => mobileLayout ? 12 : 14;
 
 export const useTerminalRuntime = ({
+  mobileLayout,
   onSendRaw,
   paneViewportColsRef,
   serverConfig,
@@ -113,7 +112,7 @@ export const useTerminalRuntime = ({
       return;
     }
 
-    const initialFontSize = getPreferredTerminalFontSize();
+    const initialFontSize = getPreferredTerminalFontSize(mobileLayout);
     const themeConfig = themes[theme];
     const terminal = new Terminal({
       cursorBlink: true,
@@ -179,7 +178,7 @@ export const useTerminalRuntime = ({
       if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
         return;
       }
-      const preferredFontSize = getPreferredTerminalFontSize();
+      const preferredFontSize = getPreferredTerminalFontSize(mobileLayout);
       if (terminal.options.fontSize !== preferredFontSize) {
         terminal.options.fontSize = preferredFontSize;
       }
@@ -208,7 +207,7 @@ export const useTerminalRuntime = ({
       fitAddonRef.current = null;
       serializeAddonRef.current = null;
     };
-  }, [copySelection, focusTerminal, onSendRaw, paneViewportColsRef, sendTerminalResize, serverConfig?.backendKind, terminalSocketRef, theme, toolbarRef]);
+  }, [copySelection, focusTerminal, mobileLayout, onSendRaw, paneViewportColsRef, sendTerminalResize, serverConfig?.backendKind, terminalSocketRef, theme, toolbarRef]);
 
   useEffect(() => {
     const themeConfig = themes[theme];

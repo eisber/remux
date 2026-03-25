@@ -150,12 +150,14 @@ html, body, #root {
   margin: 0;
   width: 100%;
   height: 100%;
+  min-height: 100%;
   overscroll-behavior: none;
   touch-action: manipulation;
 }
 
 body {
   background: var(--bg-app);
+  min-height: 100dvh;
 }
 
 button, input {
@@ -171,7 +173,8 @@ button, input {
   position: relative;
   width: 100%;
   max-width: 100vw;
-  height: 100%;
+  height: var(--app-height, 100dvh);
+  min-height: var(--app-height, 100dvh);
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   grid-template-rows: 1fr;
@@ -346,6 +349,10 @@ button, input {
   align-items: stretch;
 }
 
+.drawer-item-row.mobile-actions {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
 .drawer-item-main {
   min-width: 0;
   min-height: 3rem;
@@ -398,6 +405,26 @@ button, input {
   background: color-mix(in srgb, var(--btn-bg) 70%, transparent);
 }
 
+.drawer-icon-action {
+  width: 2.25rem !important;
+  min-width: 2.25rem;
+  min-height: 2.25rem;
+  align-self: center;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 999px !important;
+  text-align: center !important;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--btn-bg) 70%, transparent);
+}
+
+.drawer-icon-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--btn-hover) 82%, transparent);
+}
+
 .drawer-close-action:hover:not(:disabled) {
   color: var(--text-primary);
   background: color-mix(in srgb, var(--btn-hover) 82%, transparent);
@@ -405,6 +432,11 @@ button, input {
 
 .drawer-close-action span {
   font-size: 1rem;
+  line-height: 1;
+}
+
+.drawer-icon-action span {
+  font-size: 0.95rem;
   line-height: 1;
 }
 
@@ -772,6 +804,27 @@ button, input {
   background: var(--status-pending);
 }
 
+.top-status-button {
+  width: 2rem;
+  height: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--btn-border);
+  background: color-mix(in srgb, var(--btn-bg) 92%, transparent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.top-status-button:hover {
+  background: var(--btn-hover);
+  border-color: var(--border-hover);
+}
+
 /* Sticky zoom indicator */
 .top-zoom-indicator {
   width: 1.2rem;
@@ -838,10 +891,12 @@ button, input {
   min-width: 0;
   overflow-x: auto;
   overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   -ms-overflow-style: none;
   gap: 0.18rem;
   padding-top: 0.28rem;
+  scroll-snap-type: x proximity;
 }
 
 .tab-list::-webkit-scrollbar { display: none; }
@@ -860,6 +915,7 @@ button, input {
   border-bottom: none;
   border-radius: 12px 12px 0 0;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  scroll-snap-align: start;
   transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast), color var(--transition-fast);
 }
 
@@ -1381,6 +1437,11 @@ button.danger {
   animation: overlay-in 0.2s ease-out;
 }
 
+.overlay.overlay-sheet {
+  place-items: end stretch;
+  padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(0.75rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+}
+
 @keyframes overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -1396,6 +1457,13 @@ button.danger {
   gap: 0.6rem;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
   animation: card-in 0.2s ease-out;
+}
+
+.card.card-sheet {
+  width: 100%;
+  max-width: 30rem;
+  border-radius: 1.25rem;
+  padding: 1rem 1rem 1.15rem;
 }
 
 @keyframes card-in {
@@ -1427,6 +1495,14 @@ button.danger {
 .card button {
   font-family: 'Space Grotesk', sans-serif;
   font-weight: 600;
+}
+
+.card.card-sheet button {
+  min-height: 3rem;
+  font-size: 0.95rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .password-error {
@@ -1594,108 +1670,282 @@ button.danger {
   user-select: text;
 }
 
-/* --- Responsive: Mobile --- */
-@media (max-width: 768px) {
-  .app-shell {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .main-content {
-    grid-column: 1;
-  }
-
-  .sidebar {
-    position: fixed;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: min(75vw, 20rem);
-    transform: translateX(-100%);
-    visibility: visible;
-    transition: transform var(--transition-slow), visibility var(--transition-slow);
-    z-index: 30;
-    background: var(--bg-app);
-    backdrop-filter: none;
-    padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom));
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
-  }
-
-  .sidebar.open {
-    transform: translateX(0);
-    visibility: visible;
-  }
-
-  .sidebar-close {
-    display: inline-flex;
-    width: 1.75rem;
-    height: 1.75rem;
-    min-width: 1.75rem;
-    min-height: 1.75rem;
-  }
-
-  .tab-bar-sidebar-toggle {
-    display: none;
-  }
-
-  .app-shell.sidebar-collapsed {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .app-shell.sidebar-collapsed .sidebar {
-    width: min(75vw, 20rem);
-    padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom));
-    visibility: visible;
-    border-right: 1px solid var(--glass-border);
-  }
-
-  .drawer-close-action {
-    width: 2.5rem !important;
-    min-width: 2.5rem;
-    min-height: 2.5rem;
-  }
-
-  .drawer-item-main {
-    min-height: 3.25rem;
-  }
-
-  .sidebar-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 29;
-    background: rgba(0, 0, 0, 0.4);
-    animation: overlay-in 0.2s ease-out;
-  }
-
-  .tab-bar-burger {
-    display: flex;
-  }
-
-  .compose-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    padding: 0.35rem;
-    gap: 0.35rem;
-  }
-
-  .compose-bar input {
-    min-width: 0;
-    min-height: 2.5rem;
-    font-size: 16px; /* prevent iOS zoom */
-  }
-
-  .compose-bar button {
-    min-height: 2.5rem;
-    padding-inline: 0.75rem;
-  }
+/* --- Responsive: Mobile Layout --- */
+.app-shell.mobile-layout {
+  grid-template-columns: minmax(0, 1fr);
 }
 
-@media (orientation: landscape) {
-  .toolbar-row-deep-fkeys {
-    grid-template-columns: repeat(12, minmax(0, 1fr));
-  }
+.app-shell.mobile-layout .main-content {
+  grid-column: 1;
+}
 
-  .toolbar button {
-    min-height: 2.5rem;
-    font-size: 0.75rem;
-  }
+.app-shell.mobile-layout .tab-bar {
+  gap: 0.25rem;
+  min-height: 3.25rem;
+  padding-right: 0.25rem;
+}
+
+.app-shell.mobile-layout .tab-bar-burger {
+  display: flex;
+  width: 2.75rem;
+  min-width: 2.75rem;
+  font-size: 1.2rem;
+}
+
+.app-shell.mobile-layout .tab-bar-sidebar-toggle {
+  display: none;
+}
+
+.app-shell.mobile-layout .tab-list {
+  gap: 0.25rem;
+  padding-top: 0.35rem;
+  padding-bottom: 0.1rem;
+}
+
+.app-shell.mobile-layout .tab-shell {
+  min-width: 6.25rem;
+  max-width: 10.5rem;
+  min-height: 2.85rem;
+}
+
+.app-shell.mobile-layout .tab {
+  padding: 0.7rem 0.35rem 0.58rem 0.72rem;
+  font-size: 0.76rem;
+}
+
+.app-shell.mobile-layout .tab-close {
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-right: 0.25rem;
+}
+
+.app-shell.mobile-layout .tab-new,
+.app-shell.mobile-layout .top-status-button {
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+.app-shell.mobile-layout .tab-bar-actions {
+  gap: 0.25rem;
+  padding-left: 0.15rem;
+  border-left: none;
+}
+
+.app-shell.mobile-layout .top-btn {
+  min-height: 2.75rem;
+  padding: 0 0.85rem;
+  border-radius: 0.7rem;
+  font-size: 0.74rem;
+}
+
+.app-shell.mobile-layout .bandwidth-indicator {
+  display: none;
+}
+
+.app-shell.mobile-layout .sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: min(84vw, 22rem);
+  transform: translateX(calc(-100% - max(0.75rem, env(safe-area-inset-left))));
+  visibility: visible;
+  transition: transform var(--transition-slow), visibility var(--transition-slow);
+  z-index: 30;
+  background: var(--bg-app);
+  backdrop-filter: none;
+  padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.app-shell.mobile-layout .sidebar.open {
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.app-shell.mobile-layout .sidebar-header {
+  padding-top: max(1rem, env(safe-area-inset-top));
+}
+
+.app-shell.mobile-layout .sidebar-close {
+  display: inline-flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  font-size: 1rem;
+}
+
+.app-shell.mobile-layout.sidebar-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-shell.mobile-layout.sidebar-collapsed .sidebar {
+  width: min(84vw, 22rem);
+  padding: 0 max(0.75rem, env(safe-area-inset-right)) calc(1rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  visibility: visible;
+  border-right: 1px solid var(--glass-border);
+}
+
+.app-shell.mobile-layout .sidebar button {
+  font-size: 0.85rem;
+}
+
+.app-shell.mobile-layout .drawer-close-action,
+.app-shell.mobile-layout .drawer-icon-action,
+.app-shell.mobile-layout .drawer-section-action,
+.app-shell.mobile-layout .drawer-backend-btn {
+  min-height: 2.75rem;
+}
+
+.app-shell.mobile-layout .drawer-close-action,
+.app-shell.mobile-layout .drawer-icon-action {
+  width: 2.75rem !important;
+  min-width: 2.75rem;
+}
+
+.app-shell.mobile-layout .drawer-item-main {
+  min-height: 3.5rem;
+  padding-block: 0.55rem;
+}
+
+.app-shell.mobile-layout .drawer-grid {
+  gap: 0.55rem;
+}
+
+.app-shell.mobile-layout .rename-input {
+  min-height: 2.75rem;
+  font-size: 16px;
+}
+
+.app-shell.mobile-layout .drawer-backend-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.app-shell.mobile-layout .drawer-backend-label {
+  grid-column: 1 / -1;
+  text-align: left;
+  font-size: 0.7rem;
+}
+
+.app-shell.mobile-layout .drawer-backend-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.7rem;
+  padding: 0.35rem;
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.app-shell.mobile-layout .sidebar-backdrop {
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 29;
+  background: rgba(0, 0, 0, 0.4);
+  animation: overlay-in 0.2s ease-out;
+}
+
+.app-shell.mobile-layout .toolbar {
+  padding: 0.3rem max(0.3rem, env(safe-area-inset-right)) max(0.3rem, env(safe-area-inset-bottom)) max(0.3rem, env(safe-area-inset-left));
+}
+
+.app-shell.mobile-layout .toolbar button {
+  min-height: 2.75rem;
+  font-size: 0.78rem;
+}
+
+.app-shell.mobile-layout .compose-bar {
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.35rem max(0.35rem, env(safe-area-inset-right)) max(0.35rem, env(safe-area-inset-bottom)) max(0.35rem, env(safe-area-inset-left));
+  gap: 0.35rem;
+}
+
+.app-shell.mobile-layout .compose-bar input {
+  min-width: 0;
+  min-height: 2.75rem;
+  font-size: 16px;
+}
+
+.app-shell.mobile-layout .compose-bar button {
+  min-height: 2.75rem;
+  padding-inline: 0.9rem;
+}
+
+.app-shell.mobile-layout .snippet-pinned-bar {
+  gap: 0.45rem;
+  padding: 0.45rem max(0.45rem, env(safe-area-inset-right)) 0.45rem max(0.45rem, env(safe-area-inset-left));
+}
+
+.app-shell.mobile-layout .snippet-pinned-bar button {
+  min-height: 2.5rem;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.75rem;
+}
+
+.app-shell.mobile-layout .snippet-template-field input,
+.app-shell.mobile-layout .snippet-form input[type="text"],
+.app-shell.mobile-layout .snippet-form input:not([type]) {
+  min-height: 2.75rem;
+  font-size: 16px;
+}
+
+.app-shell.mobile-layout .snippet-item {
+  gap: 0.35rem;
+  padding-block: 0.3rem;
+}
+
+.app-shell.mobile-layout .snippet-item button,
+.app-shell.mobile-layout .snippet-form-actions button {
+  min-height: 2.5rem;
+  min-width: 2.5rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .toolbar-row-deep-fkeys {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.app-shell.mobile-layout.mobile-landscape .terminal-wrap {
+  padding: 0.2rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .tab-bar {
+  min-height: 2.85rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .tab-shell {
+  min-height: 2.5rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .tab {
+  padding: 0.55rem 0.3rem 0.45rem 0.62rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .tab-new,
+.app-shell.mobile-layout.mobile-landscape .top-status-button,
+.app-shell.mobile-layout.mobile-landscape .top-btn,
+.app-shell.mobile-layout.mobile-landscape .tab-bar-burger {
+  min-height: 2.4rem;
+  height: 2.4rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .toolbar {
+  gap: 2px;
+  padding: 0.2rem max(0.2rem, env(safe-area-inset-right)) 0.2rem max(0.2rem, env(safe-area-inset-left));
+}
+
+.app-shell.mobile-layout.mobile-landscape .toolbar button,
+.app-shell.mobile-layout.mobile-landscape .compose-bar input,
+.app-shell.mobile-layout.mobile-landscape .compose-bar button {
+  min-height: 2.25rem;
+  font-size: 0.72rem;
+}
+
+.app-shell.mobile-layout.mobile-landscape .compose-bar {
+  padding: 0.2rem max(0.2rem, env(safe-area-inset-right)) 0.2rem max(0.2rem, env(safe-area-inset-left));
 }

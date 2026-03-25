@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { AppHeader } from "./components/AppHeader";
 import { TerminalStage } from "./components/TerminalStage";
@@ -39,6 +39,7 @@ import { deriveTopStatus, formatBytes } from "./app-status";
 import { deriveSnippetPickerState } from "./compose-picker";
 import type { BandwidthStats, PendingSnippetExecution, ServerConfig } from "./app-types";
 import { useFileUpload } from "./hooks/useFileUpload";
+import { matchesMobileLayout, useViewportLayout } from "./mobile-layout";
 import { useScrollbackView } from "./hooks/useScrollbackView";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import {
@@ -80,7 +81,7 @@ const getInitialStickyZoom = (): boolean => {
   if (stored === "false") {
     return false;
   }
-  return window.matchMedia("(max-width: 768px)").matches;
+  return matchesMobileLayout();
 };
 
 const LazyBandwidthStatsModal = lazy(() => import("./components/BandwidthStatsModal"));
@@ -131,6 +132,7 @@ export const App = () => {
     return "dark"; // migrate old themes (midnight, amber, etc.) to dark
   });
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
+  const { mobileLandscape, mobileLayout, viewportHeight } = useViewportLayout();
   const sendRawToSocket = useCallback((data: string): void => {
     const socket = terminalSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -158,6 +160,7 @@ export const App = () => {
     terminalRef
   } = useTerminalRuntime({
     onSendRaw: sendRawToSocket,
+    mobileLayout,
     paneViewportColsRef,
     serverConfig,
     setStatusMessage,
@@ -285,10 +288,10 @@ export const App = () => {
       isActive: tab.index === activeTab?.index,
       isRenaming: renamingWindow?.session === activeSession?.name && renamingWindow?.index === tab.index,
       key: getTabOrderKey(tab),
-      label: `${tab.index}: ${tab.name}`,
+      label: mobileLayout ? `${tab.index}:${tab.name}` : `${tab.index}: ${tab.name}`,
       name: tab.name
     })),
-    [activeSession?.name, activeTab?.index, orderedActiveTabs, renamingWindow]
+    [activeSession?.name, activeTab?.index, mobileLayout, orderedActiveTabs, renamingWindow]
   );
   const groupedSnippetList: SnippetGroup[] = useMemo(
     () => groupSnippets(snippets),
@@ -632,6 +635,12 @@ export const App = () => {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
+    if (!mobileLayout) {
+      setDrawerOpen(false);
+    }
+  }, [mobileLayout]);
+
+  useEffect(() => {
     if (attachedSession) {
       setSessionChoices(null);
     }
@@ -918,7 +927,10 @@ export const App = () => {
   };
 
   return (
-    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <div
+      className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${mobileLayout ? " mobile-layout" : ""}${mobileLandscape ? " mobile-landscape" : ""}`}
+      style={{ "--app-height": `${viewportHeight}px` } as CSSProperties}
+    >
       <div className="main-content">
       <AppHeader
         activeTabLabel={activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}
@@ -926,6 +938,7 @@ export const App = () => {
         bandwidthStats={bandwidthStats}
         beginDrag={beginDrag}
         draggedTabKey={draggedTabKey}
+        mobileLayout={mobileLayout}
         onCloseTab={closeHeaderTab}
         onCreateTab={activeSession ? () => sendControl({ type: "new_tab", session: activeSession.name }) : undefined}
         onRenameTab={renameHeaderTab}
@@ -1066,6 +1079,7 @@ export const App = () => {
           attachedSession={attachedSession}
           bellSessions={bellSessions}
           createSession={createSession}
+          mobileLayout={mobileLayout}
           renameHandledByKeyRef={renameHandledByKeyRef}
           renameSessionValue={renameSessionValue}
           renamingSession={renamingSession}
@@ -1108,6 +1122,7 @@ export const App = () => {
           draggedSnippetId={draggedSnippetId}
           editingSnippet={editingSnippet}
           groupedSnippetList={groupedSnippetList}
+          mobileLayout={mobileLayout}
           onDeleteSnippet={(snippetId) => persistSnippetPatch((current) => current.filter((entry) => entry.id !== snippetId))}
           onPersistSnippetPatch={persistSnippetPatch}
           onSetCollapsedSnippetGroups={setCollapsedSnippetGroups}
@@ -1165,6 +1180,7 @@ export const App = () => {
 
       <Suspense fallback={null}>
         <LazySessionPickerOverlay
+          mobileLayout={mobileLayout}
           sessions={sessionChoices}
           onSelectSession={(sessionName) => sendControl({ type: "select_session", session: sessionName })}
         />

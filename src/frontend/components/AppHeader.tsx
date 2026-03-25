@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { DragEvent, MutableRefObject } from "react";
 import type { TopStatus } from "../app-status";
 import type { BandwidthStats, ServerConfig } from "../app-types";
@@ -8,6 +9,7 @@ interface AppHeaderProps {
   bandwidthStats: BandwidthStats | null;
   beginDrag: (event: DragEvent<HTMLElement>, type: "session" | "tab" | "snippet", value: string) => void;
   draggedTabKey: string | null;
+  mobileLayout: boolean;
   onCloseTab: (tabIndex: number) => void;
   onRenameTab: (tabIndex: number, newName: string) => void;
   onToggleDrawer: () => void;
@@ -48,6 +50,7 @@ export const AppHeader = ({
   bandwidthStats,
   beginDrag,
   draggedTabKey,
+  mobileLayout,
   onCloseTab,
   onRenameTab,
   onToggleDrawer,
@@ -74,6 +77,18 @@ export const AppHeader = ({
   formatBytes
 }: AppHeaderProps) => {
   const showTabs = !awaitingSessionSelection && tabs.length > 0;
+  const mobileRenameTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressNextSelectRef = useRef<number | null>(null);
+  const mobileStatsTitle = bandwidthStats
+    ? `${topStatus.label}. ${formatBytes(bandwidthStats.compressedBytesPerSec)}/s, ${bandwidthStats.savedPercent}% saved.`
+    : topStatus.label;
+
+  const clearMobileRenameTimer = (): void => {
+    if (mobileRenameTimerRef.current) {
+      clearTimeout(mobileRenameTimerRef.current);
+      mobileRenameTimerRef.current = null;
+    }
+  };
 
   return (
     <header className="tab-bar">
@@ -101,10 +116,16 @@ export const AppHeader = ({
               data-testid={`header-tab-${tab.index}`}
               data-tab-key={tab.key}
               onDragOver={(event) => {
+                if (mobileLayout) {
+                  return;
+                }
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
               }}
               onDragEnter={(event) => {
+                if (mobileLayout) {
+                  return;
+                }
                 event.preventDefault();
                 if (draggedTabKey && draggedTabKey !== tab.key) {
                   onSetTabDropTarget(tab.key);
@@ -117,6 +138,9 @@ export const AppHeader = ({
                 }
               }}
               onDrop={(event) => {
+                if (mobileLayout) {
+                  return;
+                }
                 event.preventDefault();
                 if (!draggedTabKey || draggedTabKey === tab.key) {
                   onSetTabDropTarget(null);
@@ -159,17 +183,41 @@ export const AppHeader = ({
                 <>
                   <button
                     className={`tab${tab.isActive ? " active" : ""}`}
-                    draggable
-                    onClick={() => onSelectTab(tab.index)}
+                    draggable={!mobileLayout}
+                    onClick={() => {
+                      if (suppressNextSelectRef.current === tab.index) {
+                        suppressNextSelectRef.current = null;
+                        return;
+                      }
+                      onSelectTab(tab.index);
+                    }}
                     onDoubleClick={supportsTabRename ? () => {
                       onSetRenamingTab(tab.index);
                       onSetRenameTabValue(tab.name);
                     } : undefined}
+                    onPointerDown={() => {
+                      if (!mobileLayout || !supportsTabRename) {
+                        return;
+                      }
+                      clearMobileRenameTimer();
+                      mobileRenameTimerRef.current = setTimeout(() => {
+                        suppressNextSelectRef.current = tab.index;
+                        onSetRenamingTab(tab.index);
+                        onSetRenameTabValue(tab.name);
+                      }, 450);
+                    }}
+                    onPointerLeave={clearMobileRenameTimer}
+                    onPointerUp={clearMobileRenameTimer}
+                    onPointerCancel={clearMobileRenameTimer}
                     onDragStart={(event) => {
+                      if (mobileLayout) {
+                        return;
+                      }
                       beginDrag(event, "tab", tab.key);
                       onSetDraggedTabKey(tab.key);
                     }}
                     onDragEnd={() => {
+                      clearMobileRenameTimer();
                       onSetDraggedTabKey(null);
                       onSetTabDropTarget(null);
                     }}
@@ -216,13 +264,31 @@ export const AppHeader = ({
         </div>
       )}
       <div className="tab-bar-actions">
-        <span
-          className={`top-status ${topStatus.kind}`}
-          title={topStatus.label}
-          aria-label={`Status: ${topStatus.label}`}
-          data-testid="top-status-indicator"
-        />
-        {bandwidthStats && (
+        {mobileLayout ? (
+          <button
+            type="button"
+            className={`top-status-button ${topStatus.kind}`}
+            onClick={onToggleStats}
+            title={mobileStatsTitle}
+            aria-label={`Open connection stats. ${mobileStatsTitle}`}
+            data-testid="mobile-stats-toggle"
+          >
+            <span
+              className={`top-status ${topStatus.kind}`}
+              title={topStatus.label}
+              aria-label={`Status: ${topStatus.label}`}
+              data-testid="top-status-indicator"
+            />
+          </button>
+        ) : (
+          <span
+            className={`top-status ${topStatus.kind}`}
+            title={topStatus.label}
+            aria-label={`Status: ${topStatus.label}`}
+            data-testid="top-status-indicator"
+          />
+        )}
+        {!mobileLayout && bandwidthStats && (
           <button
             className={`bandwidth-indicator ${bandwidthStats.savedPercent > 50 ? "good" : bandwidthStats.savedPercent > 20 ? "ok" : "low"}`}
             onClick={onToggleStats}
