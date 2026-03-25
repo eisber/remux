@@ -341,7 +341,7 @@ export const createRemuxServer = (
 
   // Extension routes: push notifications + state API.
   if (deps.extensions) {
-    app.use(requireApiAuth, deps.extensions.notificationRoutes);
+    app.use("/api/push", requireApiAuth, deps.extensions.notificationRoutes);
 
     app.get("/api/state/:session", requireApiAuth, (req, res) => {
       const snapshot = deps.extensions!.getSnapshot(getSingleParam(req.params.session));

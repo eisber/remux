@@ -159,12 +159,12 @@ export class NotificationManager {
     const router = express.Router();
 
     // GET /api/push/vapid-key — client needs this to subscribe.
-    router.get("/api/push/vapid-key", (_req, res) => {
+    router.get("/vapid-key", (_req, res) => {
       res.json({ publicKey: this.publicKey });
     });
 
     // POST /api/push/subscribe — register a push subscription.
-    router.post("/api/push/subscribe", (req, res) => {
+    router.post("/subscribe", (req, res) => {
       const { id, subscription } = req.body as {
         id?: string;
         subscription?: PushSubscription;
@@ -180,7 +180,7 @@ export class NotificationManager {
     });
 
     // POST /api/push/unsubscribe — remove a push subscription.
-    router.post("/api/push/unsubscribe", (req, res) => {
+    router.post("/unsubscribe", (req, res) => {
       const { id } = req.body as { id?: string };
       if (!id) {
         res.status(400).json({ error: "missing id" });
@@ -192,7 +192,7 @@ export class NotificationManager {
     });
 
     // POST /api/push/test — send a test notification.
-    router.post("/api/push/test", async (_req, res) => {
+    router.post("/test", async (_req, res) => {
       await this.notify({
         title: "🧪 Test Notification",
         body: "Push notifications are working!",

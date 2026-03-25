@@ -110,4 +110,13 @@ describe("extension HTTP route auth", () => {
     const json = await res.json() as { content: string };
     expect(json.content).toBe("snapshot");
   });
+
+  test("does not gate frontend fallback behind extension auth", async () => {
+    await fs.promises.writeFile(path.join(tmpDir, "index.html"), "<html><body>ok</body></html>");
+
+    const res = await fetch(`${getBaseUrl()}/`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain("ok");
+  });
 });
