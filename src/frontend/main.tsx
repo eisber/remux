@@ -1,7 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { initSnapfeed } from "@microsoft/snapfeed";
-import { githubAdapter } from "@microsoft/snapfeed/adapters";
 import "@xterm/xterm/css/xterm.css";
 import "./styles/app.css";
 
@@ -55,35 +54,91 @@ async function githubDeviceFlow(): Promise<string | null> {
   return null;
 }
 
-async function getGitHubToken(): Promise<string> {
-  const stored = localStorage.getItem("remux-github-token");
-  if (stored) return stored;
-  try {
-    const resp = await fetch("/api/auth/github-token");
-    const data = await resp.json() as { token: string | null };
-    if (data.token) { localStorage.setItem("remux-github-token", data.token); return data.token; }
-  } catch {}
-  return "";
+/** Custom adapter that lazily triggers Device Flow on first feedback. */
+function lazyGithubAdapter(): { name: string; send: (event: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; deliveryId?: string }> } {
+  return {
+    name: "github-device-flow",
+    async send(event) {
+      let token = localStorage.getItem("remux-github-token");
+
+      // Try server-side storage.
+      if (!token) {
+        try {
+          const resp = await fetch("/api/auth/github-token");
+          const data = await resp.json() as { token: string | null };
+          if (data.token) {
+            token = data.token;
+            localStorage.setItem("remux-github-token", token);
+          }
+        } catch {}
+      }
+
+      // Trigger Device Flow if still no token.
+      if (!token) {
+        token = await githubDeviceFlow();
+        if (!token) return { ok: false, error: "User cancelled GitHub authorization" };
+      }
+
+      // Create issue via GitHub API.
+      const message = String(event.message ?? event.label ?? "Feedback");
+      const category = String(event.category ?? "feedback");
+      const page = String(event.page ?? window.location.href);
+      const labels = ["feedback"];
+      const categoryMap: Record<string, string> = { bug: "bug", idea: "enhancement", question: "question" };
+      if (categoryMap[category]) labels.push(categoryMap[category]);
+
+      const body = [
+        `**Category:** ${category}`,
+        `**Page:** ${page}`,
+        `**Time:** ${new Date().toISOString()}`,
+        "",
+        message,
+        "",
+        event.screenshot ? `![screenshot](${event.screenshot})` : "",
+      ].filter(Boolean).join("\n");
+
+      const resp = await fetch("https://api.github.com/repos/eisber/remux/issues", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+          Accept: "application/vnd.github.v3+json",
+        },
+        body: JSON.stringify({
+          title: `[Feedback] ${message.substring(0, 80)}`,
+          body,
+          labels,
+        }),
+      });
+
+      if (!resp.ok) {
+        if (resp.status === 401) {
+          localStorage.removeItem("remux-github-token");
+          fetch("/api/auth/github-token", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: "" }),
+          }).catch(() => {});
+        }
+        return { ok: false, error: `GitHub API ${resp.status}` };
+      }
+
+      const issue = await resp.json() as { number?: number };
+      return { ok: true, deliveryId: String(issue.number ?? "") };
+    },
+  };
 }
 
-getGitHubToken().then((token) => {
-  initSnapfeed({
-    endpoint: "/api/telemetry/events",
-    trackClicks: true, trackNavigation: true, trackErrors: true,
-    trackApiErrors: true, captureConsoleErrors: true,
-    feedback: {
-      enabled: true, screenshotMaxWidth: 1200, screenshotQuality: 0.6,
-      annotations: true, allowContextToggle: true, allowScreenshotToggle: true,
-      defaultIncludeContext: true, defaultIncludeScreenshot: true,
-    },
-    adapters: [
-      githubAdapter({
-        token: token || "pending",
-        owner: "eisber", repo: "remux", labels: ["feedback"],
-        categoryLabels: { bug: "bug", idea: "enhancement", question: "question" },
-      }),
-    ],
-  });
+initSnapfeed({
+  endpoint: "/api/telemetry/events",
+  trackClicks: true, trackNavigation: true, trackErrors: true,
+  trackApiErrors: true, captureConsoleErrors: true,
+  feedback: {
+    enabled: true, screenshotMaxWidth: 1200, screenshotQuality: 0.6,
+    annotations: true, allowContextToggle: true, allowScreenshotToggle: true,
+    defaultIncludeContext: true, defaultIncludeScreenshot: true,
+  },
+  adapters: [lazyGithubAdapter() as never],
 });
 
 createRoot(document.getElementById("root")!).render(<App />);
