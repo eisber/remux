@@ -5,11 +5,13 @@ import path from "node:path";
 import express from "express";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
+import type { RequestHandler } from "express";
 import type { RuntimeConfig } from "./config.js";
 import type {
   ControlClientMessage,
   ControlServerMessage,
   ClientView,
+  SessionState,
   WorkspaceSnapshot
 } from "../shared/protocol.js";
 import { randomToken } from "./util/random.js";
@@ -25,7 +27,10 @@ interface ControlContext {
   socket: WebSocket;
   authed: boolean;
   clientId: string;
+  messageQueue: Promise<void>;
   runtime?: TerminalRuntime;
+  baseSession?: string;
+  attachedSession?: string;
   terminalClients: Set<DataContext>;
   /** Pending resize from terminal WS received before runtime was created */
   pendingResize?: { cols: number; rows: number };
@@ -45,6 +50,7 @@ export interface ServerDependencies {
   logger?: Pick<Console, "log" | "error">;
   /** Callback to switch the backend at runtime. Returns the new deps. */
   onSwitchBackend?: (kind: "tmux" | "zellij" | "conpty") => ServerDependencies | null;
+  extensions?: import("./extensions.js").Extensions;
 }
 
 export interface RunningServer {
@@ -61,10 +67,14 @@ export const isWebSocketPath = (requestPath: string): boolean => requestPath.sta
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const getSingleParam = (value: string | string[] | undefined): string =>
+  Array.isArray(value) ? value.join("/") : (value ?? "");
+
 const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
   z.object({ type: z.literal("new_session"), name: z.string() }),
+  z.object({ type: z.literal("close_session"), session: z.string() }),
   z.object({ type: z.literal("new_tab"), session: z.string() }),
   z.object({ type: z.literal("select_tab"), session: z.string(), tabIndex: z.number() }),
   z.object({ type: z.literal("close_tab"), session: z.string(), tabIndex: z.number() }),
@@ -135,6 +145,9 @@ const isManagedMobileSession = (name: string): boolean => name.startsWith(REMUX_
 
 const buildMobileSessionName = (clientId: string): string => `${REMUX_SESSION_PREFIX}${clientId}`;
 
+const sleep = async (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
 export const createRemuxServer = (
   config: RuntimeConfig,
   deps: ServerDependencies
@@ -151,6 +164,23 @@ export const createRemuxServer = (
 
   const app = express();
   app.use(express.json());
+
+  const readAuthHeaders = (req: express.Request): { token?: string; password?: string } => {
+    const authHeader = req.headers.authorization;
+    return {
+      token: authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined,
+      password: req.headers["x-password"] as string | undefined
+    };
+  };
+
+  const requireApiAuth: RequestHandler = (req, res, next) => {
+    const authResult = authService.verify(readAuthHeaders(req));
+    if (!authResult.ok) {
+      res.status(401).json({ ok: false, error: "unauthorized" });
+      return;
+    }
+    next();
+  };
 
   const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 
@@ -169,10 +199,7 @@ export const createRemuxServer = (
   });
 
   app.post("/api/switch-backend", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    const switchToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
-    const switchPassword = req.headers["x-password"] as string | undefined;
-    const authResult = authService.verify({ token: switchToken, password: switchPassword });
+    const authResult = authService.verify(readAuthHeaders(req));
     if (!authResult.ok) {
       res.status(401).json({ ok: false, error: "unauthorized" });
       return;
@@ -249,10 +276,7 @@ export const createRemuxServer = (
     express.raw({ limit: UPLOAD_MAX_BYTES, type: "application/octet-stream" }),
     async (req, res) => {
       // Auth check
-      const authHeader = req.headers.authorization;
-      const uploadToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
-      const uploadPassword = req.headers["x-password"] as string | undefined;
-      const authResult = authService.verify({ token: uploadToken, password: uploadPassword });
+      const authResult = authService.verify(readAuthHeaders(req));
       if (!authResult.ok) {
         res.status(401).json({ ok: false, error: "unauthorized" });
         return;
@@ -315,6 +339,87 @@ export const createRemuxServer = (
     }
   );
 
+  // Extension routes: push notifications + state API.
+  if (deps.extensions) {
+    app.use("/api/push", requireApiAuth, deps.extensions.notificationRoutes);
+
+    app.get("/api/state/:session", requireApiAuth, (req, res) => {
+      const snapshot = deps.extensions!.getSnapshot(getSingleParam(req.params.session));
+      if (snapshot) {
+        res.json(snapshot);
+      } else {
+        res.status(404).json({ error: "session not found or no state tracked" });
+      }
+    });
+
+    app.get("/api/scrollback/:session", requireApiAuth, (req, res) => {
+      const sessionName = getSingleParam(req.params.session);
+      const from = parseInt(req.query.from as string) || 0;
+      const count = parseInt(req.query.count as string) || 100;
+      const lines = deps.extensions!.getScrollback(sessionName, from, count);
+      res.json({ from, count: lines.length, lines });
+    });
+
+    app.get("/api/gastown/:session", requireApiAuth, (req, res) => {
+      const info = deps.extensions!.getGastownInfo(getSingleParam(req.params.session));
+      res.json(info);
+    });
+
+    app.get("/api/stats/bandwidth", requireApiAuth, (_req, res) => {
+      res.json(deps.extensions!.getBandwidthStats());
+    });
+
+    // File browser API: list and read files in the working directory.
+    app.get("/api/files", requireApiAuth, (_req, res) => {
+      try {
+        const cwd = process.cwd();
+        const entries = fs.readdirSync(cwd, { withFileTypes: true })
+          .filter((e) => !e.name.startsWith("."))
+          .map((e) => ({
+            name: e.name,
+            type: e.isDirectory() ? "directory" : "file",
+          }));
+        res.json({ path: cwd, entries });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.get("/api/files/*filePath", requireApiAuth, (req, res) => {
+      const rawPath = Array.isArray(req.params.filePath)
+        ? req.params.filePath.join("/")
+        : String(req.params.filePath ?? "");
+      const filePath = path.resolve(process.cwd(), rawPath);
+      // Security: ensure the resolved path is within cwd.
+      if (!filePath.startsWith(process.cwd())) {
+        res.status(403).json({ error: "path traversal not allowed" });
+        return;
+      }
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.isDirectory()) {
+          const entries = fs.readdirSync(filePath, { withFileTypes: true })
+            .filter((e) => !e.name.startsWith("."))
+            .map((e) => ({
+              name: e.name,
+              type: e.isDirectory() ? "directory" : "file",
+            }));
+          res.json({ path: filePath, entries });
+        } else {
+          // Limit file reads to 1MB.
+          if (stat.size > 1_048_576) {
+            res.status(413).json({ error: "file too large (>1MB)" });
+            return;
+          }
+          const content = fs.readFileSync(filePath, "utf8");
+          res.json({ path: filePath, content, size: stat.size });
+        }
+      } catch (err) {
+        res.status(404).json({ error: `not found: ${rawPath}` });
+      }
+    });
+  }
+
   app.use(express.static(config.frontendDir));
   app.get(frontendFallbackRoute, (req, res) => {
     if (isWebSocketPath(req.path)) {
@@ -339,6 +444,81 @@ export const createRemuxServer = (
   let started = false;
   let stopPromise: Promise<void> | null = null;
   let latestSnapshot: WorkspaceSnapshot | undefined;
+  const isNonGroupedBackend = (): boolean => !deps.backend.createGroupedSession;
+
+  const waitForWorkspace = async (
+    predicate: (snapshot: WorkspaceSnapshot) => boolean,
+    options?: { timeoutMs?: number; intervalMs?: number }
+  ): Promise<WorkspaceSnapshot> => {
+    const timeoutMs = options?.timeoutMs ?? Math.max(config.pollIntervalMs * 4, 1_500);
+    const intervalMs = options?.intervalMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    let lastSnapshot = latestSnapshot ?? await buildSnapshot(deps.backend);
+    if (predicate(lastSnapshot)) {
+      return lastSnapshot;
+    }
+    while (Date.now() < deadline) {
+      await sleep(intervalMs);
+      lastSnapshot = await buildSnapshot(deps.backend);
+      if (predicate(lastSnapshot)) {
+        return lastSnapshot;
+      }
+    }
+    return lastSnapshot;
+  };
+
+  const buildSingleSessionSnapshot = async (sessionName: string): Promise<WorkspaceSnapshot> => {
+    const tabs = await deps.backend.listTabs(sessionName);
+    const tabsWithPanes = await Promise.all(
+      tabs.map(async (tab) => ({
+        ...tab,
+        panes: await deps.backend.listPanes(sessionName, tab.index)
+      }))
+    );
+    const session: SessionState = {
+      name: sessionName,
+      attached: false,
+      tabCount: tabsWithPanes.length,
+      tabs: tabsWithPanes
+    };
+    return {
+      capturedAt: new Date().toISOString(),
+      sessions: [session]
+    };
+  };
+
+  const waitForSessionSnapshot = async (
+    sessionName: string,
+    options?: { timeoutMs?: number; intervalMs?: number }
+  ): Promise<WorkspaceSnapshot> => {
+    const timeoutMs = options?.timeoutMs ?? Math.max(config.pollIntervalMs * 4, 1_500);
+    const intervalMs = options?.intervalMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    let lastError: unknown;
+
+    while (Date.now() < deadline) {
+      try {
+        const snapshot = await buildSingleSessionSnapshot(sessionName);
+        const session = snapshot.sessions[0];
+        if (session && session.tabs.length > 0) {
+          return snapshot;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+      await sleep(intervalMs);
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+    return buildSingleSessionSnapshot(sessionName);
+  };
+
+  const broadcastSnapshotNow = (snapshot: WorkspaceSnapshot): void => {
+    latestSnapshot = snapshot;
+    broadcastState(snapshot);
+  };
 
   const buildClientState = (
     baseSessions: WorkspaceSnapshot,
@@ -388,6 +568,16 @@ export const createRemuxServer = (
       workspace: { ...baseSessions, sessions },
       clientView: view,
     };
+  };
+
+  const primeViewPaneContext = async (
+    view: ClientView | undefined,
+    paneId: string
+  ): Promise<void> => {
+    if (!view || !isNonGroupedBackend() || view.paneId !== paneId) {
+      return;
+    }
+    await deps.backend.listPanes(view.sessionName, view.tabIndex);
   };
 
   const broadcastState = (state: WorkspaceSnapshot): void => {
@@ -460,6 +650,22 @@ export const createRemuxServer = (
   const getControlContext = (clientId: string): ControlContext | undefined =>
     Array.from(controlClients).find((candidate) => candidate.clientId === clientId);
 
+  const resetControlAttachment = async (context: ControlContext): Promise<void> => {
+    await context.runtime?.shutdown();
+    context.runtime = undefined;
+
+    if (deps.backend.createGroupedSession) {
+      const mobileSession = buildMobileSessionName(context.clientId);
+      try {
+        await deps.backend.killSession(mobileSession);
+      } catch (error) {
+        logger.error("failed to cleanup mobile session", mobileSession, error);
+      }
+    }
+
+    viewStore.removeClient(context.clientId);
+  };
+
   const getOrCreateRuntime = (context: ControlContext): TerminalRuntime => {
     if (context.runtime) {
       return context.runtime;
@@ -468,6 +674,8 @@ export const createRemuxServer = (
     const runtime = new TerminalRuntime(deps.ptyFactory);
     runtime.on("data", (chunk) => {
       verboseLog("runtime data chunk", context.clientId, `bytes=${Buffer.byteLength(chunk, "utf8")}`);
+      // Feed into extensions (state tracker + notifications).
+      deps.extensions?.onTerminalData(context.baseSession ?? context.clientId, chunk);
       for (const terminalClient of context.terminalClients) {
         if (terminalClient.authed && terminalClient.socket.readyState === terminalClient.socket.OPEN) {
           terminalClient.socket.send(chunk);
@@ -479,6 +687,7 @@ export const createRemuxServer = (
     });
     runtime.on("exit", (code) => {
       logger.log(`PTY exited with code ${code} (${context.clientId})`);
+      deps.extensions?.onSessionExit(context.baseSession ?? context.clientId, code);
       sendJson(context.socket, { type: "info", message: "terminal client exited" });
     });
     context.runtime = runtime;
@@ -507,7 +716,8 @@ export const createRemuxServer = (
 
   const attachControlToBaseSession = async (
     context: ControlContext,
-    baseSession: string
+    baseSession: string,
+    snapshotForInit?: WorkspaceSnapshot
   ): Promise<void> => {
     const runtime = getOrCreateRuntime(context);
 
@@ -543,8 +753,10 @@ export const createRemuxServer = (
         await runtime.shutdown();
       }
 
-      // Build a snapshot to init the view
-      const snapshot = await buildSnapshot(deps.backend);
+      // Build only the target session snapshot here so new-session attach does
+      // not wait on a full multi-session zellij workspace scan before sending
+      // the authoritative "attached" event back to the client.
+      const snapshot = snapshotForInit ?? await waitForSessionSnapshot(baseSession);
       const view = viewStore.initView(context.clientId, baseSession, snapshot);
 
       // PTY expects "session:paneId" format
@@ -566,16 +778,30 @@ export const createRemuxServer = (
       }
     }
 
+    context.baseSession = baseSession;
+    context.attachedSession = deps.backend.createGroupedSession
+      ? buildMobileSessionName(context.clientId)
+      : undefined;
+    deps.extensions?.onSessionCreated(baseSession);
     sendJson(context.socket, { type: "attached", session: baseSession });
   };
 
   const ensureAttachedSession = async (
     context: ControlContext,
-    forceSession?: string
+    forceSession?: string,
+    options?: { refreshSessions?: boolean }
   ): Promise<void> => {
-    const sessions = (await deps.backend.listSessions()).filter(
-      (session) => !isManagedMobileSession(session.name)
-    );
+    const sessions = options?.refreshSessions || !latestSnapshot
+      ? (await deps.backend.listSessions()).filter(
+          (session) => !isManagedMobileSession(session.name)
+        )
+      : latestSnapshot.sessions
+          .filter((session) => !isManagedMobileSession(session.name))
+          .map((session) => ({
+            name: session.name,
+            attached: session.attached,
+            tabCount: session.tabCount
+          }));
 
     if (forceSession && sessions.some((s) => s.name === forceSession)) {
       logger.log("attach session (forced)", forceSession);
@@ -614,8 +840,43 @@ export const createRemuxServer = (
         return;
       case "new_session":
         await deps.backend.createSession(message.name);
+        if (isNonGroupedBackend()) {
+          const sessionSnapshot = await waitForSessionSnapshot(message.name);
+          await attachControlToBaseSession(context, message.name, sessionSnapshot);
+          return;
+        }
         await attachControlToBaseSession(context, message.name);
         return;
+      case "close_session": {
+        const liveSessions = (await deps.backend.listSessions()).filter(
+          (session) => !isManagedMobileSession(session.name)
+        );
+        if (liveSessions.length <= 1) {
+          sendJson(context.socket, {
+            type: "info",
+            message: "cannot kill the last session"
+          });
+          return;
+        }
+
+        const affectedClients = Array.from(controlClients).filter((client) => {
+          if (!client.authed) {
+            return false;
+          }
+          return viewStore.getView(client.clientId)?.sessionName === message.session;
+        });
+
+        for (const client of affectedClients) {
+          await resetControlAttachment(client);
+        }
+
+        await deps.backend.killSession(message.session);
+
+        for (const client of affectedClients) {
+          await ensureAttachedSession(client, undefined, { refreshSessions: true });
+        }
+        return;
+      }
       case "new_tab": {
         const sessionForNew = view?.sessionName;
         if (!sessionForNew) {
@@ -623,8 +884,12 @@ export const createRemuxServer = (
         }
         await deps.backend.newTab(sessionForNew);
         // New tab becomes active — update view to the new tab
-        if (!deps.backend.createGroupedSession) {
-          const snapshot = await buildSnapshot(deps.backend);
+        if (isNonGroupedBackend()) {
+          const snapshot = await waitForWorkspace((candidate) => {
+            const session = candidate.sessions.find((s) => s.name === sessionForNew);
+            const activeTab = session?.tabs.find((t) => t.active) ?? session?.tabs.at(-1);
+            return Boolean(activeTab && activeTab.panes.length > 0);
+          });
           const session = snapshot.sessions.find((s) => s.name === sessionForNew);
           const activeTab = session?.tabs.find((t) => t.active) ?? session?.tabs.at(-1);
           if (activeTab) {
@@ -635,6 +900,7 @@ export const createRemuxServer = (
               runtime.attachToSession(`${updatedView.sessionName}:${updatedView.paneId}`);
             }
           }
+          broadcastSnapshotNow(snapshot);
         }
         return;
       }
@@ -643,6 +909,9 @@ export const createRemuxServer = (
         // Update view store
         const snapshot = latestSnapshot ?? await buildSnapshot(deps.backend);
         viewStore.selectTab(context.clientId, message.tabIndex, snapshot);
+        if (isNonGroupedBackend()) {
+          await deps.backend.selectTab(view.sessionName, message.tabIndex);
+        }
         // Switch terminal stream
         if (deps.backend.createGroupedSession) {
           // tmux: select window on the mobile session
@@ -676,7 +945,11 @@ export const createRemuxServer = (
       }
       case "select_pane": {
         if (!view) throw new Error("no attached session");
+        await primeViewPaneContext(view, message.paneId);
         viewStore.selectPane(context.clientId, message.paneId);
+        if (isNonGroupedBackend() && deps.backend.capabilities.supportsPaneFocusById) {
+          await deps.backend.focusPane(message.paneId);
+        }
         if (deps.backend.createGroupedSession) {
           // tmux: select the pane directly
           await deps.backend.focusPane(message.paneId);
@@ -688,9 +961,11 @@ export const createRemuxServer = (
         return;
       }
       case "split_pane":
+        await primeViewPaneContext(view, message.paneId);
         await deps.backend.splitPane(message.paneId, message.direction);
         return;
       case "close_pane": {
+        await primeViewPaneContext(view, message.paneId);
         // Guard: prevent killing the last pane of the last tab (would destroy session)
         const baseForKillPane = view?.sessionName;
         if (baseForKillPane) {
@@ -713,9 +988,11 @@ export const createRemuxServer = (
         return;
       }
       case "toggle_fullscreen":
+        await primeViewPaneContext(view, message.paneId);
         await deps.backend.toggleFullscreen(message.paneId);
         return;
       case "capture_scrollback": {
+        await primeViewPaneContext(view, message.paneId);
         const lines = message.lines ?? config.scrollbackLines;
         const result = await deps.backend.capturePane(message.paneId, { lines });
         sendJson(context.socket, {
@@ -735,13 +1012,22 @@ export const createRemuxServer = (
         await deps.backend.renameSession(message.session, message.newName);
         // Update all client views
         viewStore.renameSession(message.session, message.newName);
+        let renamedSnapshot: WorkspaceSnapshot | undefined;
+        if (isNonGroupedBackend()) {
+          renamedSnapshot = await waitForWorkspace((snapshot) =>
+            snapshot.sessions.some((session) => session.name === message.newName)
+          );
+        }
         // Reattach runtimes for zellij/conpty
-        if (!deps.backend.createGroupedSession) {
+        if (isNonGroupedBackend()) {
           for (const client of controlClients) {
             const clientView = viewStore.getView(client.clientId);
             if (client.authed && clientView && clientView.sessionName === message.newName && client.runtime) {
               client.runtime.attachToSession(`${message.newName}:${clientView.paneId}`);
             }
+          }
+          if (renamedSnapshot) {
+            broadcastSnapshotNow(renamedSnapshot);
           }
         }
         for (const client of controlClients) {
@@ -779,20 +1065,7 @@ export const createRemuxServer = (
       }
     }
     context.terminalClients.clear();
-    await context.runtime?.shutdown();
-    context.runtime = undefined;
-
-    // For tmux: kill the grouped mobile session
-    if (deps.backend.createGroupedSession) {
-      const mobileSession = buildMobileSessionName(context.clientId);
-      try {
-        await deps.backend.killSession(mobileSession);
-      } catch (error) {
-        logger.error("failed to cleanup mobile session", mobileSession, error);
-      }
-    }
-
-    viewStore.removeClient(context.clientId);
+    await resetControlAttachment(context);
   };
 
   controlWss.on("connection", (socket) => {
@@ -800,78 +1073,100 @@ export const createRemuxServer = (
       socket,
       authed: false,
       clientId: randomToken(12),
+      messageQueue: Promise.resolve(),
       terminalClients: new Set<DataContext>()
     };
     controlClients.add(context);
     logger.log("control ws connected", context.clientId);
 
     socket.on("message", async (rawData) => {
-      const message = parseClientMessage(rawData.toString("utf8"));
+      const raw = rawData.toString("utf8");
+
+      // Handle ping/pong for RTT measurement (bypass zod validation).
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed.type === "ping" && typeof parsed.timestamp === "number") {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({ type: "pong", timestamp: parsed.timestamp }));
+          }
+          return;
+        }
+      } catch { /* not JSON or not a ping — continue to normal parsing */ }
+
+      const message = parseClientMessage(raw);
       if (!message) {
         sendJson(socket, { type: "error", message: "invalid message format" });
         return;
       }
-      logger.log("control ws message", context.clientId, message.type);
-      verboseLog("control ws payload", context.clientId, summarizeClientMessage(message));
-
-      try {
-        if (!context.authed) {
-          if (message.type !== "auth") {
-            sendJson(socket, { type: "auth_error", reason: "auth required" });
-            return;
-          }
-
-          const authResult = authService.verify({
-            token: message.token,
-            password: message.password
-          });
-          if (!authResult.ok) {
-            logger.log("control ws auth failed", context.clientId, authResult.reason ?? "unknown");
-            sendJson(socket, {
-              type: "auth_error",
-              reason: authResult.reason ?? "unauthorized"
-            });
-            return;
-          }
-
-          context.authed = true;
-          logger.log("control ws auth ok", context.clientId);
-          sendJson(socket, {
-            type: "auth_ok",
-            clientId: context.clientId,
-            requiresPassword: authService.requiresPassword(),
-            capabilities: deps.backend.capabilities,
-            backendKind: deps.backend.kind
-          });
-          try {
-            await ensureAttachedSession(context, message.session);
-          } catch (error) {
-            logger.error("initial attach failed", error);
-            sendJson(socket, {
-              type: "error",
-              message: error instanceof Error ? error.message : String(error)
-            });
-          }
-          await monitor?.forcePublish();
-          return;
-        }
+      context.messageQueue = context.messageQueue.then(async () => {
+        logger.log("control ws message", context.clientId, message.type);
+        verboseLog("control ws payload", context.clientId, summarizeClientMessage(message));
 
         try {
-          verboseLog("control mutation start", context.clientId, message.type);
-          await runControlMutation(message, context);
-          verboseLog("control mutation done", context.clientId, message.type);
-        } finally {
-          verboseLog("force publish start", context.clientId, message.type);
-          await monitor?.forcePublish();
-          verboseLog("force publish done", context.clientId, message.type);
+          if (!context.authed) {
+            if (message.type !== "auth") {
+              sendJson(socket, { type: "auth_error", reason: "auth required" });
+              return;
+            }
+
+            const authResult = authService.verify({
+              token: message.token,
+              password: message.password
+            });
+            if (!authResult.ok) {
+              logger.log("control ws auth failed", context.clientId, authResult.reason ?? "unknown");
+              sendJson(socket, {
+                type: "auth_error",
+                reason: authResult.reason ?? "unauthorized"
+              });
+              return;
+            }
+
+            context.authed = true;
+            logger.log("control ws auth ok", context.clientId);
+            sendJson(socket, {
+              type: "auth_ok",
+              clientId: context.clientId,
+              requiresPassword: authService.requiresPassword(),
+              capabilities: deps.backend.capabilities,
+              backendKind: deps.backend.kind
+            });
+            try {
+              await ensureAttachedSession(context, message.session);
+            } catch (error) {
+              logger.error("initial attach failed", error);
+              sendJson(socket, {
+                type: "error",
+                message: error instanceof Error ? error.message : String(error)
+              });
+            }
+            await monitor?.forcePublish();
+            return;
+          }
+
+          try {
+            verboseLog("control mutation start", context.clientId, message.type);
+            await runControlMutation(message, context);
+            verboseLog("control mutation done", context.clientId, message.type);
+          } finally {
+            verboseLog("force publish start", context.clientId, message.type);
+            await monitor?.forcePublish();
+            verboseLog("force publish done", context.clientId, message.type);
+          }
+        } catch (error) {
+          logger.error("control ws error", context.clientId, error);
+          sendJson(socket, {
+            type: "error",
+            message: error instanceof Error ? error.message : String(error)
+          });
         }
-      } catch (error) {
+      }).catch((error) => {
         logger.error("control ws error", context.clientId, error);
         sendJson(socket, {
           type: "error",
           message: error instanceof Error ? error.message : String(error)
         });
-      }
+      });
     });
 
     socket.on("close", () => {
@@ -1036,6 +1331,19 @@ export const createRemuxServer = (
           resolve();
         });
       });
+
+      // Broadcast bandwidth stats every 5 seconds to all authed control clients.
+      if (deps.extensions) {
+        setInterval(() => {
+          const stats = deps.extensions!.getBandwidthStats();
+          const msg = JSON.stringify({ type: "bandwidth_stats", stats });
+          for (const client of controlClients) {
+            if (client.authed && client.socket.readyState === client.socket.OPEN) {
+              client.socket.send(msg);
+            }
+          }
+        }, 5000);
+      }
     },
     async stop() {
       if (!started) {

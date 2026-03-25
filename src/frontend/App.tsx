@@ -6,6 +6,13 @@ import { themes } from "./themes";
 import { ansiToHtml } from "./ansi-to-html";
 import { deriveContext, formatContext } from "./context-label";
 import { Toolbar, type ToolbarHandle, type Snippet } from "./components/Toolbar";
+import {
+  inferAttachedSessionFromWorkspace,
+  isAwaitingSessionAttachment,
+  isAwaitingSessionSelection,
+  resolveActiveSession,
+  shouldUsePaneViewportCols
+} from "./ui-state";
 import type {
   ControlServerMessage,
   PaneState,
@@ -46,8 +53,11 @@ const wsOrigin = (() => {
   return `${scheme}://${window.location.host}`;
 })();
 
+const isMobileDevice = (): boolean =>
+  window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
+
 const getPreferredTerminalFontSize = (): number => {
-  return window.matchMedia("(max-width: 768px), (pointer: coarse)").matches ? 12 : 14;
+  return isMobileDevice() ? 12 : 14;
 };
 
 const getInitialStickyZoom = (): boolean => {
@@ -90,6 +100,12 @@ const debugLog = (event: string, payload?: unknown): void => {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 8000;
 
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+};
+
 export const App = () => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -119,9 +135,9 @@ export const App = () => {
   const [clientView, setClientView] = useState<ClientView | null>(null);
   const [attachedSession, setAttachedSession] = useState<string>("");
   const attachedSessionRef = useRef("");
+  const [pendingSessionAttachment, setPendingSessionAttachment] = useState<string | null>(null);
   const [sessionChoices, setSessionChoices] = useState<SessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [composeEnabled, setComposeEnabled] = useState(true);
   const [composeText, setComposeText] = useState("");
 
   const [scrollbackHtml, setScrollbackHtml] = useState("");
@@ -149,6 +165,23 @@ export const App = () => {
   const [theme, setTheme] = useState(localStorage.getItem("remux-theme") ?? "midnight");
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
 
+  // Bandwidth stats
+  const [bandwidthStats, setBandwidthStats] = useState<{
+    rawBytesPerSec: number;
+    compressedBytesPerSec: number;
+    savedPercent: number;
+    fullSnapshotsSent: number;
+    diffUpdatesSent: number;
+    avgChangedRowsPerDiff: number;
+    totalRawBytes: number;
+    totalCompressedBytes: number;
+    totalSavedBytes: number;
+    rttMs: number | null;
+    protocol: string;
+  } | null>(null);
+  const [statsVisible, setStatsVisible] = useState(false);
+  const rttTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameSessionValue, setRenameSessionValue] = useState("");
   const [renamingWindow, setRenamingWindow] = useState<{ session: string; index: number } | null>(null);
@@ -159,17 +192,26 @@ export const App = () => {
   const [uploadToast, setUploadToast] = useState<{ path: string; filename: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Bell tracking: sessions that have rung the bell since last viewed.
+  const [bellSessions, setBellSessions] = useState<Set<string>>(new Set());
+
   // Local selection state for instant UI feedback before server snapshot arrives
   const [selectedWindowIndex, setSelectedWindowIndex] = useState<number | null>(null);
   const [selectedPaneId, setSelectedPaneId] = useState<string | null>(null);
+  const awaitingSessionSelection = isAwaitingSessionSelection(sessionChoices, attachedSession);
+  const awaitingSessionAttachment = isAwaitingSessionAttachment(
+    pendingSessionAttachment,
+    attachedSession
+  );
 
   const activeSession: SessionState | undefined = useMemo(() => {
-    const selected = snapshot.sessions.find((session) => session.name === attachedSession);
-    if (selected) {
-      return selected;
-    }
-    return snapshot.sessions.find((session) => session.attached) ?? snapshot.sessions[0];
-  }, [snapshot.sessions, attachedSession]);
+    return resolveActiveSession(
+      snapshot.sessions,
+      attachedSession,
+      awaitingSessionSelection,
+      awaitingSessionAttachment
+    );
+  }, [snapshot.sessions, attachedSession, awaitingSessionSelection, awaitingSessionAttachment]);
 
   const activeTab: TabState | undefined = useMemo(() => {
     if (!activeSession) {
@@ -205,6 +247,12 @@ export const App = () => {
     if (errorMessage) {
       return { kind: "error", label: errorMessage };
     }
+    if (awaitingSessionSelection) {
+      return { kind: "pending", label: "select session" };
+    }
+    if (awaitingSessionAttachment && pendingSessionAttachment) {
+      return { kind: "pending", label: `attaching: ${pendingSessionAttachment}` };
+    }
     if (statusMessage.toLowerCase().includes("disconnected") || statusMessage.toLowerCase().includes("reconnect")) {
       return { kind: "warn", label: statusMessage };
     }
@@ -218,7 +266,57 @@ export const App = () => {
       return { kind: "ok", label: "connected" };
     }
     return { kind: "pending", label: "connecting" };
-  }, [authReady, errorMessage, statusMessage]);
+  }, [
+    authReady,
+    awaitingSessionAttachment,
+    awaitingSessionSelection,
+    errorMessage,
+    pendingSessionAttachment,
+    statusMessage
+  ]);
+
+  // Session color palette for tab bar color-coding.
+  const sessionColors = useMemo(() => {
+    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#06b6d4", "#ef4444", "#84cc16"];
+    const colorMap = new Map<string, string>();
+    snapshot.sessions.forEach((session, i) => {
+      colorMap.set(session.name, palette[i % palette.length]);
+    });
+    return colorMap;
+  }, [snapshot.sessions]);
+
+  // Build flat tab list: one tab per tab across all sessions.
+  const tabs = useMemo(() => {
+    const result: Array<{
+      key: string;
+      label: string;
+      sessionName: string;
+      windowIndex: number;
+      isActive: boolean;
+      hasBell: boolean;
+      color: string;
+    }> = [];
+
+    for (const session of snapshot.sessions) {
+      for (const tab of session.tabs) {
+        const isActive =
+          session.name === (attachedSession || activeSession?.name) &&
+          tab.index === activeTab?.index;
+        result.push({
+          key: `${session.name}:${tab.index}`,
+          label: session.tabs.length > 1
+            ? `${session.name}/${tab.name}`
+            : session.name,
+          sessionName: session.name,
+          windowIndex: tab.index,
+          isActive,
+          hasBell: bellSessions.has(session.name) && !isActive,
+          color: sessionColors.get(session.name) ?? "#3b82f6",
+        });
+      }
+    }
+    return result;
+  }, [snapshot.sessions, attachedSession, activeSession, activeTab, bellSessions, sessionColors]);
 
   const sendControl = (payload: Record<string, unknown>): void => {
     if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
@@ -344,7 +442,12 @@ export const App = () => {
         type: typeof event.data,
         bytes: typeof event.data === "string" ? event.data.length : 0
       });
-      terminalRef.current?.write(typeof event.data === "string" ? event.data : "");
+      const data = typeof event.data === "string" ? event.data : "";
+      terminalRef.current?.write(data);
+      // Detect bell character — mark the current session as having a bell.
+      if (data.includes("\x07") && attachedSession) {
+        setBellSessions((prev) => new Set(prev).add(attachedSession));
+      }
     };
 
     socket.onclose = (event) => {
@@ -383,6 +486,21 @@ export const App = () => {
 
     socket.onmessage = (event) => {
       debugLog("control_socket.onmessage.raw", { bytes: String(event.data).length });
+
+      // Handle bandwidth_stats and pong (not in typed protocol).
+      try {
+        const raw = JSON.parse(String(event.data)) as Record<string, unknown>;
+        if (raw.type === "bandwidth_stats" && raw.stats) {
+          setBandwidthStats(raw.stats as typeof bandwidthStats & object);
+          return;
+        }
+        if (raw.type === "pong" && typeof raw.timestamp === "number") {
+          const rtt = Math.round(performance.now() - raw.timestamp);
+          setBandwidthStats((prev) => prev ? { ...prev, rttMs: rtt } : null);
+          return;
+        }
+      } catch { /* not our extension message — continue */ }
+
       const message = parseMessage(String(event.data));
       if (!message) {
         debugLog("control_socket.onmessage.parse_error", { raw: String(event.data) });
@@ -429,6 +547,7 @@ export const App = () => {
           debugLog("control_socket.attached", { session: message.session });
           setAttachedSession(message.session);
           attachedSessionRef.current = message.session;
+          setPendingSessionAttachment(null);
           setSelectedWindowIndex(null);
           setSelectedPaneId(null);
           setSessionChoices(null);
@@ -455,6 +574,11 @@ export const App = () => {
               tabCount: session.tabCount
             }))
           });
+          setAttachedSession("");
+          attachedSessionRef.current = "";
+          setPendingSessionAttachment(null);
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
           setSessionChoices(message.sessions);
           return;
         case "workspace_state":
@@ -476,6 +600,17 @@ export const App = () => {
           });
           setSnapshot(message.workspace);
           if (message.clientView) setClientView(message.clientView);
+          const inferredAttachedSession = inferAttachedSessionFromWorkspace(
+            message.workspace.sessions,
+            message.clientView
+          );
+          if (inferredAttachedSession) {
+            setAttachedSession(inferredAttachedSession);
+            attachedSessionRef.current = inferredAttachedSession;
+            setPendingSessionAttachment(null);
+            setSessionChoices(null);
+            setStatusMessage(`attached: ${inferredAttachedSession}`);
+          }
           // Clear local selections — the server now sends per-client active state,
           // so the snapshot already reflects this client's active tab/pane.
           setSelectedWindowIndex(null);
@@ -484,7 +619,7 @@ export const App = () => {
           // Sync xterm columns to the pane's viewport width so the terminal
           // fills exactly the pane content area (no empty right half on wide
           // screens, no truncation on narrow screens).
-          if (message.clientView) {
+          if (message.clientView && shouldUsePaneViewportCols(serverConfig?.backendKind)) {
             const session = message.workspace.sessions.find(
               (s) => s.name === message.clientView!.sessionName
             );
@@ -503,6 +638,8 @@ export const App = () => {
                 sendTerminalResize();
               }
             }
+          } else {
+            paneViewportColsRef.current = 0;
           }
           return;
         case "scrollback":
@@ -574,6 +711,29 @@ export const App = () => {
   }, [theme]);
 
   useEffect(() => {
+    if (attachedSession) {
+      setSessionChoices(null);
+    }
+  }, [attachedSession]);
+
+  useEffect(() => {
+    if (
+      !sessionChoices ||
+      attachedSession ||
+      pendingSessionAttachment ||
+      snapshot.sessions.length !== 1
+    ) {
+      return;
+    }
+
+    const [onlySession] = snapshot.sessions;
+    setPendingSessionAttachment(onlySession.name);
+    setStatusMessage(`attaching: ${onlySession.name}`);
+    setDrawerOpen(false);
+    sendControl({ type: "select_session", session: onlySession.name });
+  }, [attachedSession, pendingSessionAttachment, sessionChoices, snapshot.sessions]);
+
+  useEffect(() => {
     if (!terminalContainerRef.current || terminalRef.current) {
       return;
     }
@@ -622,12 +782,12 @@ export const App = () => {
         terminal.options.fontSize = preferredFontSize;
       }
       fitAddon.fit();
-      // Override cols with pane viewport width when known (zellij mode).
-      // FitAddon sizes to the CSS container, but the viewport snapshot has
-      // a fixed width determined by the zellij pane — match it so content
-      // fills exactly without empty space or truncation.
       const paneCols = paneViewportColsRef.current;
-      if (paneCols > 0 && terminal.cols !== paneCols) {
+      if (
+        shouldUsePaneViewportCols(serverConfig?.backendKind) &&
+        paneCols > 0 &&
+        terminal.cols !== paneCols
+      ) {
         terminal.resize(paneCols, terminal.rows);
       }
       sendTerminalResize();
@@ -646,7 +806,14 @@ export const App = () => {
       fitAddonRef.current = null;
       serializeAddonRef.current = null;
     };
-  }, []);
+  }, [serverConfig?.backendKind, sendRawToSocket]);
+
+  useEffect(() => {
+    if (shouldUsePaneViewportCols(serverConfig?.backendKind)) {
+      return;
+    }
+    paneViewportColsRef.current = 0;
+  }, [serverConfig?.backendKind]);
 
   useEffect(() => {
     return () => {
@@ -809,6 +976,9 @@ export const App = () => {
     if (!name) {
       return;
     }
+    setPendingSessionAttachment(name);
+    setStatusMessage(`attaching: ${name}`);
+    setSessionChoices(null);
     sendControl({ type: "new_session", name });
   };
 
@@ -830,8 +1000,12 @@ export const App = () => {
       return;
     }
 
-    setStatusMessage(`uploading ${file.name}...`);
     const paneCwd = activePane?.currentPath ?? "";
+    if (serverConfig?.backendKind === "zellij" && !paneCwd) {
+      setStatusMessage(`uploading ${file.name}... (zellij uses server cwd)`);
+    } else {
+      setStatusMessage(`uploading ${file.name}...`);
+    }
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/upload");
@@ -892,31 +1066,54 @@ export const App = () => {
     }
   };
 
+  const sendCompose = (): void => {
+    const text = composeText.trim();
+    if (!text) {
+      return;
+    }
+    sendControl({ type: "send_compose", text });
+    setComposeText("");
+  };
+
   return (
     <div className="app-shell">
-      <header className="topbar">
+      <header className="tab-bar">
         <button
           onClick={() => setDrawerOpen((value) => !value)}
-          className="icon-btn"
+          className="tab-bar-burger"
           data-testid="drawer-toggle"
+          title="Open sidebar — manage panes, themes, and advanced options"
         >
-          =
+          ☰
         </button>
         <div className="top-title">
-          Tab: {activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}
+          {awaitingSessionSelection
+            ? "Select Session"
+            : `Tab: ${activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}`}
           {serverConfig?.backendKind === "zellij" && (
             <span className="experimental-badge" title="Zellij support is experimental">(experimental)</span>
           )}
         </div>
-        <div className="top-actions">
+        <div className="tab-bar-actions">
           <span
             className={`top-status ${topStatus.kind}`}
             title={topStatus.label}
             aria-label={`Status: ${topStatus.label}`}
             data-testid="top-status-indicator"
           />
+          {bandwidthStats && (
+            <button
+              className={`bandwidth-indicator ${bandwidthStats.savedPercent > 50 ? "good" : bandwidthStats.savedPercent > 20 ? "ok" : "low"}`}
+              onClick={() => setStatsVisible((v) => !v)}
+              title={`Bandwidth: ${formatBytes(bandwidthStats.compressedBytesPerSec)}/s (${bandwidthStats.savedPercent}% saved). Click for details.`}
+            >
+              ↓{formatBytes(bandwidthStats.compressedBytesPerSec)}/s
+              {bandwidthStats.savedPercent > 0 && <span className="saved-badge">{bandwidthStats.savedPercent}%</span>}
+            </button>
+          )}
           <button
             className={`top-btn${viewMode === "terminal" ? " active" : ""}`}
+            title="Toggle between terminal view and scrollback history"
             onClick={() => {
               setViewMode((m) => m === "scroll" ? "terminal" : "scroll");
             }}
@@ -989,42 +1186,41 @@ export const App = () => {
         hidden={viewMode !== "terminal"}
       />
 
-      {composeEnabled && (
-        <section className="compose-bar">
-          <input
-            value={composeText}
-            onChange={(event) => setComposeText(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.nativeEvent.isComposing || event.keyCode === 229) return;
-              if (event.key === "Enter") {
-                sendControl({ type: "send_compose", text: composeText });
-                setComposeText("");
+      <section className="compose-bar" data-testid="compose-bar">
+        <input
+          data-testid="compose-input"
+          value={composeText}
+          onChange={(event) => setComposeText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Enter") {
+              sendCompose();
+            }
+          }}
+          onPaste={(event) => {
+            const items = event.clipboardData?.items;
+            if (!items) return;
+            for (const item of items) {
+              if (item.kind === "file") {
+                event.preventDefault();
+                const file = item.getAsFile();
+                if (file) uploadFile(file);
+                return;
               }
-            }}
-            onPaste={(event) => {
-              const items = event.clipboardData?.items;
-              if (!items) return;
-              for (const item of items) {
-                if (item.kind === "file") {
-                  event.preventDefault();
-                  const file = item.getAsFile();
-                  if (file) uploadFile(file);
-                  return;
-                }
-              }
-            }}
-            placeholder="Compose command"
-          />
-          <button
-            onClick={() => {
-              sendControl({ type: "send_compose", text: composeText });
-              setComposeText("");
-            }}
-          >
-            Send
-          </button>
-        </section>
-      )}
+            }
+          }}
+          placeholder="Compose command"
+          title="Type a command here and press Enter to send it to the terminal"
+        />
+        <button
+          data-testid="compose-send"
+          onClick={sendCompose}
+          title="Send the composed command to the terminal"
+          disabled={!composeText.trim()}
+        >
+          Send
+        </button>
+      </section>
 
       {drawerOpen && (
         <div
@@ -1075,22 +1271,48 @@ export const App = () => {
                       data-testid="rename-session-input"
                     />
                   ) : (
-                    <button
-                      onClick={() => sendControl({ type: "select_session", session: session.name })}
-                      onDoubleClick={capabilities?.supportsSessionRename ? (e) => {
-                        e.preventDefault();
-                        setRenamingSession(session.name);
-                        setRenameSessionValue(session.name);
-                      } : undefined}
-                      className={session.name === (attachedSession || activeSession?.name) ? "active" : ""}
-                    >
-                      <span className="item-name">{session.name} {session.attached ? "*" : ""}</span>
-                      {(() => {
-                        const aw = session.tabs.find((t) => t.active) ?? session.tabs[0];
-                        const label = aw ? formatContext(deriveContext(aw.panes)) : "";
-                        return label ? <span className="item-context">{label}</span> : null;
-                      })()}
-                    </button>
+                    <div className="drawer-item-row">
+                      <button
+                        onClick={() => sendControl({ type: "select_session", session: session.name })}
+                        onDoubleClick={capabilities?.supportsSessionRename ? (e) => {
+                          e.preventDefault();
+                          setRenamingSession(session.name);
+                          setRenameSessionValue(session.name);
+                        } : undefined}
+                        className={`drawer-item-main${
+                          session.name === (attachedSession || activeSession?.name) ? " active" : ""
+                        }`}
+                      >
+                        <span className="item-name">{session.name} {session.attached ? "*" : ""}</span>
+                        {(() => {
+                          const aw = session.tabs.find((t) => t.active) ?? session.tabs[0];
+                          const label = aw ? formatContext(deriveContext(aw.panes)) : "";
+                          return label ? <span className="item-context">{label}</span> : null;
+                        })()}
+                      </button>
+                      <button
+                        type="button"
+                        className="drawer-item-icon danger"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (
+                            session.name === activeSession?.name ||
+                            session.name === attachedSession ||
+                            snapshot.sessions.length <= 1
+                          ) {
+                            setSelectedWindowIndex(null);
+                            setSelectedPaneId(null);
+                          }
+                          sendControl({ type: "close_session", session: session.name });
+                        }}
+                        disabled={snapshot.sessions.length <= 1}
+                        data-testid={`close-session-${session.name}`}
+                        aria-label={`Close session ${session.name}`}
+                        title={`Close session ${session.name}`}
+                      >
+                        ×
+                      </button>
+                    </div>
                   )}
                 </li>
               ))}
@@ -1099,10 +1321,10 @@ export const App = () => {
               className="drawer-section-action"
               onClick={createSession}
               data-testid="new-session-button"
+              title="Create a new terminal session"
             >
               + New Session
             </button>
-
             <h3>Tabs ({activeSession?.name ?? "-"})</h3>
             <ul data-testid="tabs-list">
               {activeSession
@@ -1137,24 +1359,48 @@ export const App = () => {
                           data-testid="rename-tab-input"
                         />
                       ) : (
-                        <button
-                          onClick={() => selectTab(tab)}
-                          onDoubleClick={capabilities?.supportsTabRename ? (e) => {
-                            e.preventDefault();
-                            setRenamingWindow({ session: activeSession.name, index: tab.index });
-                            setRenameWindowValue(tab.name);
-                          } : undefined}
-                          className={tab.index === activeTab?.index ? "active" : ""}
-                        >
-                          <span className="item-name">
-                            {tab.index}: {tab.name}
-                            {tab.index === activeTab?.index ? " *" : ""}
-                          </span>
-                          {(() => {
-                            const label = formatContext(deriveContext(tab.panes));
-                            return label ? <span className="item-context">{label}</span> : null;
-                          })()}
-                        </button>
+                        <div className="drawer-item-row">
+                          <button
+                            onClick={() => selectTab(tab)}
+                            onDoubleClick={capabilities?.supportsTabRename ? (e) => {
+                              e.preventDefault();
+                              setRenamingWindow({ session: activeSession.name, index: tab.index });
+                              setRenameWindowValue(tab.name);
+                            } : undefined}
+                            className={`drawer-item-main${tab.index === activeTab?.index ? " active" : ""}`}
+                          >
+                            <span className="item-name">
+                              {tab.index}: {tab.name}
+                              {tab.index === activeTab?.index ? " *" : ""}
+                            </span>
+                            {(() => {
+                              const label = formatContext(deriveContext(tab.panes));
+                              return label ? <span className="item-context">{label}</span> : null;
+                            })()}
+                          </button>
+                          <button
+                            type="button"
+                            className="drawer-item-icon danger"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (tab.index === activeTab?.index) {
+                                setSelectedWindowIndex(null);
+                                setSelectedPaneId(null);
+                              }
+                              sendControl({
+                                type: "close_tab",
+                                session: activeSession.name,
+                                tabIndex: tab.index
+                              });
+                            }}
+                            disabled={activeSession.tabs.length <= 1}
+                            data-testid={`close-tab-${activeSession.name}-${tab.index}`}
+                            aria-label={`Close tab ${tab.index} in session ${activeSession.name}`}
+                            title={`Close tab ${tab.index}`}
+                          >
+                            ×
+                          </button>
+                        </div>
                       )}
                     </li>
                   ))
@@ -1178,28 +1424,47 @@ export const App = () => {
                     const isActive = pane.id === activePane?.id;
                     return (
                       <li key={pane.id}>
-                        <button
-                          onClick={() => {
-                            setSelectedPaneId(pane.id);
-                            sendControl({ type: "select_pane", paneId: pane.id });
-                            if (stickyZoom && capabilities?.supportsFullscreenPane && !isActive && !pane.zoomed) {
-                              sendControl({ type: "toggle_fullscreen", paneId: pane.id });
-                            }
-                          }}
-                          className={isActive ? "active" : ""}
-                        >
-                          %{pane.index}: {pane.currentCommand} {isActive ? "*" : ""}
-                          {isActive && pane.zoomed ? (
-                            <span
-                              className="pane-zoom-indicator on"
-                              title="Active pane is zoomed"
-                              aria-label="Pane zoom: on"
-                              data-testid="active-pane-zoom-indicator"
-                            >
-                              🔍
-                            </span>
-                          ) : null}
-                        </button>
+                        <div className="drawer-item-row">
+                          <button
+                            onClick={() => {
+                              setSelectedPaneId(pane.id);
+                              sendControl({ type: "select_pane", paneId: pane.id });
+                              if (stickyZoom && capabilities?.supportsFullscreenPane && !isActive && !pane.zoomed) {
+                                sendControl({ type: "toggle_fullscreen", paneId: pane.id });
+                              }
+                            }}
+                            className={`drawer-item-main${isActive ? " active" : ""}`}
+                          >
+                            <span className="item-name">%{pane.index}: {pane.currentCommand} {isActive ? "*" : ""}</span>
+                            {isActive && pane.zoomed ? (
+                              <span
+                                className="pane-zoom-indicator on"
+                                title="Active pane is zoomed"
+                                aria-label="Pane zoom: on"
+                                data-testid="active-pane-zoom-indicator"
+                              >
+                                🔍
+                              </span>
+                            ) : null}
+                          </button>
+                          <button
+                            type="button"
+                            className="drawer-item-icon danger"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (isActive) {
+                                setSelectedPaneId(null);
+                              }
+                              sendControl({ type: "close_pane", paneId: pane.id });
+                            }}
+                            disabled={activeTab.panes.length <= 1}
+                            data-testid={`close-pane-${pane.id}`}
+                            aria-label={`Close pane ${pane.id}`}
+                            title={`Close pane ${pane.id}`}
+                          >
+                            ×
+                          </button>
+                        </div>
                       </li>
                     );
                   })
@@ -1212,6 +1477,7 @@ export const App = () => {
                   sendControl({ type: "split_pane", paneId: activePane.id, direction: "right" })
                 }
                 disabled={!activePane}
+                title="Split pane horizontally — create a side-by-side layout"
               >
                 Split H
               </button>
@@ -1221,6 +1487,7 @@ export const App = () => {
                   sendControl({ type: "split_pane", paneId: activePane.id, direction: "down" })
                 }
                 disabled={!activePane}
+                title="Split pane vertically — create a top-bottom layout"
               >
                 Split V
               </button>
@@ -1239,36 +1506,9 @@ export const App = () => {
               onClick={() => { stickyZoomUserSetRef.current = true; setStickyZoom((v) => !v); }}
               disabled={!capabilities?.supportsFullscreenPane}
               data-testid="sticky-zoom-toggle"
+              title="Sticky zoom — automatically zoom the pane when switching windows or panes"
             >
               Sticky Zoom: {stickyZoom ? "On" : "Off"}
-            </button>
-
-            <button
-              className="drawer-section-action"
-              onClick={() => {
-                if (!activePane) return;
-                setSelectedPaneId(null);
-                sendControl({ type: "close_pane", paneId: activePane.id });
-              }}
-              disabled={!activePane}
-            >
-              Close Pane
-            </button>
-            <button
-              className="drawer-section-action"
-              onClick={() => {
-                if (!activeSession || !activeTab) return;
-                setSelectedWindowIndex(null);
-                setSelectedPaneId(null);
-                sendControl({
-                  type: "close_tab",
-                  session: activeSession.name,
-                  tabIndex: activeTab.index
-                });
-              }}
-              disabled={!activeSession || !activeTab}
-            >
-              Close Tab
             </button>
 
             <h3>Appearance</h3>
@@ -1424,6 +1664,42 @@ export const App = () => {
 
       {/* Legacy overlay scrollback removed — now inline in scroll viewMode */}
 
+      {statsVisible && bandwidthStats && (
+        <div className="overlay" onClick={() => setStatsVisible(false)}>
+          <div className="card stats-card" onClick={(e) => e.stopPropagation()}>
+            <div className="stats-header">
+              <h2>Bandwidth Stats</h2>
+              <button onClick={() => setStatsVisible(false)} title="Close">×</button>
+            </div>
+            <div className="stats-grid">
+              <div className="stats-section">
+                <h3>Terminal Stream</h3>
+                <div className="stats-row"><span>Raw</span><span>{formatBytes(bandwidthStats.rawBytesPerSec)}/s</span></div>
+                <div className="stats-row"><span>Compressed</span><span>{formatBytes(bandwidthStats.compressedBytesPerSec)}/s</span></div>
+                <div className="stats-row highlight"><span>Saved</span><span>{bandwidthStats.savedPercent}%</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>State Diffs</h3>
+                <div className="stats-row"><span>Full snapshots</span><span>{bandwidthStats.fullSnapshotsSent}</span></div>
+                <div className="stats-row"><span>Diff updates</span><span>{bandwidthStats.diffUpdatesSent}</span></div>
+                <div className="stats-row"><span>Avg rows/diff</span><span>{bandwidthStats.avgChangedRowsPerDiff}</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>Totals</h3>
+                <div className="stats-row"><span>Raw data</span><span>{formatBytes(bandwidthStats.totalRawBytes)}</span></div>
+                <div className="stats-row"><span>Transferred</span><span>{formatBytes(bandwidthStats.totalCompressedBytes)}</span></div>
+                <div className="stats-row highlight"><span>Saved</span><span>{formatBytes(bandwidthStats.totalSavedBytes)}</span></div>
+              </div>
+              <div className="stats-section">
+                <h3>Connection</h3>
+                <div className="stats-row"><span>RTT</span><span>{bandwidthStats.rttMs !== null ? `${bandwidthStats.rttMs}ms` : "measuring..."}</span></div>
+                <div className="stats-row"><span>Protocol</span><span>{bandwidthStats.protocol}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {needsPasswordInput && (
         <div className="overlay">
           <div className="card">
@@ -1454,15 +1730,15 @@ export const App = () => {
           <span className="upload-toast-path">{uploadToast.path}</span>
           <button
             onClick={() => {
-              // Shell-quote the path to handle spaces and metacharacters
               const quoted = `'${uploadToast.path.replace(/'/g, "'\\''")}'`;
               sendRawToSocket(quoted);
               setUploadToast(null);
             }}
+            title="Insert the uploaded file path into the terminal"
           >
             Insert
           </button>
-          <button onClick={() => setUploadToast(null)}>×</button>
+          <button onClick={() => setUploadToast(null)} title="Dismiss this notification">×</button>
         </div>
       )}
 
