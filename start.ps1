@@ -30,7 +30,7 @@ if ($isProd) {
     npm run build
     # Use a stable token so the URL doesn't change on restart.
     if (-not $env:REMUX_TOKEN) {
-        $tokenFile = Join-Path $env:USERPROFILE ".remux" "token"
+        $tokenFile = Join-Path (Join-Path $env:USERPROFILE ".remux") "token"
         if (Test-Path $tokenFile) {
             $env:REMUX_TOKEN = (Get-Content $tokenFile -Raw).Trim()
         } else {
