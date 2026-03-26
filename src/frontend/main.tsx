@@ -133,7 +133,8 @@ async function githubDeviceFlow(): Promise<string | null> {
 /** Custom adapter that lazily triggers Device Flow on first feedback. */
 function lazyGithubAdapter(): { name: string; send: (event: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; deliveryId?: string; deliveryUrl?: string }> } {
   return {
-    name: "github-device-flow",
+    name: "github",
+    displayName: "GitHub Issues",
     async send(event) {
       try {
         console.log("[github-adapter] send called with event:", JSON.stringify(event).substring(0, 500));
