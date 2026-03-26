@@ -84,7 +84,8 @@ describe("GET /api/config", () => {
       cwd: process.cwd(),
       encoding: "utf8"
     }).trim();
-    expect(json.gitBranch).toBe(currentBranch);
+    const expectedBranch = currentBranch === "HEAD" ? undefined : currentBranch;
+    expect(json.gitBranch).toBe(expectedBranch);
   });
 
   test("prefers REMUX_RUNTIME_BRANCH when provided", async () => {
