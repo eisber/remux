@@ -650,6 +650,13 @@ button, input {
   color: var(--text-muted);
 }
 
+.drawer-runtime-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.6rem;
+  color: var(--text-faint);
+  margin-top: 0.2rem;
+}
+
 .drawer-backend-switcher {
   display: flex;
   align-items: center;

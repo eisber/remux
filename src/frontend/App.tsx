@@ -1278,6 +1278,13 @@ export const App = () => {
             {serverConfig?.version && (
               <div className="drawer-footer-info">
                 <p className="drawer-version">v{serverConfig.version}</p>
+                {(serverConfig.gitBranch || serverConfig.gitCommitSha || serverConfig.gitDirty !== undefined) && (
+                  <p className="drawer-runtime-meta">
+                    {[serverConfig.gitBranch, serverConfig.gitCommitSha?.slice(0, 8), serverConfig.gitDirty ? "dirty" : undefined]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
                 {serverConfig.backendKind && (
                   <div className="drawer-backend-switcher">
                     <span className="drawer-backend-label">Backend:</span>

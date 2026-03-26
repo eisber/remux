@@ -152,6 +152,26 @@ Read the full model in [docs/SECURITY.md](./docs/SECURITY.md).
 npm run dev
 ```
 
+Managed runtime sync for long-running `main` / `dev` instances:
+
+```bash
+npm run runtime:install-launchd
+npm run runtime:load-launchd
+npm run runtime:status
+npm run runtime:sync
+```
+
+See [docs/RUNTIME_SYNC.md](./docs/RUNTIME_SYNC.md) for the detached runtime worktree layout and launchd setup.
+
+Self-hosted deploy runner:
+
+```bash
+npm run runner:install
+npm run runner:status
+```
+
+See [docs/SELF_HOSTED_RUNNER.md](./docs/SELF_HOSTED_RUNNER.md) for the deploy workflow and security boundary.
+
 Quality gate before merging into `dev`:
 
 ```bash
