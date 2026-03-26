@@ -51,6 +51,11 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     supportsFullscreenPane: true,
   };
 
+  /** Update capabilities dynamically (e.g., when native bridge becomes available). */
+  public setNativeBridgeActive(active: boolean): void {
+    (this.capabilities as { supportsPreciseScrollback: boolean }).supportsPreciseScrollback = active;
+  }
+
   private readonly binary: string;
   private readonly timeoutMs: number;
   private readonly logger?: Pick<Console, "log" | "error">;
@@ -87,6 +92,31 @@ export class ZellijCliExecutor implements MultiplexerBackend {
       ...(this.socketDir ? { ZELLIJ_SOCKET_DIR: this.socketDir } : {})
     };
     this.ensureRemuxShellIsExecutable();
+    this.checkFocusPluginHealth();
+  }
+
+  /** Whether the focus plugin is healthy and usable. */
+  private focusPluginHealthy = false;
+
+  private checkFocusPluginHealth(): void {
+    if (!this.focusPluginPath) {
+      this.logger?.log?.("[zellij] focus plugin path not configured — geometry-only mode");
+      this.focusPluginHealthy = false;
+      return;
+    }
+    try {
+      const stats = fs.statSync(this.focusPluginPath);
+      if (!stats.isFile() || stats.size === 0) {
+        this.logger?.error?.(`[zellij] focus plugin not a valid file: ${this.focusPluginPath}`);
+        this.focusPluginHealthy = false;
+        return;
+      }
+      this.focusPluginHealthy = true;
+      this.logger?.log?.(`[zellij] focus plugin healthy: ${this.focusPluginPath}`);
+    } catch {
+      this.logger?.error?.(`[zellij] focus plugin not found: ${this.focusPluginPath}`);
+      this.focusPluginHealthy = false;
+    }
   }
 
   /**
@@ -581,7 +611,7 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     paneId: string,
     session?: string
   ): Promise<void> {
-    if (!this.focusPluginPath) return;
+    if (!this.focusPluginPath || !this.focusPluginHealthy) return;
 
     const numId = extractPaneNumericId(paneId);
     if (numId < 0) return;

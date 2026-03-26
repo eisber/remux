@@ -41,6 +41,7 @@ interface AppHeaderProps {
   topStatus: TopStatus;
   viewMode: "inspect" | "terminal";
   supportsPreciseScrollback: boolean;
+  streamMode?: string;
   formatBytes: (bytes: number) => string;
 }
 
@@ -73,6 +74,7 @@ export const AppHeader = ({
   tabs,
   topStatus,
   viewMode,
+  streamMode,
   supportsPreciseScrollback,
   formatBytes
 }: AppHeaderProps) => {
@@ -309,6 +311,9 @@ export const AppHeader = ({
           {viewMode === "inspect" ? "Live" : "Inspect"}
           {viewMode === "inspect" && !supportsPreciseScrollback && (
             <span className="experimental-badge" title="Inspect history is approximate for this backend"> (approx)</span>
+          )}
+          {streamMode === "cli-polling" && (
+            <span className="degraded-badge" title="Native bridge unavailable — using CLI fallback"> degraded</span>
           )}
         </button>
       </div>

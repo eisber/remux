@@ -58,6 +58,50 @@ export function buildViewportFrame(
 }
 
 /**
+ * Build a viewport frame that only updates lines that differ from the previous viewport.
+ * Falls back to full frame on first render or when dimensions change.
+ */
+export function buildViewportDiffFrame(
+  viewport: string[],
+  prevViewport: string[] | null,
+  cursor: ZellijCursorPosition | null
+): string {
+  // Full frame if no previous viewport or dimensions changed
+  if (!prevViewport || prevViewport.length !== viewport.length) {
+    return buildViewportFrame(viewport, cursor);
+  }
+
+  const parts: string[] = ["\x1b[?25l"];
+  let dirtyCount = 0;
+
+  for (let index = 0; index < viewport.length; index += 1) {
+    if (viewport[index] !== prevViewport[index]) {
+      parts.push(`\x1b[${index + 1};1H\x1b[2K`);
+      parts.push(viewport[index]);
+      dirtyCount += 1;
+    }
+  }
+
+  // If most lines changed, a full clear+redraw is more efficient
+  if (dirtyCount > viewport.length * 0.7) {
+    return buildViewportFrame(viewport, cursor);
+  }
+
+  // Only cursor changed, no lines dirty
+  if (dirtyCount === 0 && !cursor) {
+    return "";
+  }
+
+  parts.push("\x1b[m");
+  if (cursor) {
+    parts.push(`\x1b[${cursor.row};${cursor.col}H`);
+    parts.push("\x1b[?25h");
+  }
+
+  return parts.join("");
+}
+
+/**
  * A PtyProcess that mirrors a zellij pane.
  *
  * Preferred output mode:
@@ -113,11 +157,24 @@ export class ZellijPaneIO implements PtyProcess {
   private writeTimer: ReturnType<typeof setTimeout> | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
 
+  /** Bridge restart supervisor state */
+  private bridgeRestartAttempts = 0;
+  private bridgeRestartTimer: ReturnType<typeof setTimeout> | null = null;
+  private socketDir?: string;
+
+  /** Stream mode change listeners (for exposing degraded state). */
+  private streamModeHandlers: Array<(mode: StreamMode) => void> = [];
+  /** Workspace-level change listeners (for triggering state refresh). */
+  private workspaceChangeHandlers: Array<(reason: string) => void> = [];
+
   private static readonly WRITE_BATCH_MS = 12;
   private static readonly ACTIVE_REFRESH_MS = 40;
   private static readonly IDLE_REFRESH_MS = 250;
   private static readonly ACTIVE_REFRESH_WINDOW_MS = 1_200;
   private static readonly MAX_MISSING_PANE_POLLS = 3;
+  private static readonly BRIDGE_RESTART_BASE_MS = 1_000;
+  private static readonly BRIDGE_RESTART_MAX_MS = 16_000;
+  private static readonly BRIDGE_RESTART_MAX_ATTEMPTS = 5;
 
   constructor(options: {
     binary?: string;
@@ -136,12 +193,28 @@ export class ZellijPaneIO implements PtyProcess {
     this.nativeBridgeFactory = options.nativeBridgeFactory ?? createZellijNativeBridge;
     this.nativeBridgeStateStore = options.nativeBridgeStateStore ?? getDefaultZellijNativeBridgeStateStore();
     this.scrollbackLines = options.scrollbackLines;
+    this.socketDir = options.socketDir;
     this.env = {
       ...process.env,
       ...(options.socketDir ? { ZELLIJ_SOCKET_DIR: options.socketDir } : {})
     };
 
     void this.initializeStream(options.socketDir);
+  }
+
+  /** Current stream mode: "pending", "native-bridge", or "cli-polling". */
+  public getStreamMode(): StreamMode {
+    return this.streamMode;
+  }
+
+  /** Register a listener for stream mode changes. */
+  public onStreamModeChange(handler: (mode: StreamMode) => void): void {
+    this.streamModeHandlers.push(handler);
+  }
+
+  /** Register a listener for workspace-level changes (session rename, switch). */
+  public onWorkspaceChange(handler: (reason: string) => void): void {
+    this.workspaceChangeHandlers.push(handler);
   }
 
   private async initializeStream(socketDir?: string): Promise<void> {
@@ -178,7 +251,7 @@ export class ZellijPaneIO implements PtyProcess {
   }
 
   private attachNativeBridge(bridge: ZellijNativeBridge): void {
-    this.streamMode = "native-bridge";
+    this.setStreamMode("native-bridge");
     this.nativeBridge = bridge;
     this.missingPaneCount = 0;
     this.flushPendingResize();
@@ -194,13 +267,26 @@ export class ZellijPaneIO implements PtyProcess {
           viewport: event.viewport,
           scrollback: event.scrollback
         });
+        if (event.cursor) {
+          this.lastCursor = { row: event.cursor.row, col: event.cursor.col };
+        }
         this.emitNativeFrame();
-        this.requestCursorRefresh({ immediate: true, boost: true });
+        if (!event.cursor) {
+          // Bridge didn't provide cursor — fall back to CLI cursor query
+          this.requestCursorRefresh({ immediate: true, boost: true });
+        }
         return;
       }
       if (event.type === "pane_closed" && event.paneId === this.paneId) {
         this.nativeBridgeStateStore.clearPane(this.session, this.paneId);
         this.emitExit(0);
+        return;
+      }
+      if (event.type === "session_renamed" || event.type === "session_switch") {
+        // Workspace-level change detected — notify listeners
+        for (const handler of this.workspaceChangeHandlers) {
+          try { handler(event.type); } catch { /* ignore */ }
+        }
         return;
       }
       if (event.type === "error") {
@@ -218,20 +304,83 @@ export class ZellijPaneIO implements PtyProcess {
       this.nativeBridgeStateStore.clearPane(this.session, this.paneId);
       if (code !== 0 && code !== null) {
         this.logger?.error?.(
-          `[zellij-native-bridge] bridge exited with code ${code}, falling back to CLI viewport mode`
+          `[zellij-native-bridge] bridge exited with code ${code}, attempting restart`
         );
       }
+      // Fall back to CLI polling while we attempt restart
       this.enableCliPollingMode();
+      this.scheduleBridgeRestart();
     });
+  }
+
+  private setStreamMode(mode: StreamMode): void {
+    if (this.streamMode === mode) return;
+    this.streamMode = mode;
+    for (const handler of this.streamModeHandlers) {
+      try { handler(mode); } catch { /* ignore */ }
+    }
   }
 
   private enableCliPollingMode(): void {
     if (this.killed || this.streamMode === "cli-polling") {
       return;
     }
-    this.streamMode = "cli-polling";
+    this.setStreamMode("cli-polling");
     this.flushPendingResize();
     this.requestRefresh({ immediate: true, boost: true });
+  }
+
+  private scheduleBridgeRestart(): void {
+    if (this.killed || this.bridgeRestartTimer) {
+      return;
+    }
+    if (this.bridgeRestartAttempts >= ZellijPaneIO.BRIDGE_RESTART_MAX_ATTEMPTS) {
+      this.logger?.log?.(
+        `[zellij-native-bridge] giving up restart after ${this.bridgeRestartAttempts} attempts`
+      );
+      return;
+    }
+    const delay = Math.min(
+      ZellijPaneIO.BRIDGE_RESTART_BASE_MS * (2 ** this.bridgeRestartAttempts),
+      ZellijPaneIO.BRIDGE_RESTART_MAX_MS
+    );
+    this.bridgeRestartAttempts += 1;
+    this.logger?.log?.(
+      `[zellij-native-bridge] scheduling restart attempt ${this.bridgeRestartAttempts} in ${delay}ms`
+    );
+    this.bridgeRestartTimer = setTimeout(() => {
+      this.bridgeRestartTimer = null;
+      void this.attemptBridgeRestart();
+    }, delay);
+  }
+
+  private async attemptBridgeRestart(): Promise<void> {
+    if (this.killed || this.streamMode === "native-bridge") {
+      return;
+    }
+    let bridge: ZellijNativeBridge | null = null;
+    try {
+      bridge = await this.nativeBridgeFactory(this.buildNativeBridgeOptions(this.socketDir));
+    } catch (error) {
+      this.logger?.error?.(`[zellij-native-bridge] restart failed: ${String(error)}`);
+    }
+    if (this.killed) {
+      bridge?.kill();
+      return;
+    }
+    if (bridge) {
+      this.logger?.log?.("[zellij-native-bridge] restart succeeded, switching back to native bridge");
+      this.bridgeRestartAttempts = 0;
+      // Stop CLI polling timers
+      if (this.refreshTimer) {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+      }
+      this.attachNativeBridge(bridge);
+      return;
+    }
+    // Restart failed — schedule another attempt
+    this.scheduleBridgeRestart();
   }
 
   private ensureHiddenClient(): pty.IPty {
@@ -576,12 +725,22 @@ export class ZellijPaneIO implements PtyProcess {
     this.exitHandlers.push(handler);
   }
 
+  /** Previous viewport used for diff rendering. */
+  private prevNativeViewport: string[] | null = null;
+
   private emitNativeFrame(): void {
     if (!this.lastNativeViewport) {
       return;
     }
-    const frame = buildViewportFrame(this.lastNativeViewport, this.lastCursor);
-    this.emitFrame(frame);
+    const frame = buildViewportDiffFrame(
+      this.lastNativeViewport,
+      this.prevNativeViewport,
+      this.lastCursor
+    );
+    this.prevNativeViewport = this.lastNativeViewport;
+    if (frame) {
+      this.emitFrame(frame);
+    }
   }
 
   private emitFrame(frame: string): void {
@@ -647,6 +806,10 @@ export class ZellijPaneIO implements PtyProcess {
     if (this.cursorTimer) {
       clearTimeout(this.cursorTimer);
       this.cursorTimer = null;
+    }
+    if (this.bridgeRestartTimer) {
+      clearTimeout(this.bridgeRestartTimer);
+      this.bridgeRestartTimer = null;
     }
   }
 
