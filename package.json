@@ -52,6 +52,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@microsoft/snapfeed": "file:../snapfeed/snapfeed.main/packages/client",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
