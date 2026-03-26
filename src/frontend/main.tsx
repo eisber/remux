@@ -157,32 +157,74 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
         if (!token) return { ok: false, error: "User cancelled GitHub authorization" };
       }
 
-      // Create issue via GitHub API — match snapfeed event structure.
+      // Create issue via GitHub API — include all snapfeed context.
       const detail = (event.detail ?? {}) as Record<string, unknown>;
       const message = String(detail.message || event.target || "No message");
       const category = String(detail.category ?? "feedback");
       const page = String(event.page ?? "/");
       const labels = ["feedback"];
-      const categoryMap: Record<string, string> = { bug: "bug", idea: "enhancement", question: "question" };
+      const categoryMap: Record<string, string> = { bug: "bug", idea: "enhancement", question: "question", praise: "praise" };
       if (categoryMap[category]) labels.push(categoryMap[category]);
 
       const lines = [
         `**Category:** ${category}`,
-        `**Page:** ${page}`,
+        `**Page:** \`${page}\``,
         `**Timestamp:** ${String(event.ts ?? new Date().toISOString())}`,
-        "",
-        "### Message",
-        "",
-        message,
+        `**Session:** \`${String(event.session_id ?? "")}\``,
       ];
+
+      // User info.
+      if (detail.user) {
+        const user = detail.user as Record<string, unknown>;
+        if (user.name) lines.push(`**User:** ${user.name}`);
+        if (user.email) lines.push(`**Email:** ${user.email}`);
+      }
+
+      lines.push("", "### Message", "", message);
+
+      // Element context (breadcrumb).
+      const contextFields: Array<[string, string]> = [
+        ["tag", "Element"],
+        ["path", "CSS Path"],
+        ["text", "Text"],
+        ["label", "Label"],
+        ["component", "Component"],
+        ["source_file", "Source File"],
+        ["url", "URL"],
+      ];
+      const hasContext = contextFields.some(([key]) => detail[key]);
+      if (hasContext) {
+        lines.push("", "### Context", "");
+        lines.push("| Property | Value |", "|----------|-------|");
+        for (const [key, label] of contextFields) {
+          if (detail[key]) lines.push(`| ${label} | \`${String(detail[key]).substring(0, 200)}\` |`);
+        }
+        if (detail.source_line) lines.push(`| Line | ${detail.source_line} |`);
+      }
 
       // Console errors.
       const consoleErrors = detail.console_errors;
       if (Array.isArray(consoleErrors) && consoleErrors.length > 0) {
-        lines.push("", "### Console Errors", "");
-        for (const err of consoleErrors) {
-          lines.push(`- \`${String(err)}\``);
+        lines.push("", "### Console Errors", "", "```", ...consoleErrors.slice(0, 10).map(String), "```");
+      }
+
+      // Network log.
+      const networkLog = detail.network_log;
+      if (Array.isArray(networkLog) && networkLog.length > 0) {
+        lines.push("", "### Network Log", "", "| Method | URL | Status | Duration |", "|--------|-----|--------|----------|");
+        for (const entry of networkLog.slice(-10)) {
+          const e = entry as Record<string, unknown>;
+          lines.push(`| ${e.method ?? ""} | \`${String(e.url ?? "").substring(0, 80)}\` | ${e.status ?? ""} | ${e.durationMs ?? ""}ms |`);
         }
+      }
+
+      // Session replay summary.
+      const replayData = detail.replay_data;
+      if (Array.isArray(replayData) && replayData.length > 0) {
+        lines.push("", `### Session Replay (${replayData.length} events)`, "",
+          "<details><summary>Click to expand</summary>", "",
+          "```json", JSON.stringify(replayData.slice(-20), null, 2), "```",
+          "", "</details>");
       }
 
       // Screenshot.
