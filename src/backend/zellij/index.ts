@@ -9,3 +9,4 @@ export {
   isSupportedZellijVersion,
   serializeZellijBridgeCommand
 } from "./native-bridge.js";
+export { resolveZellijSocketDir, cleanupSocketDir } from "./socket-dir.js";

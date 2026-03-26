@@ -19,6 +19,7 @@ import {
   detectTmuxLaunchContext,
   type LaunchContext
 } from "./launch-context.js";
+import { cleanupSocketDir } from "./zellij/socket-dir.js";
 
 const parseCliArgs = async (): Promise<CliArgs> => {
   const argv = await yargs(hideBin(process.argv))
@@ -227,6 +228,7 @@ const main = async (): Promise<void> => {
       tunnelProvider.stop();
       extensions.dispose();
       await runningServer.stop();
+      cleanupSocketDir();
     })();
 
     try {
