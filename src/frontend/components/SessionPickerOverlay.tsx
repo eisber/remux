@@ -1,18 +1,19 @@
 import type { SessionSummary } from "../../shared/protocol";
 
 interface SessionPickerOverlayProps {
+  mobileLayout: boolean;
   onSelectSession: (sessionName: string) => void;
   sessions: SessionSummary[] | null;
 }
 
-const SessionPickerOverlay = ({ onSelectSession, sessions }: SessionPickerOverlayProps) => {
+const SessionPickerOverlay = ({ mobileLayout, onSelectSession, sessions }: SessionPickerOverlayProps) => {
   if (!sessions) {
     return null;
   }
 
   return (
-    <div className="overlay" data-testid="session-picker-overlay">
-      <div className="card">
+    <div className={`overlay${mobileLayout ? " overlay-sheet" : ""}`} data-testid="session-picker-overlay">
+      <div className={`card${mobileLayout ? " card-sheet" : ""}`}>
         <h2>Select Session</h2>
         {sessions.map((session) => (
           <button

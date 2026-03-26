@@ -1,12 +1,10 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { AppHeader } from "./components/AppHeader";
 import { TerminalStage } from "./components/TerminalStage";
 import { ComposeBar } from "./components/ComposeBar";
 import { PinnedSnippetsBar, SnippetPicker, SnippetTemplatePanel } from "./components/SnippetPanels";
 import { SessionSection } from "./components/sidebar/SessionSection";
-import { TabSection } from "./components/sidebar/TabSection";
-import { PaneSection } from "./components/sidebar/PaneSection";
 import { AppearanceSection } from "./components/sidebar/AppearanceSection";
 import { SnippetsSection } from "./components/sidebar/SnippetsSection";
 import {
@@ -28,6 +26,7 @@ import {
   type SnippetRecord as Snippet
 } from "./snippets";
 import {
+  getTabOrderKey,
   normalizeWorkspaceOrder,
   orderSessions,
   orderTabs,
@@ -40,6 +39,7 @@ import { deriveTopStatus, formatBytes } from "./app-status";
 import { deriveSnippetPickerState } from "./compose-picker";
 import type { BandwidthStats, PendingSnippetExecution, ServerConfig } from "./app-types";
 import { useFileUpload } from "./hooks/useFileUpload";
+import { matchesMobileLayout, useViewportLayout } from "./mobile-layout";
 import { useScrollbackView } from "./hooks/useScrollbackView";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import {
@@ -81,7 +81,7 @@ const getInitialStickyZoom = (): boolean => {
   if (stored === "false") {
     return false;
   }
-  return window.matchMedia("(max-width: 768px)").matches;
+  return matchesMobileLayout();
 };
 
 const LazyBandwidthStatsModal = lazy(() => import("./components/BandwidthStatsModal"));
@@ -132,6 +132,7 @@ export const App = () => {
     return "dark"; // migrate old themes (midnight, amber, etc.) to dark
   });
   const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
+  const { mobileLandscape, mobileLayout, viewportHeight } = useViewportLayout();
   const sendRawToSocket = useCallback((data: string): void => {
     const socket = terminalSocketRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -159,6 +160,7 @@ export const App = () => {
     terminalRef
   } = useTerminalRuntime({
     onSendRaw: sendRawToSocket,
+    mobileLayout,
     paneViewportColsRef,
     serverConfig,
     setStatusMessage,
@@ -281,11 +283,15 @@ export const App = () => {
   );
   const headerTabs = useMemo(
     () => orderedActiveTabs.map((tab) => ({
+      canClose: orderedActiveTabs.length > 1,
       index: tab.index,
       isActive: tab.index === activeTab?.index,
-      label: `${tab.index}: ${tab.name}`
+      isRenaming: renamingWindow?.session === activeSession?.name && renamingWindow?.index === tab.index,
+      key: getTabOrderKey(tab),
+      label: mobileLayout ? `${tab.index}:${tab.name}` : `${tab.index}: ${tab.name}`,
+      name: tab.name
     })),
-    [activeTab?.index, orderedActiveTabs]
+    [activeSession?.name, activeTab?.index, mobileLayout, orderedActiveTabs, renamingWindow]
   );
   const groupedSnippetList: SnippetGroup[] = useMemo(
     () => groupSnippets(snippets),
@@ -629,6 +635,12 @@ export const App = () => {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
+    if (!mobileLayout) {
+      setDrawerOpen(false);
+    }
+  }, [mobileLayout]);
+
+  useEffect(() => {
     if (attachedSession) {
       setSessionChoices(null);
     }
@@ -823,6 +835,34 @@ export const App = () => {
     }
   };
 
+  const closeHeaderTab = (tabIndex: number): void => {
+    if (!activeSession) {
+      return;
+    }
+    if (tabIndex === activeTab?.index) {
+      setSelectedWindowIndex(null);
+      setSelectedPaneId(null);
+    }
+    if (renamingWindow?.session === activeSession.name && renamingWindow.index === tabIndex) {
+      setRenamingWindow(null);
+    }
+    sendControl({ type: "close_tab", session: activeSession.name, tabIndex });
+  };
+
+  const renameHeaderTab = (tabIndex: number, newName: string): void => {
+    if (!activeSession || !newName.trim()) {
+      return;
+    }
+    sendControl({ type: "rename_tab", session: activeSession.name, tabIndex, newName: newName.trim() });
+  };
+
+  const reorderHeaderTabs = (draggedKey: string, targetKey: string): void => {
+    if (!activeSession || draggedKey === targetKey) {
+      return;
+    }
+    setWorkspaceOrder((current) => reorderSessionTabs(current, activeSession.name, draggedKey, targetKey));
+  };
+
   const sendCompose = (): void => {
     const text = composeText.trim();
     if (!text) {
@@ -887,25 +927,48 @@ export const App = () => {
   };
 
   return (
-    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
+    <div
+      className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${mobileLayout ? " mobile-layout" : ""}${mobileLandscape ? " mobile-landscape" : ""}`}
+      style={{ "--app-height": `${viewportHeight}px` } as CSSProperties}
+    >
       <div className="main-content">
       <AppHeader
         activeTabLabel={activeTab ? `${activeTab.index}: ${activeTab.name}` : "-"}
         awaitingSessionSelection={awaitingSessionSelection}
         bandwidthStats={bandwidthStats}
+        beginDrag={beginDrag}
+        draggedTabKey={draggedTabKey}
+        mobileLayout={mobileLayout}
+        onCloseTab={closeHeaderTab}
         onCreateTab={activeSession ? () => sendControl({ type: "new_tab", session: activeSession.name }) : undefined}
+        onRenameTab={renameHeaderTab}
+        onReorderTabs={reorderHeaderTabs}
         onSelectTab={(tabIndex) => {
           const tab = orderedActiveTabs.find((entry) => entry.index === tabIndex);
           if (tab) {
             selectTab(tab);
           }
         }}
+        onSetDraggedTabKey={setDraggedTabKey}
+        onSetRenameTabValue={setRenameWindowValue}
+        onSetRenamingTab={(tabIndex) => {
+          if (!activeSession || tabIndex === null) {
+            setRenamingWindow(null);
+            return;
+          }
+          setRenamingWindow({ session: activeSession.name, index: tabIndex });
+        }}
+        onSetTabDropTarget={setTabDropTarget}
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
         onToggleSidebarCollapsed={() => setSidebarCollapsed((value) => !value)}
         onToggleStats={() => setStatsVisible((value) => !value)}
         onToggleViewMode={() => setViewMode((mode) => mode === "scroll" ? "terminal" : "scroll")}
+        renameHandledByKeyRef={renameHandledByKeyRef}
+        renameTabValue={renameWindowValue}
         sidebarCollapsed={sidebarCollapsed}
         serverConfig={serverConfig}
+        supportsTabRename={capabilities?.supportsTabRename ?? false}
+        tabDropTarget={tabDropTarget}
         tabs={headerTabs}
         topStatus={topStatus}
         viewMode={viewMode}
@@ -1016,6 +1079,7 @@ export const App = () => {
           attachedSession={attachedSession}
           bellSessions={bellSessions}
           createSession={createSession}
+          mobileLayout={mobileLayout}
           renameHandledByKeyRef={renameHandledByKeyRef}
           renameSessionValue={renameSessionValue}
           renamingSession={renamingSession}
@@ -1038,68 +1102,6 @@ export const App = () => {
           supportsSessionRename={capabilities?.supportsSessionRename ?? false}
         />
 
-        <TabSection
-          activeSession={activeSession}
-          activeTab={activeTab}
-          capabilities={capabilities}
-          beginDrag={beginDrag}
-          draggedTabKey={draggedTabKey}
-          orderedActiveTabs={orderedActiveTabs}
-          renameHandledByKeyRef={renameHandledByKeyRef}
-          renameWindowValue={renameWindowValue}
-          renamingWindow={renamingWindow}
-          selectTab={selectTab}
-          setDraggedTabKey={setDraggedTabKey}
-          setRenameWindowValue={setRenameWindowValue}
-          setRenamingWindow={setRenamingWindow}
-          setSelectedPaneId={setSelectedPaneId}
-          setSelectedWindowIndex={setSelectedWindowIndex}
-          setTabDropTarget={setTabDropTarget}
-          tabDropTarget={tabDropTarget}
-          onCloseTab={(sessionName, tabIndex) => sendControl({ type: "close_tab", session: sessionName, tabIndex })}
-          onRenameTab={(sessionName, tabIndex, newName) => sendControl({ type: "rename_tab", session: sessionName, tabIndex, newName })}
-          onReorderTabs={(sessionName, draggedKey, targetKey) => setWorkspaceOrder((current) => reorderSessionTabs(current, sessionName, draggedKey, targetKey))}
-        />
-
-        <PaneSection
-          activePane={activePane}
-          activeTab={activeTab}
-          capabilities={capabilities}
-          onClosePane={(paneId, isActive) => {
-            if (isActive) {
-              setSelectedPaneId(null);
-            }
-            sendControl({ type: "close_pane", paneId });
-          }}
-          onNewTab={() => {
-            if (activeSession) {
-              sendControl({ type: "new_tab", session: activeSession.name });
-            }
-          }}
-          onSelectPane={(pane, isActive) => {
-            setSelectedPaneId(pane.id);
-            sendControl({ type: "select_pane", paneId: pane.id });
-            if (stickyZoom && capabilities?.supportsFullscreenPane && !isActive && !pane.zoomed) {
-              sendControl({ type: "toggle_fullscreen", paneId: pane.id });
-            }
-          }}
-          onSplitPane={(direction) => {
-            if (activePane) {
-              sendControl({ type: "split_pane", paneId: activePane.id, direction });
-            }
-          }}
-          onToggleFullscreen={() => {
-            if (activePane) {
-              sendControl({ type: "toggle_fullscreen", paneId: activePane.id });
-            }
-          }}
-          onToggleStickyZoom={() => {
-            stickyZoomUserSetRef.current = true;
-            setStickyZoom((value) => !value);
-          }}
-          stickyZoom={stickyZoom}
-        />
-
         <AppearanceSection
           onResetScrollFontSize={() => {
             setScrollFontSize(0);
@@ -1120,6 +1122,7 @@ export const App = () => {
           draggedSnippetId={draggedSnippetId}
           editingSnippet={editingSnippet}
           groupedSnippetList={groupedSnippetList}
+          mobileLayout={mobileLayout}
           onDeleteSnippet={(snippetId) => persistSnippetPatch((current) => current.filter((entry) => entry.id !== snippetId))}
           onPersistSnippetPatch={persistSnippetPatch}
           onSetCollapsedSnippetGroups={setCollapsedSnippetGroups}
@@ -1177,6 +1180,7 @@ export const App = () => {
 
       <Suspense fallback={null}>
         <LazySessionPickerOverlay
+          mobileLayout={mobileLayout}
           sessions={sessionChoices}
           onSelectSession={(sessionName) => sendControl({ type: "select_session", session: sessionName })}
         />

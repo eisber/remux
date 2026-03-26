@@ -7,6 +7,7 @@ interface SnippetsSectionProps {
   draggedSnippetId: string | null;
   editingSnippet: Snippet | null;
   groupedSnippetList: SnippetGroup[];
+  mobileLayout: boolean;
   onDeleteSnippet: (snippetId: string) => void;
   onPersistSnippetPatch: (updater: (current: Snippet[]) => Snippet[]) => void;
   onSetCollapsedSnippetGroups: (next: Record<string, boolean> | ((current: Record<string, boolean>) => Record<string, boolean>)) => void;
@@ -23,6 +24,7 @@ export const SnippetsSection = ({
   draggedSnippetId,
   editingSnippet,
   groupedSnippetList,
+  mobileLayout,
   onDeleteSnippet,
   onPersistSnippetPatch,
   onSetCollapsedSnippetGroups,
@@ -54,9 +56,12 @@ export const SnippetsSection = ({
                 <div
                   className="snippet-item"
                   key={snippet.id}
-                  draggable
+                  draggable={!mobileLayout}
                   data-testid={`snippet-item-${snippet.id}`}
                   onDragStart={(event) => {
+                    if (mobileLayout) {
+                      return;
+                    }
                     beginDrag(event, "snippet", snippet.id);
                     onSetDraggedSnippetId(snippet.id);
                   }}
@@ -112,8 +117,8 @@ export const SnippetsSection = ({
                   <span className="snippet-cmd">
                     [{snippet.group?.trim() || "Ungrouped"}] {snippet.command}{snippet.autoEnter ? " ↵" : ""}
                   </span>
-                  <button onClick={() => onSetEditingSnippet({ ...snippet })}>&#x270E;</button>
-                  <button onClick={() => onDeleteSnippet(snippet.id)}>&times;</button>
+                  <button type="button" onClick={() => onSetEditingSnippet({ ...snippet })}>&#x270E;</button>
+                  <button type="button" onClick={() => onDeleteSnippet(snippet.id)}>&times;</button>
                 </div>
               ))}
             </div>

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { startE2EServer, type StartedE2EServer } from "./harness/test-server.js";
 
 test.describe("remux browser behavior", () => {
@@ -119,6 +119,105 @@ test.describe("remux browser behavior", () => {
       await expect(page.locator(".sidebar")).not.toHaveClass(/open/);
     });
 
+    test("sidebar stays slim and tab management lives in the header", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
+
+      try {
+        await localServer.gateway.newTab("main");
+        await localServer.gateway.selectTab("main", 0);
+
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+        await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+        await expect(page.getByRole("heading", { name: /^Tabs/ })).toHaveCount(0);
+        await expect(page.getByRole("heading", { name: /^Panes/ })).toHaveCount(0);
+        await expect(page.getByTestId("header-tab-close-1")).toBeVisible();
+
+        await page.getByTestId("header-tab-close-1").click();
+
+        await expect(page.getByTestId("tab-list")).not.toContainText("1: win-1");
+      } finally {
+        await page.goto("about:blank");
+        await localServer.stop();
+      }
+    });
+
+    test("mobile header keeps primary controls touch sized and uses a compact stats trigger", async ({ page }) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.goto(`${server.baseUrl}/?token=${server.token}`);
+      await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+      const minimumTouchTarget = async (locator: Locator): Promise<void> => {
+        const box = await locator.boundingBox();
+        expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+        expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
+      };
+
+      await minimumTouchTarget(page.getByTestId("drawer-toggle"));
+      await minimumTouchTarget(page.getByTestId("mobile-stats-toggle"));
+      await minimumTouchTarget(page.locator(".tab-shell.active"));
+      await minimumTouchTarget(page.getByRole("button", { name: "New tab" }));
+      await minimumTouchTarget(page.getByRole("button", { name: "Scroll" }));
+      await expect(page.locator(".bandwidth-indicator")).toHaveCount(0);
+    });
+
+    test("landscape touch devices keep the mobile drawer layout", async ({ browser }) => {
+      const context = await browser.newContext({
+        hasTouch: true,
+        isMobile: true,
+        viewport: { width: 844, height: 390 }
+      });
+      const page = await context.newPage();
+
+      try {
+        await page.goto(`${server.baseUrl}/?token=${server.token}`);
+        await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+        await expect(page.getByTestId("drawer-toggle")).toBeVisible();
+
+        const sidebarX = await page.locator(".sidebar").evaluate((element) =>
+          element.getBoundingClientRect().x
+        );
+        expect(sidebarX).toBeLessThan(0);
+
+        const terminalHost = await page.getByTestId("terminal-host").boundingBox();
+        expect(terminalHost?.height ?? 0).toBeGreaterThan(200);
+      } finally {
+        await context.close();
+      }
+    });
+
+    test("header tabs shrink as more tabs are opened", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
+
+      try {
+        await localServer.gateway.newTab("main");
+        await localServer.gateway.selectTab("main", 0);
+
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+        await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+        await expect(page.locator(".tab-list .tab-shell")).toHaveCount(2);
+
+        const wideTabWidth = await page.locator(".tab-list .tab-shell").first().evaluate((element) =>
+          Math.round(element.getBoundingClientRect().width)
+        );
+
+        for (let index = 0; index < 6; index += 1) {
+          await localServer.gateway.newTab("main");
+        }
+
+        await expect(page.locator(".tab-list .tab-shell")).toHaveCount(8);
+
+        const narrowTabWidth = await page.locator(".tab-list .tab-shell").first().evaluate((element) =>
+          Math.round(element.getBoundingClientRect().width)
+        );
+
+        expect(narrowTabWidth).toBeLessThan(wideTabWidth - 20);
+      } finally {
+        await page.goto("about:blank");
+        await localServer.stop();
+      }
+    });
+
     test("viewport changes propagate terminal resize to the backend", async ({ page }) => {
       await page.setViewportSize({ width: 1280, height: 900 });
       await page.goto(`${server.baseUrl}/?token=${server.token}`);
@@ -174,6 +273,7 @@ test.describe("remux browser behavior", () => {
         await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
         await expect(page.getByTestId("session-picker-overlay")).toBeVisible();
         await page.getByTestId("session-picker-overlay").getByRole("button", { name: "main" }).click();
+        await expect(page.getByTestId("session-picker-overlay")).toHaveCount(0);
         await page.getByTestId("drawer-toggle").click();
 
         await expect(page.getByTestId("close-session-button")).toHaveCount(0);
@@ -183,21 +283,80 @@ test.describe("remux browser behavior", () => {
         await expect(page.getByTestId("drag-session-main")).toHaveCount(0);
 
         const sessionClose = page.getByTestId("close-session-main");
+        const sessionRename = page.getByTestId("rename-session-main");
         const drawerClose = page.getByTestId("drawer-close");
+        const newSession = page.getByTestId("new-session-button");
+        const resetFontSize = page.getByRole("button", { name: "Reset to Auto" });
+        const addSnippet = page.getByRole("button", { name: "+ Add Snippet" });
+        const backendButton = page.getByRole("button", { name: "zellij" });
 
         await expect(sessionClose).toBeVisible();
+        await expect(sessionRename).toBeVisible();
         await expect(drawerClose).toBeVisible();
+        await expect(newSession).toBeVisible();
+        await expect(resetFontSize).toBeVisible();
+        await expect(addSnippet).toBeVisible();
+        await expect(backendButton).toBeVisible();
 
-        const minimumTouchTarget = async (testId: string): Promise<void> => {
-          const box = await page.getByTestId(testId).boundingBox();
-          expect(box?.width ?? 0).toBeGreaterThanOrEqual(28);
-          expect(box?.height ?? 0).toBeGreaterThanOrEqual(28);
+        const minimumTouchTarget = async (locator: Locator): Promise<void> => {
+          const box = await locator.boundingBox();
+          expect(box?.width ?? 0).toBeGreaterThanOrEqual(44);
+          expect(box?.height ?? 0).toBeGreaterThanOrEqual(44);
         };
 
-        await minimumTouchTarget("close-session-main");
-        await minimumTouchTarget("drawer-close");
+        await minimumTouchTarget(sessionClose);
+        await minimumTouchTarget(sessionRename);
+        await minimumTouchTarget(drawerClose);
+        await minimumTouchTarget(newSession);
+        await minimumTouchTarget(resetFontSize);
+        await minimumTouchTarget(addSnippet);
+        await minimumTouchTarget(backendButton);
+
+        await sessionRename.click();
+        await expect(page.getByTestId("rename-session-input")).toBeVisible();
       } finally {
-        await page.goto("about:blank");
+        if (!page.isClosed()) {
+          await page.goto("about:blank");
+        }
+        await localServer.stop();
+      }
+    });
+
+    test("mobile session picker docks like a bottom sheet with touch-sized choices", async ({ page }) => {
+      const localServer = await startE2EServer({ sessions: ["work", "dev"], defaultSession: "main" });
+
+      try {
+        await page.setViewportSize({ width: 390, height: 844 });
+        await page.goto(`${localServer.baseUrl}/?token=${localServer.token}`);
+
+        const picker = page.getByTestId("session-picker-overlay");
+        await expect(picker).toBeVisible();
+
+        const metrics = await page.evaluate(() => {
+          const card = document.querySelector(".card");
+          const firstButton = card?.querySelector("button");
+          if (!(card instanceof HTMLElement) || !(firstButton instanceof HTMLElement)) {
+            return null;
+          }
+          const cardRect = card.getBoundingClientRect();
+          const buttonRect = firstButton.getBoundingClientRect();
+          return {
+            bottomGap: window.innerHeight - cardRect.bottom,
+            buttonHeight: buttonRect.height,
+            top: cardRect.top,
+            width: cardRect.width
+          };
+        });
+
+        expect(metrics).not.toBeNull();
+        expect(metrics?.top ?? 0).toBeGreaterThan(280);
+        expect(metrics?.bottomGap ?? 999).toBeLessThan(28);
+        expect(metrics?.width ?? 0).toBeGreaterThan(340);
+        expect(metrics?.buttonHeight ?? 0).toBeGreaterThanOrEqual(44);
+      } finally {
+        if (!page.isClosed()) {
+          await page.goto("about:blank");
+        }
         await localServer.stop();
       }
     });
