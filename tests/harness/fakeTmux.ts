@@ -29,6 +29,7 @@ interface PaneNode {
   active: boolean;
   width: number;
   height: number;
+  currentPath: string;
 }
 
 let paneCounter = 20;
@@ -36,6 +37,12 @@ let paneCounter = 20;
 interface FakeTmuxOptions {
   attachedSession?: string;
   failSwitchClient?: boolean;
+}
+
+interface PaneCapture {
+  text: string;
+  paneWidth?: number;
+  isApproximate?: boolean;
 }
 
 const buildDefaultSession = (name: string): SessionNode => ({
@@ -54,7 +61,8 @@ const buildDefaultSession = (name: string): SessionNode => ({
           command: "bash",
           active: true,
           width: 120,
-          height: 40
+          height: 40,
+          currentPath: "/tmp"
         }
       ]
     }
@@ -74,6 +82,7 @@ export class FakeSessionGateway implements MultiplexerBackend {
 
   private sessions: SessionNode[] = [];
   private failSwitchClient = false;
+  private paneCaptures = new Map<string, PaneCapture>();
   public readonly calls: string[] = [];
 
   public constructor(seedSessions: string[] = [], options: FakeTmuxOptions = {}) {
@@ -120,17 +129,21 @@ export class FakeSessionGateway implements MultiplexerBackend {
         width: pane.width,
         height: pane.height,
         zoomed: window.zoomed && pane.active,
-        currentPath: "/tmp"
+        currentPath: pane.currentPath
       }))
     );
   }
 
-  public async createSession(name: string): Promise<void> {
-    this.calls.push(`createSession:${name}`);
+  public async createSession(name: string, options?: { cwd?: string }): Promise<void> {
+    this.calls.push(`createSession:${name}${options?.cwd ? `:${options.cwd}` : ""}`);
     if (this.sessions.some((session) => session.name === name)) {
       return;
     }
-    this.sessions.push(buildDefaultSession(name));
+    const session = buildDefaultSession(name);
+    if (options?.cwd) {
+      session.windows[0]?.panes[0] && (session.windows[0].panes[0].currentPath = options.cwd);
+    }
+    this.sessions.push(session);
   }
 
   public async createGroupedSession(name: string, target: string): Promise<void> {
@@ -163,8 +176,8 @@ export class FakeSessionGateway implements MultiplexerBackend {
     this.markAttached(sessionName);
   }
 
-  public async newTab(sessionName: string): Promise<void> {
-    this.calls.push(`newTab:${sessionName}`);
+  public async newTab(sessionName: string, options?: { cwd?: string }): Promise<void> {
+    this.calls.push(`newTab:${sessionName}${options?.cwd ? `:${options.cwd}` : ""}`);
     const session = this.findSession(sessionName);
     for (const window of session.windows) {
       window.active = false;
@@ -182,7 +195,8 @@ export class FakeSessionGateway implements MultiplexerBackend {
           command: "bash",
           active: true,
           width: 120,
-          height: 40
+          height: 40,
+          currentPath: options?.cwd ?? "/tmp"
         }
       ]
     };
@@ -222,7 +236,8 @@ export class FakeSessionGateway implements MultiplexerBackend {
       command: "bash",
       active: true,
       width: direction === "right" ? 60 : 120,
-      height: direction === "down" ? 20 : 40
+      height: direction === "down" ? 20 : 40,
+      currentPath: window.panes.find((pane) => pane.id === paneId)?.currentPath ?? "/tmp"
     };
     window.panes.push(newPane);
     // Sync new pane to grouped session copies of this window
@@ -282,7 +297,12 @@ export class FakeSessionGateway implements MultiplexerBackend {
   public async capturePane(paneId: string, options?: { lines?: number }): Promise<{ text: string; paneWidth: number; isApproximate: boolean }> {
     const lines = options?.lines ?? 1000;
     this.calls.push(`capturePane:${paneId}:${lines}`);
-    return { text: `captured ${lines} lines for ${paneId}`, paneWidth: 80, isApproximate: false };
+    const configured = this.paneCaptures.get(paneId);
+    return {
+      text: configured?.text ?? `captured ${lines} lines for ${paneId}`,
+      paneWidth: configured?.paneWidth ?? 80,
+      isApproximate: configured?.isApproximate ?? false
+    };
   }
 
   public async renameSession(name: string, newName: string): Promise<void> {
@@ -305,6 +325,23 @@ export class FakeSessionGateway implements MultiplexerBackend {
 
   public setFailSwitchClient(value: boolean): void {
     this.failSwitchClient = value;
+  }
+
+  public setPaneCapture(
+    paneId: string,
+    text: string,
+    options?: { paneWidth?: number; isApproximate?: boolean }
+  ): void {
+    this.paneCaptures.set(paneId, {
+      text,
+      paneWidth: options?.paneWidth,
+      isApproximate: options?.isApproximate
+    });
+  }
+
+  public setPanePath(paneId: string, currentPath: string): void {
+    const { pane } = this.findByPane(paneId);
+    pane.currentPath = currentPath;
   }
 
   /** Get all sessions in the same group as the given session */

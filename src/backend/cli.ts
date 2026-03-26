@@ -14,6 +14,11 @@ import { detectSessionBackend } from "./providers/detect.js";
 import { createTunnelProvider } from "./tunnels/index.js";
 import { createLogger } from "./util/file-logger.js";
 import { randomToken } from "./util/random.js";
+import {
+  buildLaunchUrl,
+  detectTmuxLaunchContext,
+  type LaunchContext
+} from "./launch-context.js";
 
 const parseCliArgs = async (): Promise<CliArgs> => {
   const argv = await yargs(hideBin(process.argv))
@@ -87,21 +92,16 @@ const parseCliArgs = async (): Promise<CliArgs> => {
   };
 };
 
-const buildLaunchUrl = (baseUrl: string, token: string): string => {
-  const url = new URL(baseUrl);
-  url.searchParams.set("token", token);
-  return url.toString();
-};
-
 const printConnectionInfo = (
   localUrl: string,
   tunnelUrl: string | undefined,
   token: string,
   password?: string,
-  isDevMode: boolean = false
+  isDevMode: boolean = false,
+  launchContext?: LaunchContext | null
 ): void => {
   const frontendUrl = isDevMode ? `http://localhost:5173` : localUrl;
-  const localWithToken = buildLaunchUrl(frontendUrl, token);
+  const localWithToken = buildLaunchUrl(frontendUrl, token, launchContext);
 
   console.log("\n═══════════════════════════════════════");
   console.log(`Frontend: ${frontendUrl}${isDevMode ? " (Vite dev)" : ""}`);
@@ -113,7 +113,7 @@ const printConnectionInfo = (
   }
 
   if (tunnelUrl) {
-    const tunnelWithToken = buildLaunchUrl(tunnelUrl, token);
+    const tunnelWithToken = buildLaunchUrl(tunnelUrl, token, launchContext);
     console.log(`\nTunnel URL: ${tunnelWithToken}`);
     qrcode.generate(tunnelWithToken, { small: true });
     return;
@@ -161,6 +161,7 @@ const main = async (): Promise<void> => {
     scrollbackLines: args.scrollback,
   });
   logger.log(`Session backend: ${backend.kind}`);
+  const launchContext = detectTmuxLaunchContext({ backendKind: backend.kind });
 
   const runningServer = createRemuxServer(config, {
     backend: backend.gateway,
@@ -206,7 +207,14 @@ const main = async (): Promise<void> => {
     }
   }
 
-  printConnectionInfo(`http://localhost:${args.port}`, tunnelUrl, authService.token, effectivePassword, isDevMode);
+  printConnectionInfo(
+    `http://localhost:${args.port}`,
+    tunnelUrl,
+    authService.token,
+    effectivePassword,
+    isDevMode,
+    launchContext
+  );
 
   let shutdownPromise: Promise<void> | null = null;
   const shutdown = async (): Promise<void> => {

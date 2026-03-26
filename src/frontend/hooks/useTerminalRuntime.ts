@@ -8,13 +8,20 @@ import type { ServerConfig } from "../app-types";
 import type { ToolbarHandle } from "../components/Toolbar";
 
 interface UseTerminalRuntimeOptions {
+  mobileLayout: boolean;
   onSendRaw: (data: string) => void;
   paneViewportColsRef: MutableRefObject<number>;
   serverConfig: ServerConfig | null;
   setStatusMessage: Dispatch<SetStateAction<string>>;
+  terminalVisible: boolean;
   terminalSocketRef: MutableRefObject<WebSocket | null>;
   theme: "dark" | "light";
   toolbarRef: RefObject<ToolbarHandle | null>;
+}
+
+interface TerminalFitOptions {
+  notify?: boolean;
+  retryUntilVisible?: boolean;
 }
 
 interface UseTerminalRuntimeResult {
@@ -23,24 +30,23 @@ interface UseTerminalRuntimeResult {
   fitAddonRef: MutableRefObject<FitAddon | null>;
   focusTerminal: () => void;
   readTerminalBuffer: () => string;
+  requestTerminalFit: (options?: TerminalFitOptions) => void;
   resetTerminalBuffer: () => void;
   scrollbackContentRef: RefObject<HTMLDivElement | null>;
-  sendTerminalResize: (terminalSocketRef: MutableRefObject<WebSocket | null>) => void;
   serializeAddonRef: MutableRefObject<SerializeAddon | null>;
   terminalContainerRef: RefObject<HTMLDivElement | null>;
   terminalRef: MutableRefObject<Terminal | null>;
 }
 
-const isMobileDevice = (): boolean =>
-  window.matchMedia("(max-width: 768px), (pointer: coarse)").matches;
-
-const getPreferredTerminalFontSize = (): number => isMobileDevice() ? 12 : 14;
+const getPreferredTerminalFontSize = (mobileLayout: boolean): number => mobileLayout ? 12 : 14;
 
 export const useTerminalRuntime = ({
+  mobileLayout,
   onSendRaw,
   paneViewportColsRef,
   serverConfig,
   setStatusMessage,
+  terminalVisible,
   terminalSocketRef,
   theme,
   toolbarRef
@@ -53,14 +59,38 @@ export const useTerminalRuntime = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendRawToSocketRef = useRef(onSendRaw);
   const setStatusMessageRef = useRef(setStatusMessage);
+  const copySelectionRef = useRef<() => Promise<void>>(async () => undefined);
+  const focusTerminalRef = useRef<() => void>(() => undefined);
+  const fitFrameRef = useRef<number | null>(null);
+  const fitRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastResizeSignatureRef = useRef("");
+  const lastResizeSocketRef = useRef<WebSocket | null>(null);
+  const requestTerminalFitRef = useRef<(options?: TerminalFitOptions) => void>(() => undefined);
+  const terminalVisibleRef = useRef(terminalVisible);
 
   sendRawToSocketRef.current = onSendRaw;
   setStatusMessageRef.current = setStatusMessage;
+  terminalVisibleRef.current = terminalVisible;
 
-  const sendTerminalResize = useCallback((terminalSocketRef: MutableRefObject<WebSocket | null>): void => {
+  const clearPendingFit = useCallback((): void => {
+    if (fitFrameRef.current !== null) {
+      window.cancelAnimationFrame(fitFrameRef.current);
+      fitFrameRef.current = null;
+    }
+    if (fitRetryTimerRef.current !== null) {
+      window.clearTimeout(fitRetryTimerRef.current);
+      fitRetryTimerRef.current = null;
+    }
+  }, []);
+
+  const sendTerminalResize = useCallback((): void => {
     const socket = terminalSocketRef.current;
     const terminal = terminalRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN || !terminal) {
+      return;
+    }
+    const signature = `${terminal.cols}x${terminal.rows}`;
+    if (lastResizeSocketRef.current === socket && lastResizeSignatureRef.current === signature) {
       return;
     }
     socket.send(JSON.stringify({
@@ -68,7 +98,62 @@ export const useTerminalRuntime = ({
       cols: terminal.cols,
       rows: terminal.rows
     }));
-  }, []);
+    lastResizeSocketRef.current = socket;
+    lastResizeSignatureRef.current = signature;
+  }, [terminalSocketRef]);
+
+  const applyTerminalFit = useCallback((notify: boolean): boolean => {
+    const container = terminalContainerRef.current;
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!container || !terminal || !fitAddon || container.clientWidth === 0 || container.clientHeight === 0) {
+      return false;
+    }
+
+    const preferredFontSize = getPreferredTerminalFontSize(mobileLayout);
+    if (terminal.options.fontSize !== preferredFontSize) {
+      terminal.options.fontSize = preferredFontSize;
+    }
+
+    fitAddon.fit();
+
+    const paneCols = paneViewportColsRef.current;
+    if (
+      shouldUsePaneViewportCols(serverConfig?.backendKind) &&
+      paneCols > 0 &&
+      terminal.cols !== paneCols
+    ) {
+      terminal.resize(paneCols, terminal.rows);
+    }
+
+    if (notify) {
+      sendTerminalResize();
+    }
+
+    return true;
+  }, [mobileLayout, paneViewportColsRef, sendTerminalResize, serverConfig?.backendKind]);
+
+  const requestTerminalFit = useCallback((options: TerminalFitOptions = {}): void => {
+    const { notify = true, retryUntilVisible = false } = options;
+    let retriesRemaining = retryUntilVisible ? 20 : 0;
+
+    const run = () => {
+      fitFrameRef.current = null;
+      const applied = applyTerminalFit(notify);
+      if (applied || retriesRemaining <= 0) {
+        return;
+      }
+      retriesRemaining -= 1;
+      fitRetryTimerRef.current = window.setTimeout(() => {
+        fitRetryTimerRef.current = null;
+        fitFrameRef.current = window.requestAnimationFrame(run);
+      }, 100);
+    };
+
+    clearPendingFit();
+    fitFrameRef.current = window.requestAnimationFrame(run);
+  }, [applyTerminalFit, clearPendingFit]);
+  requestTerminalFitRef.current = requestTerminalFit;
 
   const readTerminalBuffer = useCallback((): string => {
     const addon = serializeAddonRef.current;
@@ -107,13 +192,15 @@ export const useTerminalRuntime = ({
     await navigator.clipboard.writeText(text);
     setStatusMessage("Copied to clipboard");
   }, [readTerminalBuffer, setStatusMessage]);
+  copySelectionRef.current = copySelection;
+  focusTerminalRef.current = focusTerminal;
 
   useEffect(() => {
     if (!terminalContainerRef.current || terminalRef.current) {
       return;
     }
 
-    const initialFontSize = getPreferredTerminalFontSize();
+    const initialFontSize = getPreferredTerminalFontSize(mobileLayout);
     const themeConfig = themes[theme];
     const terminal = new Terminal({
       cursorBlink: true,
@@ -137,7 +224,7 @@ export const useTerminalRuntime = ({
       const key = event.key.toLowerCase();
 
       if (modifierKey && key === "c" && terminal.hasSelection()) {
-        void copySelection();
+        void copySelectionRef.current();
         event.preventDefault();
         return false;
       }
@@ -147,7 +234,7 @@ export const useTerminalRuntime = ({
           .then((text) => {
             if (text) {
               sendRawToSocketRef.current(text);
-              focusTerminal();
+              focusTerminalRef.current();
             }
           })
           .catch(() => {
@@ -161,54 +248,51 @@ export const useTerminalRuntime = ({
     });
     terminal.open(terminalContainerRef.current);
     requestAnimationFrame(() => {
-      fitAddon.fit();
       terminal.focus();
+      requestTerminalFitRef.current({ notify: false, retryUntilVisible: true });
     });
 
     const disposable = terminal.onData((data) => {
       const output = toolbarRef.current?.applyModifiersAndClear(data) ?? data;
-      onSendRaw(output);
+      sendRawToSocketRef.current(output);
     });
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     serializeAddonRef.current = serializeAddon;
 
-    const fitAndNotifyResize = () => {
-      const container = terminalContainerRef.current;
-      if (!container || container.clientWidth === 0 || container.clientHeight === 0) {
-        return;
-      }
-      const preferredFontSize = getPreferredTerminalFontSize();
-      if (terminal.options.fontSize !== preferredFontSize) {
-        terminal.options.fontSize = preferredFontSize;
-      }
-      fitAddon.fit();
-      const paneCols = paneViewportColsRef.current;
-      if (
-        shouldUsePaneViewportCols(serverConfig?.backendKind) &&
-        paneCols > 0 &&
-        terminal.cols !== paneCols
-      ) {
-        terminal.resize(paneCols, terminal.rows);
-      }
-      sendTerminalResize(terminalSocketRef);
-    };
-
     const resizeObserver = new ResizeObserver(() => {
-      fitAndNotifyResize();
+      requestTerminalFitRef.current({ notify: true });
     });
     resizeObserver.observe(terminalContainerRef.current);
 
+    const fontSet = document.fonts;
+    const handleFontsChanged = () => {
+      if (terminalVisibleRef.current) {
+        requestTerminalFitRef.current({ notify: true, retryUntilVisible: true });
+      }
+    };
+
+    void fontSet?.ready.then(() => {
+      handleFontsChanged();
+    });
+    fontSet?.addEventListener?.("loadingdone", handleFontsChanged);
+
     return () => {
+      clearPendingFit();
       resizeObserver.disconnect();
+      fontSet?.removeEventListener?.("loadingdone", handleFontsChanged);
       disposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       serializeAddonRef.current = null;
+      lastResizeSignatureRef.current = "";
+      lastResizeSocketRef.current = null;
     };
-  }, [copySelection, focusTerminal, onSendRaw, paneViewportColsRef, sendTerminalResize, serverConfig?.backendKind, terminalSocketRef, theme, toolbarRef]);
+  // Terminal initialization happens once; subsequent layout changes use
+  // requestTerminalFit plus the effects below instead of recreating xterm.
+  }, []);
 
   useEffect(() => {
     const themeConfig = themes[theme];
@@ -224,15 +308,22 @@ export const useTerminalRuntime = ({
     paneViewportColsRef.current = 0;
   }, [paneViewportColsRef, serverConfig?.backendKind]);
 
+  useEffect(() => {
+    if (!terminalVisible) {
+      return;
+    }
+    requestTerminalFit({ notify: true, retryUntilVisible: true });
+  }, [mobileLayout, requestTerminalFit, terminalVisible]);
+
   return {
     copySelection,
     fileInputRef,
     fitAddonRef,
     focusTerminal,
     readTerminalBuffer,
+    requestTerminalFit,
     resetTerminalBuffer,
     scrollbackContentRef,
-    sendTerminalResize,
     serializeAddonRef,
     terminalContainerRef,
     terminalRef

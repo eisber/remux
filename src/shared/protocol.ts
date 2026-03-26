@@ -1,68 +1,73 @@
-// ── Workspace state types (multiplexer-neutral) ──
+// ── Backward-compatible barrel ──
+// All types have been moved to src/shared/contracts/.
+// This file re-exports everything so existing imports keep working.
 
-export interface SessionSummary {
-  name: string;
-  attached: boolean;
-  tabCount: number;
-  /** @deprecated Use tabCount */
-  windows?: number;
-}
+export type {
+  SessionSummary,
+  PaneState,
+  TabState,
+  SessionState,
+  WorkspaceSnapshot,
+  BackendCapabilities,
+  ClientView,
+  TabHistoryEvent,
+  TabHistoryPane,
+  // Deprecated aliases
+  WindowState,
+  StateSnapshot,
+  TmuxSessionSummary,
+  TmuxPaneState,
+  TmuxWindowState,
+  TmuxSessionState,
+  TmuxStateSnapshot
+} from "./contracts/workspace.js";
 
-export interface PaneState {
-  index: number;
-  id: string;
-  currentCommand: string;
-  active: boolean;
-  width: number;
-  height: number;
-  zoomed: boolean;
-  currentPath: string;
-  isPlugin?: boolean;
-  isFloating?: boolean;
-}
+export type {
+  ServerCapabilities,
+  WorkspaceCapabilities,
+  NotificationCapabilities,
+  TransportCapabilities,
+  SemanticCapabilitySummary,
+  RemuxMessageEnvelope,
+  MessageDomain
+} from "./contracts/core.js";
 
-export interface TabState {
-  index: number;
-  id?: string;
-  name: string;
-  active: boolean;
-  paneCount: number;
-  panes: PaneState[];
-}
+export { PROTOCOL_VERSION } from "./contracts/core.js";
 
-export interface SessionState extends SessionSummary {
-  tabs: TabState[];
-}
+export type {
+  TerminalOpenPayload,
+  TerminalResizePayload,
+  TerminalClosedPayload
+} from "./contracts/terminal.js";
 
-export interface WorkspaceSnapshot {
-  sessions: SessionState[];
-  capturedAt: string;
-}
+export type {
+  DeviceIdentity,
+  PairingState,
+  TrustState
+} from "./contracts/device.js";
 
-// ── Backend capabilities ──
+export type {
+  SemanticAdapterMode,
+  SemanticCapabilities,
+  SemanticSessionState,
+  SemanticEvent
+} from "./contracts/semantic.js";
 
-export interface BackendCapabilities {
-  supportsPaneFocusById: boolean;
-  supportsTabRename: boolean;
-  supportsSessionRename: boolean;
-  supportsPreciseScrollback: boolean;
-  supportsFloatingPanes: boolean;
-  supportsFullscreenPane: boolean;
-}
+// ── Protocol messages (remain here until full domain migration) ──
 
-// ── Client view ──
+import type {
+  BackendCapabilities,
+  SessionSummary,
+  WorkspaceSnapshot,
+  ClientView,
+  TabHistoryPane,
+  TabHistoryEvent
+} from "./contracts/workspace.js";
 
-export interface ClientView {
-  sessionName: string;
-  tabIndex: number;
-  paneId: string;
-  followBackendFocus: boolean;
-}
-
-// ── Protocol messages ──
+import type { ServerCapabilities } from "./contracts/core.js";
 
 export type ControlClientMessage =
-  | { type: "auth"; token?: string; password?: string; clientId?: string; session?: string }
+  | { type: "auth"; token?: string; password?: string; clientId?: string; session?: string; tabIndex?: number; paneId?: string }
   | { type: "select_session"; session: string }
   | { type: "new_session"; name: string }
   | { type: "close_session"; session: string }
@@ -74,34 +79,30 @@ export type ControlClientMessage =
   | { type: "close_pane"; paneId: string }
   | { type: "toggle_fullscreen"; paneId: string }
   | { type: "capture_scrollback"; paneId: string; lines?: number }
+  | { type: "capture_tab_history"; session?: string; tabIndex: number; lines?: number }
   | { type: "send_compose"; text: string }
   | { type: "rename_session"; session: string; newName: string }
   | { type: "rename_tab"; session: string; tabIndex: number; newName: string }
   | { type: "set_follow_focus"; follow: boolean };
 
 export type ControlServerMessage =
-  | { type: "auth_ok"; clientId: string; requiresPassword: boolean; capabilities?: BackendCapabilities; backendKind?: string }
+  | { type: "auth_ok"; clientId: string; requiresPassword: boolean; capabilities?: BackendCapabilities; serverCapabilities?: ServerCapabilities; backendKind?: string }
   | { type: "auth_error"; reason: string }
   | { type: "attached"; session: string }
   | { type: "session_picker"; sessions: SessionSummary[] }
   | { type: "workspace_state"; workspace: WorkspaceSnapshot; clientView: ClientView }
   | { type: "scrollback"; paneId: string; text: string; lines: number; paneWidth: number; isApproximate?: boolean }
+  | {
+      type: "tab_history";
+      sessionName: string;
+      tabIndex: number;
+      tabName: string;
+      lines: number;
+      source: "server_tab_history";
+      precision: "precise" | "approximate" | "partial";
+      capturedAt: string;
+      panes: TabHistoryPane[];
+      events: TabHistoryEvent[];
+    }
   | { type: "error"; message: string }
   | { type: "info"; message: string };
-
-// ── Deprecated aliases for backward compatibility ──
-
-/** @deprecated Use TabState */
-export type WindowState = TabState;
-/** @deprecated Use WorkspaceSnapshot */
-export type StateSnapshot = WorkspaceSnapshot;
-/** @deprecated Use SessionSummary */
-export type TmuxSessionSummary = SessionSummary;
-/** @deprecated Use PaneState */
-export type TmuxPaneState = PaneState;
-/** @deprecated Use TabState */
-export type TmuxWindowState = TabState;
-/** @deprecated Use SessionState */
-export type TmuxSessionState = SessionState;
-/** @deprecated Use WorkspaceSnapshot */
-export type TmuxStateSnapshot = WorkspaceSnapshot;

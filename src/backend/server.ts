@@ -1,4 +1,3 @@
-import { createRequire } from "node:module";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -13,8 +12,11 @@ import type {
   ControlServerMessage,
   ClientView,
   SessionState,
+  TabState,
   WorkspaceSnapshot
 } from "../shared/protocol.js";
+import { PROTOCOL_VERSION } from "../shared/contracts/core.js";
+import type { ServerCapabilities } from "../shared/contracts/core.js";
 import { randomToken } from "./util/random.js";
 import { AuthService } from "./auth/auth-service.js";
 import type { MultiplexerBackend } from "./multiplexer/types.js";
@@ -23,6 +25,8 @@ import { TerminalRuntime } from "./pty/terminal-runtime.js";
 import type { PtyFactory } from "./pty/pty-adapter.js";
 import { TmuxStateMonitor } from "./state/state-monitor.js";
 import { ClientViewStore } from "./view/client-view-store.js";
+import { TabHistoryStore } from "./history/tab-history-store.js";
+import { readRuntimeMetadata } from "./util/runtime-metadata.js";
 
 interface ControlContext {
   socket: WebSocket;
@@ -72,7 +76,15 @@ const getSingleParam = (value: string | string[] | undefined): string =>
   Array.isArray(value) ? value.join("/") : (value ?? "");
 
 const controlClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
+  z.object({
+    type: z.literal("auth"),
+    token: z.string().optional(),
+    password: z.string().optional(),
+    clientId: z.string().optional(),
+    session: z.string().optional(),
+    tabIndex: z.number().int().min(0).optional(),
+    paneId: z.string().optional()
+  }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
   z.object({ type: z.literal("new_session"), name: z.string() }),
   z.object({ type: z.literal("close_session"), session: z.string() }),
@@ -84,6 +96,7 @@ const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("close_pane"), paneId: z.string() }),
   z.object({ type: z.literal("toggle_fullscreen"), paneId: z.string() }),
   z.object({ type: z.literal("capture_scrollback"), paneId: z.string(), lines: z.number().optional() }),
+  z.object({ type: z.literal("capture_tab_history"), session: z.string().optional(), tabIndex: z.number(), lines: z.number().optional() }),
   z.object({ type: z.literal("send_compose"), text: z.string() }),
   z.object({ type: z.literal("rename_session"), session: z.string(), newName: z.string() }),
   z.object({ type: z.literal("rename_tab"), session: z.string(), tabIndex: z.number(), newName: z.string() }),
@@ -138,6 +151,32 @@ const summarizeState = (state: WorkspaceSnapshot): string => {
       `tabs=${session.tabs.length}}`;
   });
   return `capturedAt=${state.capturedAt}; sessions=${sessions.join(" | ")}`;
+};
+
+const findCreatedTab = (
+  previousSession: SessionState | undefined,
+  nextSession: SessionState | undefined
+): TabState | undefined => {
+  if (!nextSession) {
+    return undefined;
+  }
+  const previousTabIndexes = new Set(previousSession?.tabs.map((tab) => tab.index) ?? []);
+  return nextSession.tabs.find((tab) => !previousTabIndexes.has(tab.index));
+};
+
+const sameSessionTopology = (left: SessionState, right: SessionState): boolean => {
+  const leftPaneIds = left.tabs
+    .flatMap((tab) => tab.panes.map((pane) => pane.id))
+    .sort();
+  const rightPaneIds = right.tabs
+    .flatMap((tab) => tab.panes.map((pane) => pane.id))
+    .sort();
+
+  if (leftPaneIds.length !== rightPaneIds.length) {
+    return false;
+  }
+
+  return leftPaneIds.every((paneId, index) => paneId === rightPaneIds[index]);
 };
 
 const REMUX_SESSION_PREFIX = "remux-client-";
@@ -245,12 +284,31 @@ export const createRemuxServer = (
 
   const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
 
-  const require = createRequire(import.meta.url);
-  const pkgVersion: string = (require("../../package.json") as { version: string }).version;
+  const buildServerCapabilities = (): ServerCapabilities => ({
+    protocolVersion: PROTOCOL_VERSION,
+    workspace: {
+      ...deps.backend.capabilities,
+      supportsUpload: true,
+    },
+    notifications: {
+      supportsPushNotifications: Boolean(deps.extensions),
+    },
+    transport: {
+      supportsTrustedReconnect: false,
+    },
+    semantic: {
+      adaptersAvailable: [],
+    },
+  });
+
+  const runtimeMetadata = readRuntimeMetadata();
 
   app.get("/api/config", (_req, res) => {
     res.json({
-      version: pkgVersion,
+      version: runtimeMetadata.version,
+      gitBranch: runtimeMetadata.gitBranch,
+      gitCommitSha: runtimeMetadata.gitCommitSha,
+      gitDirty: runtimeMetadata.gitDirty,
       passwordRequired: authService.requiresPassword(),
       scrollbackLines: config.scrollbackLines,
       pollIntervalMs: config.pollIntervalMs,
@@ -505,6 +563,8 @@ export const createRemuxServer = (
   let started = false;
   let stopPromise: Promise<void> | null = null;
   let latestSnapshot: WorkspaceSnapshot | undefined;
+  const tabHistoryStore = new TabHistoryStore();
+  const knownSessionTopologies = new Map<string, SessionState>();
   const isNonGroupedBackend = (): boolean => !deps.backend.createGroupedSession;
 
   const waitForWorkspace = async (
@@ -576,9 +636,155 @@ export const createRemuxServer = (
     return buildSingleSessionSnapshot(sessionName);
   };
 
+  const buildTabHistoryPayload = async (
+    sessionName: string,
+    tabIndex: number,
+    lines: number
+  ): Promise<Extract<ControlServerMessage, { type: "tab_history" }>> => {
+    const sessionSnapshot = await buildSingleSessionSnapshot(sessionName);
+    const session = sessionSnapshot.sessions[0];
+    const tab = session?.tabs.find((entry) => entry.index === tabIndex);
+    if (!tab) {
+      throw new Error(`tab not found: ${sessionName}:${tabIndex}`);
+    }
+
+    const paneCaptures = await Promise.all(
+      tab.panes.map(async (pane) => {
+        const result = await deps.backend.capturePane(pane.id, { lines });
+        const capture = {
+          paneId: pane.id,
+          paneIndex: pane.index,
+          command: pane.currentCommand,
+          title: `Pane ${pane.index} · ${pane.currentCommand} · ${pane.id}`,
+          text: result.text,
+          paneWidth: result.paneWidth,
+          isApproximate: result.isApproximate,
+          archived: false,
+          lines,
+          capturedAt: new Date().toISOString()
+        };
+        tabHistoryStore.recordPaneCapture({
+          sessionName,
+          tabIndex,
+          tabName: tab.name,
+          ...capture
+        });
+        return capture;
+      })
+    );
+
+    return {
+      type: "tab_history",
+      ...tabHistoryStore.buildTabHistory({
+        sessionName,
+        tab,
+        lines,
+        paneCaptures
+      })
+    };
+  };
+
   const broadcastSnapshotNow = (snapshot: WorkspaceSnapshot): void => {
     latestSnapshot = snapshot;
     broadcastState(snapshot);
+  };
+
+  const findPaneLocation = (
+    snapshot: WorkspaceSnapshot,
+    paneId: string
+  ): { sessionName: string; tab: SessionState["tabs"][number]; pane: SessionState["tabs"][number]["panes"][number] } | null => {
+    for (const session of snapshot.sessions) {
+      for (const tab of session.tabs) {
+        const pane = tab.panes.find((entry) => entry.id === paneId);
+        if (pane) {
+          return { sessionName: session.name, tab, pane };
+        }
+      }
+    }
+    return null;
+  };
+
+  const findViewPane = (
+    snapshot: WorkspaceSnapshot,
+    view: ClientView
+  ): SessionState["tabs"][number]["panes"][number] | null => {
+    const session = snapshot.sessions.find((entry) => entry.name === view.sessionName);
+    const tab = session?.tabs.find((entry) => entry.index === view.tabIndex);
+    return tab?.panes.find((entry) => entry.id === view.paneId) ?? null;
+  };
+
+  const resolveViewCwd = async (view: ClientView | undefined): Promise<string | undefined> => {
+    if (!view) {
+      return undefined;
+    }
+
+    const sessionSnapshot = await buildSingleSessionSnapshot(view.sessionName);
+    const pane = findViewPane(sessionSnapshot, view);
+    if (pane?.currentPath) {
+      return pane.currentPath;
+    }
+
+    const paneFromLatest = latestSnapshot ? findViewPane(latestSnapshot, view) : null;
+    return paneFromLatest?.currentPath || undefined;
+  };
+
+  const applyInitialViewHint = async (
+    context: ControlContext,
+    hint: { tabIndex?: number; paneId?: string }
+  ): Promise<void> => {
+    if (hint.tabIndex === undefined && !hint.paneId) {
+      return;
+    }
+
+    const view = viewStore.getView(context.clientId);
+    if (!view) {
+      return;
+    }
+
+    const sessionSnapshot = await buildSingleSessionSnapshot(view.sessionName);
+    const session = sessionSnapshot.sessions[0];
+    if (!session) {
+      return;
+    }
+
+    let targetTab = hint.tabIndex !== undefined
+      ? session.tabs.find((entry) => entry.index === hint.tabIndex)
+      : undefined;
+
+    if (!targetTab && hint.paneId) {
+      targetTab = session.tabs.find((entry) => entry.panes.some((pane) => pane.id === hint.paneId));
+    }
+
+    if (!targetTab) {
+      return;
+    }
+
+    if (targetTab.index !== view.tabIndex) {
+      viewStore.selectTab(context.clientId, targetTab.index, sessionSnapshot);
+      if (deps.backend.createGroupedSession) {
+        await deps.backend.selectTab(buildMobileSessionName(context.clientId), targetTab.index);
+      } else {
+        await deps.backend.selectTab(view.sessionName, targetTab.index);
+      }
+    }
+
+    const targetPane = hint.paneId
+      ? targetTab.panes.find((pane) => pane.id === hint.paneId)
+      : undefined;
+    if (targetPane) {
+      viewStore.selectPane(context.clientId, targetPane.id);
+      if (deps.backend.createGroupedSession || deps.backend.capabilities.supportsPaneFocusById) {
+        await deps.backend.focusPane(targetPane.id);
+      }
+    }
+
+    if (isNonGroupedBackend()) {
+      const updatedView = viewStore.getView(context.clientId);
+      if (updatedView) {
+        const runtime = getOrCreateRuntime(context);
+        runtime.attachToSession(`${updatedView.sessionName}:${updatedView.paneId}`);
+      }
+    }
   };
 
   const buildClientState = (
@@ -642,6 +848,7 @@ export const createRemuxServer = (
   };
 
   const broadcastState = (state: WorkspaceSnapshot): void => {
+    const previousSnapshot = latestSnapshot;
     const baseSessions: WorkspaceSnapshot = {
       ...state,
       sessions: state.sessions.filter(
@@ -649,6 +856,7 @@ export const createRemuxServer = (
       )
     };
     latestSnapshot = baseSessions;
+    tabHistoryStore.recordSnapshot(baseSessions);
 
     // Snapshot prev views before reconcile to detect changes
     const prevViews = new Map<string, { session: string; paneId: string }>();
@@ -658,6 +866,30 @@ export const createRemuxServer = (
         const v = viewStore.getView(client.clientId);
         if (v) prevViews.set(client.clientId, { session: v.sessionName, paneId: v.paneId });
       }
+
+      const previousNames = new Set(previousSnapshot?.sessions.map((session) => session.name) ?? []);
+      const currentNames = new Set(baseSessions.sessions.map((session) => session.name));
+      const addedSessions = baseSessions.sessions.filter((session) => !previousNames.has(session.name));
+      const missingViewedSessions = Array.from(new Set(
+        Array.from(controlClients)
+          .filter((client) => client.authed)
+          .map((client) => viewStore.getView(client.clientId)?.sessionName)
+          .filter((sessionName): sessionName is string => (
+            typeof sessionName === "string" && !currentNames.has(sessionName)
+          ))
+      ));
+
+      if (addedSessions.length === 1 && missingViewedSessions.length === 1) {
+        const missingSession = missingViewedSessions[0];
+        const lastKnownSession = knownSessionTopologies.get(missingSession);
+        if (lastKnownSession && sameSessionTopology(lastKnownSession, addedSessions[0])) {
+          viewStore.renameSession(missingSession, addedSessions[0].name);
+        }
+      }
+    }
+
+    for (const session of baseSessions.sessions) {
+      knownSessionTopologies.set(session.name, session);
     }
 
     // For tmux: sync ClientViewStore from the grouped mobile session's
@@ -821,6 +1053,9 @@ export const createRemuxServer = (
       // not wait on a full multi-session zellij workspace scan before sending
       // the authoritative "attached" event back to the client.
       const snapshot = snapshotForInit ?? await waitForSessionSnapshot(baseSession);
+      for (const session of snapshot.sessions) {
+        knownSessionTopologies.set(session.name, session);
+      }
       const view = viewStore.initView(context.clientId, baseSession, snapshot);
 
       // PTY expects "session:paneId" format
@@ -903,7 +1138,7 @@ export const createRemuxServer = (
         await attachControlToBaseSession(context, message.session);
         return;
       case "new_session":
-        await deps.backend.createSession(message.name);
+        await deps.backend.createSession(message.name, { cwd: await resolveViewCwd(view) });
         if (isNonGroupedBackend()) {
           const sessionSnapshot = await waitForSessionSnapshot(message.name);
           await attachControlToBaseSession(context, message.name, sessionSnapshot);
@@ -946,18 +1181,33 @@ export const createRemuxServer = (
         if (!sessionForNew) {
           throw new Error("no attached session");
         }
-        await deps.backend.newTab(sessionForNew);
+        const previousSnapshot = latestSnapshot ?? await buildSnapshot(deps.backend);
+        const previousSession = previousSnapshot.sessions.find((session) => session.name === sessionForNew);
+        await deps.backend.newTab(sessionForNew, { cwd: await resolveViewCwd(view) });
         // New tab becomes active — update view to the new tab
         if (isNonGroupedBackend()) {
-          const snapshot = await waitForWorkspace((candidate) => {
+          let snapshot = await waitForWorkspace((candidate) => {
             const session = candidate.sessions.find((s) => s.name === sessionForNew);
-            const activeTab = session?.tabs.find((t) => t.active) ?? session?.tabs.at(-1);
-            return Boolean(activeTab && activeTab.panes.length > 0);
+            const createdTab = findCreatedTab(previousSession, session);
+            return Boolean(createdTab && createdTab.panes.length > 0);
           });
-          const session = snapshot.sessions.find((s) => s.name === sessionForNew);
-          const activeTab = session?.tabs.find((t) => t.active) ?? session?.tabs.at(-1);
-          if (activeTab) {
-            viewStore.selectTab(context.clientId, activeTab.index, snapshot);
+          let session = snapshot.sessions.find((s) => s.name === sessionForNew);
+          let createdTab = findCreatedTab(previousSession, session) ?? session?.tabs.at(-1);
+
+          if (createdTab && !createdTab.active) {
+            const createdTabIndex = createdTab.index;
+            await deps.backend.selectTab(sessionForNew, createdTabIndex);
+            snapshot = await waitForWorkspace((candidate) => {
+              const candidateSession = candidate.sessions.find((entry) => entry.name === sessionForNew);
+              const candidateTab = candidateSession?.tabs.find((tab) => tab.index === createdTabIndex);
+              return Boolean(candidateTab?.active && candidateTab.panes.length > 0);
+            });
+            session = snapshot.sessions.find((entry) => entry.name === sessionForNew);
+            createdTab = session?.tabs.find((tab) => tab.index === createdTabIndex) ?? createdTab;
+          }
+
+          if (createdTab) {
+            viewStore.selectTab(context.clientId, createdTab.index, snapshot);
             const updatedView = viewStore.getView(context.clientId);
             if (updatedView) {
               const runtime = getOrCreateRuntime(context);
@@ -997,6 +1247,12 @@ export const createRemuxServer = (
             runtime.attachToSession(`${updatedView.sessionName}:${updatedView.paneId}`);
           }
         }
+        tabHistoryStore.recordEvent({
+          sessionName: view.sessionName,
+          tabIndex: message.tabIndex,
+          tabName: snapshot.sessions.find((session) => session.name === view.sessionName)?.tabs.find((tab) => tab.index === message.tabIndex)?.name ?? `tab-${message.tabIndex}`,
+          text: `Viewed tab ${message.tabIndex}`
+        });
         return;
       }
       case "close_tab": {
@@ -1030,6 +1286,13 @@ export const createRemuxServer = (
           const runtime = getOrCreateRuntime(context);
           runtime.attachToSession(`${view.sessionName}:${message.paneId}`);
         }
+        tabHistoryStore.recordEvent({
+          sessionName: view.sessionName,
+          tabIndex: view.tabIndex,
+          tabName: latestSnapshot?.sessions.find((session) => session.name === view.sessionName)?.tabs.find((tab) => tab.index === view.tabIndex)?.name ?? `tab-${view.tabIndex}`,
+          text: `Focused pane ${message.paneId}`,
+          paneId: message.paneId
+        });
         return;
       }
       case "split_pane":
@@ -1038,6 +1301,8 @@ export const createRemuxServer = (
         return;
       case "close_pane": {
         await primeViewPaneContext(view, message.paneId);
+        const snapshotForPane = latestSnapshot ?? await buildSnapshot(deps.backend);
+        const paneLocation = findPaneLocation(snapshotForPane, message.paneId);
         // Guard: prevent killing the last pane of the last tab (would destroy session)
         const baseForKillPane = view?.sessionName;
         if (baseForKillPane) {
@@ -1056,17 +1321,61 @@ export const createRemuxServer = (
             }
           }
         }
+        if (paneLocation) {
+          const archived = await deps.backend.capturePane(message.paneId, { lines: config.scrollbackLines });
+          tabHistoryStore.recordPaneCapture({
+            sessionName: paneLocation.sessionName,
+            tabIndex: paneLocation.tab.index,
+            tabName: paneLocation.tab.name,
+            paneId: paneLocation.pane.id,
+            paneIndex: paneLocation.pane.index,
+            command: paneLocation.pane.currentCommand,
+            title: `Pane ${paneLocation.pane.index} · ${paneLocation.pane.currentCommand} · ${paneLocation.pane.id}`,
+            text: archived.text,
+            paneWidth: archived.paneWidth,
+            isApproximate: archived.isApproximate,
+            archived: true,
+            lines: config.scrollbackLines
+          });
+        }
         await deps.backend.closePane(message.paneId);
         return;
       }
       case "toggle_fullscreen":
         await primeViewPaneContext(view, message.paneId);
         await deps.backend.toggleFullscreen(message.paneId);
+        if (view) {
+          tabHistoryStore.recordEvent({
+            sessionName: view.sessionName,
+            tabIndex: view.tabIndex,
+            tabName: latestSnapshot?.sessions.find((session) => session.name === view.sessionName)?.tabs.find((tab) => tab.index === view.tabIndex)?.name ?? `tab-${view.tabIndex}`,
+            text: `Toggled fullscreen for ${message.paneId}`,
+            paneId: message.paneId
+          });
+        }
         return;
       case "capture_scrollback": {
         await primeViewPaneContext(view, message.paneId);
         const lines = message.lines ?? config.scrollbackLines;
         const result = await deps.backend.capturePane(message.paneId, { lines });
+        const paneSnapshot = latestSnapshot ?? await buildSnapshot(deps.backend);
+        const paneLocation = findPaneLocation(paneSnapshot, message.paneId);
+        if (paneLocation) {
+          tabHistoryStore.recordPaneCapture({
+            sessionName: paneLocation.sessionName,
+            tabIndex: paneLocation.tab.index,
+            tabName: paneLocation.tab.name,
+            paneId: paneLocation.pane.id,
+            paneIndex: paneLocation.pane.index,
+            command: paneLocation.pane.currentCommand,
+            title: `Pane ${paneLocation.pane.index} · ${paneLocation.pane.currentCommand} · ${paneLocation.pane.id}`,
+            text: result.text,
+            paneWidth: result.paneWidth,
+            isApproximate: result.isApproximate,
+            archived: false,
+            lines
+          });
+        }
         sendJson(context.socket, {
           type: "scrollback",
           paneId: message.paneId,
@@ -1075,6 +1384,15 @@ export const createRemuxServer = (
           paneWidth: result.paneWidth,
           isApproximate: result.isApproximate
         });
+        return;
+      }
+      case "capture_tab_history": {
+        const sessionName = message.session ?? view?.sessionName;
+        if (!sessionName) {
+          throw new Error("no attached session");
+        }
+        const lines = message.lines ?? config.scrollbackLines;
+        sendJson(context.socket, await buildTabHistoryPayload(sessionName, message.tabIndex, lines));
         return;
       }
       case "send_compose":
@@ -1120,6 +1438,9 @@ export const createRemuxServer = (
       }
       case "set_follow_focus":
         viewStore.setFollowFocus(context.clientId, message.follow);
+        if (latestSnapshot) {
+          broadcastSnapshotNow(latestSnapshot);
+        }
         return;
       case "auth":
         return;
@@ -1201,10 +1522,15 @@ export const createRemuxServer = (
               clientId: context.clientId,
               requiresPassword: authService.requiresPassword(),
               capabilities: deps.backend.capabilities,
+              serverCapabilities: buildServerCapabilities(),
               backendKind: deps.backend.kind
             });
             try {
               await ensureAttachedSession(context, message.session);
+              await applyInitialViewHint(context, {
+                tabIndex: message.tabIndex,
+                paneId: message.paneId
+              });
             } catch (error) {
               logger.error("initial attach failed", error);
               sendJson(socket, {

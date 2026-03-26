@@ -120,8 +120,12 @@ export class TmuxCliExecutor implements MultiplexerBackend {
     return parsePanes(output);
   }
 
-  public async createSession(name: string): Promise<void> {
-    await this.runTmux(["new-session", "-d", "-s", name]);
+  public async createSession(name: string, options?: { cwd?: string }): Promise<void> {
+    const args = ["new-session", "-d", "-s", name];
+    if (options?.cwd) {
+      args.push("-c", options.cwd);
+    }
+    await this.runTmux(args);
   }
 
   public async createGroupedSession(name: string, target: string): Promise<void> {
@@ -136,8 +140,12 @@ export class TmuxCliExecutor implements MultiplexerBackend {
     await this.runTmux(["switch-client", "-t", session]);
   }
 
-  public async newTab(session: string): Promise<void> {
-    await this.runTmux(["new-window", "-t", session]);
+  public async newTab(session: string, options?: { cwd?: string }): Promise<void> {
+    const args = ["new-window", "-t", session];
+    if (options?.cwd) {
+      args.push("-c", options.cwd);
+    }
+    await this.runTmux(args);
   }
 
   public async closeTab(session: string, tabIndex: number): Promise<void> {
