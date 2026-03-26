@@ -1,9 +1,11 @@
 import type { ControlServerMessage } from "../shared/protocol";
+import { parseLaunchContext } from "./launch-context";
 
 const query = new URLSearchParams(window.location.search);
 
 export const token = query.get("token") ?? "";
 export const debugMode = query.get("debug") === "1";
+export const initialLaunchContext = parseLaunchContext(query);
 
 export const wsOrigin = (() => {
   const scheme = window.location.protocol === "https:" ? "wss" : "ws";

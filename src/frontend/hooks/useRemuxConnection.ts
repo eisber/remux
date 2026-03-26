@@ -20,6 +20,12 @@ import {
   wsOrigin
 } from "../remux-runtime";
 
+export interface ControlAuthPayload {
+  session?: string;
+  tabIndex?: number;
+  paneId?: string;
+}
+
 export interface ConnectionCallbacks {
   /** Called after successful auth. Use to open terminal socket, etc. */
   onAuthOk: (passwordValue: string, clientId: string) => void;
@@ -27,8 +33,8 @@ export interface ConnectionCallbacks {
   onControlMessage: (message: ControlServerMessage) => void;
   /** Called when control socket closes. */
   onControlClose: () => void;
-  /** Returns the current attached session name for reconnect auth. */
-  getAttachedSession: () => string;
+  /** Returns auth payload for initial attach and reconnects. */
+  getAuthPayload: () => ControlAuthPayload | null;
 }
 
 export interface UseRemuxConnectionResult {
@@ -124,12 +130,12 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
     socket.onopen = () => {
       debugLog("control_socket.onopen");
-      const session = cbRef.current.getAttachedSession();
+      const authPayload = cbRef.current.getAuthPayload();
       socket.send(JSON.stringify({
         type: "auth",
         token,
         password: passwordValue || undefined,
-        ...(session ? { session } : {}),
+        ...(authPayload ?? {}),
       }));
     };
     socket.onmessage = (event) => {
