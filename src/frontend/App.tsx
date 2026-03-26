@@ -27,21 +27,19 @@ import {
 } from "./snippets";
 import {
   getTabOrderKey,
-  normalizeWorkspaceOrder,
   orderSessions,
   orderTabs,
   reorderSessionState,
   reorderSessionTabs,
-  WORKSPACE_ORDER_STORAGE_KEY,
-  type WorkspaceOrderState
 } from "./workspace-order";
 import { deriveTopStatus, formatBytes } from "./app-status";
 import { deriveSnippetPickerState } from "./compose-picker";
 import type { PendingSnippetExecution } from "./app-types";
 import { useFileUpload } from "./hooks/useFileUpload";
-import { matchesMobileLayout, useViewportLayout } from "./mobile-layout";
+import { useViewportLayout } from "./mobile-layout";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import { useRemuxConnection } from "./hooks/useRemuxConnection";
+import { useClientPreferences } from "./hooks/useClientPreferences";
 import {
   buildInspectSnapshotFromServerHistory,
   type TabInspectSnapshot
@@ -73,17 +71,6 @@ declare global {
   }
 }
 
-const getInitialStickyZoom = (): boolean => {
-  const stored = localStorage.getItem("remux-sticky-zoom");
-  if (stored === "true") {
-    return true;
-  }
-  if (stored === "false") {
-    return false;
-  }
-  return matchesMobileLayout();
-};
-
 const LazyBandwidthStatsModal = lazy(() => import("./components/BandwidthStatsModal"));
 const LazyPasswordOverlay = lazy(() => import("./components/PasswordOverlay"));
 const LazySessionPickerOverlay = lazy(() => import("./components/SessionPickerOverlay"));
@@ -103,29 +90,22 @@ export const App = () => {
   const [pendingSessionAttachment, setPendingSessionAttachment] = useState<string | null>(null);
   const [sessionChoices, setSessionChoices] = useState<SessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
-    localStorage.getItem("remux-sidebar-collapsed") === "true"
-  );
   const [composeText, setComposeText] = useState("");
+
+  // ── Preferences hook ──
+  const prefs = useClientPreferences();
+  const { theme, sidebarCollapsed, setSidebarCollapsed, stickyZoom, setStickyZoom,
+    scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
 
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
   const viewModeRef = useRef(viewMode);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
-  const [scrollFontSize, setScrollFontSize] = useState<number>(
-    Number(localStorage.getItem("remux-scroll-font-size")) || 0
-  );
   const [inspectLineCount, setInspectLineCount] = useState(1000);
   const [inspectPaneFilter, setInspectPaneFilter] = useState("all");
   const [inspectSearchQuery, setInspectSearchQuery] = useState("");
   const [inspectSnapshot, setInspectSnapshot] = useState<TabInspectSnapshot | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectErrorMessage, setInspectErrorMessage] = useState("");
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const stored = localStorage.getItem("remux-theme");
-    if (stored === "light") return "light";
-    return "dark"; // migrate old themes (midnight, amber, etc.) to dark
-  });
-  const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
   const { mobileLandscape, mobileLayout, viewportHeight } = useViewportLayout();
   const sendRawToSocket = useCallback((data: string): void => {
     const socket = terminalSocketRef.current;
@@ -373,17 +353,6 @@ export const App = () => {
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
   const [collapsedSnippetGroups, setCollapsedSnippetGroups] = useState<Record<string, boolean>>({});
   const [pendingSnippetExecution, setPendingSnippetExecution] = useState<PendingSnippetExecution | null>(null);
-  const [workspaceOrder, setWorkspaceOrder] = useState<WorkspaceOrderState>(() => {
-    try {
-      const stored = localStorage.getItem(WORKSPACE_ORDER_STORAGE_KEY);
-      if (!stored) {
-        return { sessions: [], tabsBySession: {} };
-      }
-      return normalizeWorkspaceOrder(JSON.parse(stored));
-    } catch {
-      return { sessions: [], tabsBySession: {} };
-    }
-  });
 
   const [statsVisible, setStatsVisible] = useState(false);
   const rttTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -526,10 +495,6 @@ export const App = () => {
   }, [snippets]);
 
   useEffect(() => {
-    localStorage.setItem(WORKSPACE_ORDER_STORAGE_KEY, JSON.stringify(workspaceOrder));
-  }, [workspaceOrder]);
-
-  useEffect(() => {
     setQuickSnippetIndex(0);
   }, [snippetPickerQuery]);
 
@@ -579,15 +544,7 @@ export const App = () => {
     });
   }, [authReady, inspectLineCount, sendControl]);
 
-  // Theme effect: apply data-theme attribute and persist selection
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("remux-theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    localStorage.setItem("remux-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
-  }, [sidebarCollapsed]);
+  // Theme and sidebar persistence now handled by useClientPreferences
 
   useEffect(() => {
     if (!serverConfig?.scrollbackLines || inspectLineCountInitializedRef.current) {
@@ -684,16 +641,7 @@ export const App = () => {
 
   // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
-  // Persist sticky zoom state — only when user explicitly toggles (not on
-  // programmatic defaults like the zellij fallback below).
-  const stickyZoomUserSetRef = useRef(false);
-  useEffect(() => {
-    if (!stickyZoomUserSetRef.current) return;
-    localStorage.setItem("remux-sticky-zoom", stickyZoom ? "true" : "false");
-  }, [stickyZoom]);
-
   // Default sticky zoom OFF for zellij when user has no stored preference.
-  // Does NOT persist to localStorage so it won't affect other backends.
   useEffect(() => {
     if (!serverConfig) return;
     const stored = localStorage.getItem("remux-sticky-zoom");
@@ -701,7 +649,7 @@ export const App = () => {
     if (serverConfig.backendKind === "zellij") {
       setStickyZoom(false);
     }
-  }, [serverConfig]);
+  }, [serverConfig, setStickyZoom]);
 
   useEffect(() => {
     if (!debugMode) {
@@ -1116,15 +1064,9 @@ export const App = () => {
             type: "set_follow_focus",
             follow: !(clientView?.followBackendFocus ?? false)
           })}
-          onResetScrollFontSize={() => {
-            setScrollFontSize(0);
-            localStorage.removeItem("remux-scroll-font-size");
-          }}
-          onSetTheme={setTheme}
-          onUpdateScrollFontSize={(value) => {
-            setScrollFontSize(value);
-            localStorage.setItem("remux-scroll-font-size", String(value));
-          }}
+          onResetScrollFontSize={prefs.resetScrollFontSize}
+          onSetTheme={prefs.setTheme}
+          onUpdateScrollFontSize={prefs.setScrollFontSize}
           scrollFontSize={scrollFontSize}
           showFollowFocus={serverConfig?.backendKind === "zellij"}
           theme={theme}
