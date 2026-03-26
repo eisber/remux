@@ -279,7 +279,7 @@ initSnapfeed({
   feedback: {
     enabled: true, screenshotMaxWidth: 1200, screenshotQuality: 0.6,
     annotations: true, allowContextToggle: true, allowScreenshotToggle: true,
-    defaultIncludeContext: true, defaultIncludeScreenshot: true,
+    defaultIncludeContext: true, defaultIncludeScreenshot: false,
   },
   adapters: [lazyGithubAdapter() as never],
 });
