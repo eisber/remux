@@ -368,6 +368,11 @@ button, input {
   position: relative;
 }
 
+.drawer-item-row.resurrectable .drawer-item-main,
+.drawer-item-main.resurrectable {
+  opacity: 0.74;
+}
+
 .item-name {
   font-family: 'JetBrains Mono', 'Menlo', monospace;
   font-size: 0.75rem;
@@ -456,6 +461,26 @@ button, input {
 
 .drawer-section-action {
   margin-top: 0.4rem;
+}
+
+.drawer-session-subgroup {
+  margin-top: 0.85rem;
+}
+
+.drawer-session-subgroup h4 {
+  margin: 0 0 0.45rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.drawer-session-subgroup ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
 }
 
 .drawer-toggle-row {
@@ -1711,6 +1736,38 @@ button.danger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.session-picker-section {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.session-picker-section + .session-picker-section {
+  margin-top: 1rem;
+}
+
+.session-picker-section-muted {
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--border);
+}
+
+.session-picker-section h3 {
+  margin: 0;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.session-picker-note {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.session-picker-secondary {
+  opacity: 0.76;
 }
 
 .password-error {

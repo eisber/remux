@@ -54,11 +54,11 @@ export const SessionSection = ({
   setSessionDropTarget,
   snapshot,
   supportsSessionRename
-}: SessionSectionProps) => (
-  <>
-    <h3>Sessions</h3>
-    <ul data-testid="sessions-list">
-      {sessions.map((session) => (
+}: SessionSectionProps) => {
+  const liveSessions = sessions.filter((session) => session.lifecycle !== "exited");
+  const resurrectableSessions = sessions.filter((session) => session.lifecycle === "exited");
+
+  const renderSession = (session: SessionState) => (
         <li
           key={session.name}
           data-testid={`session-item-${session.name}`}
@@ -120,7 +120,7 @@ export const SessionSection = ({
               data-testid="rename-session-input"
             />
           ) : (
-            <div className={`drawer-item-row${mobileLayout && supportsSessionRename ? " mobile-actions" : ""}`}>
+            <div className={`drawer-item-row${mobileLayout && supportsSessionRename ? " mobile-actions" : ""}${session.lifecycle === "exited" ? " resurrectable" : ""}`}>
               <button
                 draggable={!mobileLayout}
                 onClick={() => onSelectSession(session.name)}
@@ -142,7 +142,7 @@ export const SessionSection = ({
                 } : undefined}
                 className={`drawer-item-main${
                   session.name === (attachedSession || selectedSessionName) ? " active" : ""
-                }`}
+                }${session.lifecycle === "exited" ? " resurrectable" : ""}`}
                 data-testid={`session-drag-target-${session.name}`}
                 >
                 <span className="item-name">
@@ -150,6 +150,9 @@ export const SessionSection = ({
                   {bellSessions.has(session.name) && session.name !== (attachedSession || selectedSessionName) ? " 🔔" : ""}
                 </span>
                 {(() => {
+                  if (session.lifecycle === "exited") {
+                    return <span className="item-context">Saved zellij session</span>;
+                  }
                   const activeWindow = session.tabs.find((tab) => tab.active) ?? session.tabs[0];
                   const label = activeWindow ? formatContext(deriveContext(activeWindow.panes)) : "";
                   return label ? <span className="item-context">{label}</span> : null;
@@ -188,23 +191,38 @@ export const SessionSection = ({
                 }}
                 disabled={snapshot.sessions.length <= 1}
                 data-testid={`close-session-${session.name}`}
-                aria-label={`Close session ${session.name}`}
-                title={`Close session ${session.name}`}
+                aria-label={`${session.lifecycle === "exited" ? "Delete saved session" : "Close session"} ${session.name}`}
+                title={`${session.lifecycle === "exited" ? "Delete saved session" : "Close session"} ${session.name}`}
               >
                 <span aria-hidden="true">×</span>
               </button>
             </div>
           )}
         </li>
-      ))}
-    </ul>
-    <button
-      className="drawer-section-action"
-      onClick={createSession}
-      data-testid="new-session-button"
-      title="Create a new terminal session"
-    >
-      + New Session
-    </button>
-  </>
-);
+  );
+
+  return (
+    <>
+      <h3>Sessions</h3>
+      <ul data-testid="sessions-list">
+        {liveSessions.map(renderSession)}
+      </ul>
+      {resurrectableSessions.length > 0 ? (
+        <div className="drawer-session-subgroup">
+          <h4>Resurrectable</h4>
+          <ul data-testid="archived-sessions-list">
+            {resurrectableSessions.map(renderSession)}
+          </ul>
+        </div>
+      ) : null}
+      <button
+        className="drawer-section-action"
+        onClick={createSession}
+        data-testid="new-session-button"
+        title="Create a new terminal session"
+      >
+        + New Session
+      </button>
+    </>
+  );
+};

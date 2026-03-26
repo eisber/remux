@@ -79,7 +79,18 @@ export function parseSessions(output: string): SessionSummary[] {
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((name) => ({ name, attached: false, tabCount: 0 }));
+    .map((line) => {
+      const exited = line.includes("(EXITED");
+      const name = line.includes("[Created")
+        ? line.replace(/\s+\[Created.*$/, "").trim()
+        : line;
+      return {
+        name,
+        attached: !exited,
+        tabCount: 0,
+        lifecycle: exited ? "exited" as const : "live" as const
+      };
+    });
 }
 
 /**
@@ -96,6 +107,7 @@ export function parseTabs(json: string): Omit<TabState, "panes">[] {
   if (!Array.isArray(tabs)) return [];
   return tabs.map((tab) => ({
     index: tab.position,
+    id: String(tab.tab_id),
     name: tab.name,
     active: tab.active,
     paneCount: tab.selectable_tiled_panes_count + tab.selectable_floating_panes_count
@@ -127,7 +139,8 @@ export function parsePanes(
       width: p.pane_content_columns,
       height: p.pane_content_rows,
       zoomed: p.is_fullscreen,
-      currentPath: p.pane_cwd ?? ""
+      currentPath: p.pane_cwd ?? "",
+      isFloating: p.is_floating
     }));
 }
 

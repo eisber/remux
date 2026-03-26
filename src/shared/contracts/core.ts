@@ -9,6 +9,7 @@ export const PROTOCOL_VERSION = 1;
 
 export interface WorkspaceCapabilities extends BackendCapabilities {
   supportsUpload: boolean;
+  supportsTerminalSnapshots: boolean;
 }
 
 export interface NotificationCapabilities {
@@ -17,10 +18,20 @@ export interface NotificationCapabilities {
 
 export interface TransportCapabilities {
   supportsTrustedReconnect: boolean;
+  supportsPairingBootstrap: boolean;
+  supportsDeviceIdentity: boolean;
+}
+
+export interface SemanticAdapterHealthSummary {
+  adapterId: string;
+  available: boolean;
+  healthy: boolean;
 }
 
 export interface SemanticCapabilitySummary {
   adaptersAvailable: string[];
+  adapterHealth: SemanticAdapterHealthSummary[];
+  supportsEventStream: boolean;
 }
 
 export interface ServerCapabilities {

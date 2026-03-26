@@ -56,6 +56,16 @@ describe("frontend ui state helpers", () => {
     expect(resolveActiveSession(sessions, "", false)?.name).toBe("work");
   });
 
+  test("prefers the client view session over backend attached markers", () => {
+    const sessions = [buildSession("main"), buildSession("work", true)];
+    expect(resolveActiveSession(sessions, "", false, false, {
+      sessionName: "main",
+      tabIndex: 0,
+      paneId: "%main",
+      followBackendFocus: false
+    })?.name).toBe("main");
+  });
+
   test("treats pending session creation as awaiting attachment until attached lands", () => {
     expect(isAwaitingSessionAttachment("pending", "")).toBe(true);
     expect(isAwaitingSessionAttachment("pending", "pending")).toBe(false);
@@ -86,8 +96,8 @@ describe("frontend ui state helpers", () => {
     ).toBe("");
   });
 
-  test("locks viewport columns only for zellij", () => {
-    expect(shouldUsePaneViewportCols("zellij")).toBe(true);
+  test("does not hard-lock viewport columns for any backend", () => {
+    expect(shouldUsePaneViewportCols("zellij")).toBe(false);
     expect(shouldUsePaneViewportCols("tmux")).toBe(false);
     expect(shouldUsePaneViewportCols("conpty")).toBe(false);
     expect(shouldUsePaneViewportCols(undefined)).toBe(false);

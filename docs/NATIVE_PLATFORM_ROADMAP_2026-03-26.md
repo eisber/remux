@@ -779,42 +779,112 @@ Order:
 
 ## Near-Term Backlog
 
-The following backlog is the most practical next slice after this document lands.
+The following backlog was completed on 2026-03-26 as the first native-platform execution slice.
 
 ### Server
 
-- introduce `ServerCapabilities`
-- add protocol versioning
-- split `src/shared/protocol.ts`
-- create `src/backend/device/`
-- create `src/backend/adapters/registry.ts`
-- move notification concerns behind a stable transport interface
-- define semantic event broadcast path separate from terminal data
+- ~~introduce `ServerCapabilities`~~ ✅ done
+- ~~add protocol versioning~~ ✅ done
+- ~~split `src/shared/protocol.ts`~~ ✅ done
+- ~~create `src/backend/device/`~~ ✅ done
+- ~~create `src/backend/adapters/registry.ts`~~ ✅ done
+- ~~move notification concerns behind a stable transport interface~~ ✅ done via `src/backend/server/client-capabilities.ts`
+- ~~define semantic event broadcast path separate from terminal data~~ ✅ done via `src/backend/server/semantic-event-transport.ts`
+- ~~split `src/backend/server.ts` into composition modules~~ ✅ done via `src/backend/server/http-routes.ts`, `src/backend/server/control-socket.ts`, `src/backend/server/terminal-socket.ts`, `src/backend/server/session-attach-service.ts`
 
 ### Web Client
 
-- extract connection state machine from `App.tsx`
-- extract workspace reducer
-- extract preference persistence
-- extract notification state
-- add capability-driven rendering
-- remove backend-brand conditionals where capability checks are sufficient
+- ~~extract connection state machine from `App.tsx`~~ ✅ done
+- ~~extract workspace reducer~~ ✅ done via `src/frontend/hooks/useWorkspaceState.ts`
+- ~~extract preference persistence~~ ✅ done
+- ~~add capability-driven rendering~~ ✅ done for server capability consumers and workspace composition boundaries
+- ~~remove backend-brand conditionals where capability checks are sufficient~~ ✅ done where protocol capabilities now exist
+- ~~reduce `App.tsx` to a composition root with screens~~ ✅ done via `src/frontend/screens/AppShell.tsx`, `src/frontend/screens/WorkspaceScreen.tsx`, `src/frontend/screens/SessionPickerScreen.tsx`
 
 ### iOS Prep
 
-- write API contract fixtures for a native client
-- document terminal embedding strategy
-- define session list and active workspace models
-- define notification payload contract
-- define pairing bootstrap payload format
+- ~~write API contract fixtures for a native client~~ ✅ done via `tests/harness/nativeClientFixtures.ts`
+- ~~document terminal embedding strategy~~ ✅ done
+- ~~define session list and active workspace models~~ ✅ done
+- ~~define notification payload contract~~ ✅ done
+- ~~define pairing bootstrap payload format~~ ✅ done
+- ~~keep contract examples synchronized with tested fixtures~~ ✅ done via `tests/backend/native-contract-fixtures.test.ts`
 
 ### Semantic Prep
 
-- define `SemanticCapabilities`
-- define `SemanticEvent`
-- define adapter detection inputs
-- formalize passive versus active adapter modes
-- decide how git and worktree actions are represented in the protocol
+- ~~define `SemanticCapabilities`~~ ✅ done
+- ~~define `SemanticEvent`~~ ✅ done
+- ~~define adapter detection inputs~~ ✅ done
+- ~~formalize passive versus active adapter modes~~ ✅ done
+- ~~add a passive `generic-shell` adapter~~ ✅ done via `src/backend/adapters/generic-shell-adapter.ts`
+
+## Next 4 Execution Slices
+
+Updated: 2026-03-26 after implementation.
+
+### Slice 1: `feat/workspace-state-hook`
+
+Status:
+
+- completed 2026-03-26
+
+Delivered:
+
+- `src/frontend/hooks/useWorkspaceState.ts`
+- `src/frontend/screens/AppShell.tsx`
+- `src/frontend/screens/WorkspaceScreen.tsx`
+- `src/frontend/screens/SessionPickerScreen.tsx`
+- `tests/frontend/workspace-state.test.ts`
+
+### Slice 2: `chore/split-server-composition`
+
+Status:
+
+- completed 2026-03-26
+
+Delivered:
+
+- `src/backend/server/client-capabilities.ts`
+- `src/backend/server/http-routes.ts`
+- `src/backend/server/control-socket.ts`
+- `src/backend/server/terminal-socket.ts`
+- `src/backend/server/session-attach-service.ts`
+- `src/backend/server.ts` reduced to assembly, mutation routing, broadcast, and lifecycle
+
+### Slice 3: `chore/native-contract-fixtures`
+
+Status:
+
+- completed 2026-03-26
+
+Delivered:
+
+- `tests/harness/nativeClientFixtures.ts`
+- `tests/harness/nativeClient.ts`
+- `tests/backend/native-contract-fixtures.test.ts`
+- updated `docs/IOS_CLIENT_CONTRACT.md` to match tested fixtures
+
+### Slice 4: `feat/device-adapter-capability-wiring`
+
+Status:
+
+- completed 2026-03-26
+
+Delivered:
+
+- optional device capability wiring through `ServerDependencies`
+- adapter registry capability wiring through `ServerDependencies`
+- capability matrix coverage in `tests/backend/client-capabilities.test.ts`
+- native/auth integration coverage in `tests/integration/server.test.ts`
+
+## Post-Merge Validation
+
+Updated: 2026-03-26 after merge verification on the `dev` integration branch.
+
+- `npm run typecheck && npm test && npm run build && npm run test:e2e` passed after merging the roadmap execution slices.
+- Merge validation found one browser-side regression: the web client attempted `/api/state/:session` even when terminal snapshot extensions were unavailable.
+- Fixed by reserving unknown `/api/*` paths from SPA fallback and adding `workspace.supportsTerminalSnapshots` so clients only request snapshot restore when the server explicitly supports it.
+- Updated `docs/IOS_CLIENT_CONTRACT.md` and tested fixtures to reflect the new capability bit.
 
 ## Suggested Data Models
 
@@ -1007,3 +1077,137 @@ That strategy gives Remux a broader ceiling than a single-runtime product while 
 6. prove the abstraction with a second adapter
 
 That sequence preserves the current strengths of the project while creating a path toward a much more ambitious product.
+
+## Appendix A: Implementation Status Audit
+
+Date: 2026-03-26
+Scope: current repository state relative to the roadmap above
+Status: audit note appended after the first roadmap execution slice
+
+This appendix keeps the main body forward-looking while making the current implementation state explicit. It distinguishes between:
+
+- completed platform-boundary work
+- groundwork that exists only as a skeleton
+- milestones that still have no product implementation in the repository
+
+### Snapshot
+
+- Milestone 1: mostly complete
+- Milestone 2: preparation only
+- Milestone 3: skeletons only
+- Milestone 4: semantic platform skeletons only
+- Milestone 5: not started
+- Milestone 6: not started
+
+### Milestone 1 Checklist
+
+Done:
+
+- shared contract split under `src/shared/contracts/`
+- `ServerCapabilities` and protocol versioning
+- server composition split into `http-routes.ts`, `control-socket.ts`, `terminal-socket.ts`, and `session-attach-service.ts`
+- web hooks extracted for connection, workspace state, terminal runtime, and client preferences
+- native-client contract fixtures and integration coverage
+
+Partial:
+
+- `src/frontend/App.tsx` is still a large assembly file rather than a thin composition root
+- `src/backend/extensions.ts` still acts as a compatibility composition layer instead of being fully separated into transport, semantic, and observability modules
+
+Assessment:
+
+- the milestone goal is effectively satisfied for platform-boundary work, but the refactor is not fully "finished" in code-shape terms
+
+### Milestone 2 Checklist
+
+Done:
+
+- `docs/IOS_CLIENT_CONTRACT.md`
+- `tests/harness/nativeClientFixtures.ts`
+- `tests/backend/native-contract-fixtures.test.ts`
+
+Not started:
+
+- iOS app shell
+- embedded terminal surface
+- native reconnect UI
+- one-handed phone workflows
+
+Assessment:
+
+- preparation exists, but there is no native client implementation in this repository yet
+
+### Milestone 3 Checklist
+
+Done:
+
+- `src/backend/device/identity-store.ts`
+- `src/backend/device/pairing-service.ts`
+- `src/backend/device/trust-store.ts`
+- `src/backend/device/push-registration-service.ts`
+- device capability wiring through `ServerCapabilities`
+
+Partial:
+
+- device services are in-memory skeletons; persistence, revoke flows, and trusted reconnect are not complete
+
+Not started:
+
+- relay session layer
+- native push registration flow
+- background reconnect strategy
+
+Assessment:
+
+- groundwork exists, but milestone acceptance criteria are not met
+
+### Milestone 4 Checklist
+
+Done:
+
+- semantic contracts
+- adapter registry
+- semantic event transport
+- passive `generic-shell` adapter
+- semantic capability wiring
+
+Partial:
+
+- protocol domain envelope types exist, but runtime transport still uses legacy `auth_ok`, `workspace_state`, and `tab_history` messages
+
+Not started:
+
+- client rendering of adapter presence and health
+- shared semantic timeline UI model
+- end-to-end multi-adapter runtime wiring
+
+Assessment:
+
+- the platform skeleton exists, but the semantic product layer does not yet exist
+
+### Milestone 5 Checklist
+
+Not started:
+
+- Codex adapter
+- thread and turn model
+- tool event ingestion
+- approval and action surface
+- Codex timeline UI
+
+### Milestone 6 Checklist
+
+Not started:
+
+- second adapter
+- proof that the architecture is genuinely multi-runtime at the product layer
+
+### Additional Progress Outside This Slice
+
+- the workspace core is ahead of the minimum platform slice in one important area: Inspect/tab history is already a real server-backed feature with frontend behavior and E2E coverage
+
+### Validation Note
+
+- verified locally with `npm run typecheck`
+- verified locally with `npm test`
+- `npm run build` and `npm run test:e2e` were not re-run as part of this appendix update

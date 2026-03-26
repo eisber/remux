@@ -5,8 +5,17 @@ import * as pty from "node-pty";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import type { MultiplexerBackend } from "../multiplexer/types.js";
-import type { BackendCapabilities } from "../../shared/protocol.js";
-import { parseSessions, parseTabs, parsePanes, findTabId, type ZellijPaneJson } from "./parser.js";
+import type { BackendCapabilities, SessionState, TabState, WorkspaceSnapshot } from "../../shared/protocol.js";
+import { parseSessions, parseTabs, parsePanes, findTabId, type ZellijPaneJson, type ZellijTabJson } from "./parser.js";
+import {
+  getDefaultZellijNativeBridgeStateStore,
+  type ZellijNativeBridgeStateStore
+} from "./native-bridge-state.js";
+import {
+  createZellijNativeBridge,
+  type ZellijNativeBridgeFactory,
+  type ZellijNativeBridgePaneRenderEvent
+} from "./native-bridge.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +30,8 @@ interface ZellijCliExecutorOptions {
   focusPluginPath?: string;
   /** Isolated zellij socket dir. */
   socketDir?: string;
+  nativeBridgeStateStore?: ZellijNativeBridgeStateStore;
+  nativeBridgeFactory?: ZellijNativeBridgeFactory;
 }
 
 const sleep = async (ms: number): Promise<void> =>
@@ -32,7 +43,7 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     supportsPaneFocusById: true,
     supportsTabRename: true,
     supportsSessionRename: true,
-    supportsPreciseScrollback: true,
+    supportsPreciseScrollback: false,
     supportsFloatingPanes: true,
     supportsFullscreenPane: true,
   };
@@ -44,6 +55,8 @@ export class ZellijCliExecutor implements MultiplexerBackend {
   private readonly baseEnv: NodeJS.ProcessEnv;
   private readonly socketDir?: string;
   private readonly remuxShellPath: string;
+  private readonly nativeBridgeStateStore: ZellijNativeBridgeStateStore;
+  private readonly nativeBridgeFactory: ZellijNativeBridgeFactory;
   private createBackgroundSupported: boolean | null = null;
   private commandQueue: Promise<void> = Promise.resolve();
 
@@ -63,6 +76,8 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     this.trace = process.env.REMUX_TRACE_ZELLIJ === "1";
     this.focusPluginPath = options.focusPluginPath;
     this.socketDir = options.socketDir;
+    this.nativeBridgeStateStore = options.nativeBridgeStateStore ?? getDefaultZellijNativeBridgeStateStore();
+    this.nativeBridgeFactory = options.nativeBridgeFactory ?? createZellijNativeBridge;
     this.remuxShellPath = fileURLToPath(new URL("./remux-shell.sh", import.meta.url));
     this.baseEnv = {
       ...process.env,
@@ -116,38 +131,74 @@ export class ZellijCliExecutor implements MultiplexerBackend {
   public async listSessions() {
     try {
       const sessions = await this.listSessionSummaries();
-      const tabCounts = await Promise.all(
-        sessions.map(async (session) => {
-          if (!(await this.sessionExistsInSocketDir(session.name))) {
-            return { session, tabCount: 0, include: false };
-          }
-          try {
-            const tabs = await this.listTabs(session.name);
-            return { session, tabCount: tabs.length, include: true };
-          } catch (error) {
-            if (isStaleSessionError(error)) {
-              await this.cleanupStaleSession(session.name);
-              return { session, tabCount: 0, include: false };
-            }
-            return { session, tabCount: 0, include: true };
-          }
-        })
+      const visibility = await Promise.all(
+        sessions.map(async (session) => ({
+          include: await this.sessionExistsInSocketDir(session.name),
+          session
+        }))
       );
-      return tabCounts
+      return visibility
         .filter((entry) => entry.include)
-        .map(({ session, tabCount }) => ({
-          ...session,
-          tabCount
+        .map((entry) => ({
+          ...entry.session,
+          tabCount: 0
         }));
     } catch {
       return [];
     }
   }
 
+  public async buildSnapshot(): Promise<WorkspaceSnapshot> {
+    const sessionSummaries = await this.listSessions();
+    const nextPaneSessionMap = new Map<string, string>();
+    const nextPaneTabMap = new Map<string, number>();
+    const sessions: SessionState[] = [];
+
+    for (const summary of sessionSummaries) {
+      if (summary.lifecycle === "exited") {
+        sessions.push({
+          ...summary,
+          tabCount: 0,
+          tabs: []
+        });
+        continue;
+      }
+
+      try {
+        const rawTabs = await this.listRawTabs(summary.name);
+        const rawPanes = await this.listRawPanes(summary.name);
+        const tabs = rawTabs.map((tab) => this.buildTabState(summary.name, tab, rawPanes, nextPaneSessionMap, nextPaneTabMap));
+        sessions.push({
+          ...summary,
+          tabCount: tabs.length,
+          tabs
+        });
+      } catch (error) {
+        if (isStaleSessionError(error)) {
+          await this.cleanupStaleSession(summary.name);
+          continue;
+        }
+        sessions.push({
+          ...summary,
+          tabCount: 0,
+          tabs: []
+        });
+      }
+    }
+
+    this.replacePaneIndexes(nextPaneSessionMap, nextPaneTabMap);
+
+    return {
+      sessions,
+      capturedAt: new Date().toISOString()
+    };
+  }
+
   public async createSession(name: string): Promise<void> {
     // Guard: skip if session already exists.
     const sessions = await this.listSessionSummaries();
-    if (await this.sessionExistsInSocketDir(name) && sessions.some((s) => s.name === name)) {
+    const existing = sessions.find((session) => session.name === name);
+    if (await this.sessionExistsInSocketDir(name) && existing && existing.lifecycle !== "exited") {
       return;
     }
     await this.spawnSessionBootstrap(name);
@@ -159,6 +210,67 @@ export class ZellijCliExecutor implements MultiplexerBackend {
 
   public async renameSession(name: string, newName: string): Promise<void> {
     await this.runZellij(["action", "rename-session", newName], name);
+  }
+
+  public async reviveSession(name: string): Promise<void> {
+    const sessions = await this.listSessionSummaries();
+    const target = sessions.find((session) => session.name === name);
+    if (!target || target.lifecycle !== "exited") {
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
+      const args = process.platform === "win32"
+        ? ["/c", this.binary, "attach", name]
+        : ["-lc", `exec ${shellQuote(this.binary)} attach ${shellQuote(name)}`];
+      const client = pty.spawn(shell, args, {
+        name: "xterm-256color",
+        cols: 80,
+        rows: 24,
+        cwd: process.cwd(),
+        env: this.baseEnv
+      });
+      let settled = false;
+
+      const finish = (error?: Error): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        client.kill();
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      client.onExit(({ exitCode }) => {
+        if (settled) {
+          return;
+        }
+        finish(new Error(`zellij session revive exited before ready: code=${exitCode}`));
+      });
+
+      const deadline = Date.now() + this.timeoutMs;
+      const poll = async (): Promise<void> => {
+        while (!settled && Date.now() < deadline) {
+          const currentSessions = await this.listSessionSummariesImmediate();
+          const current = currentSessions.find((session) => session.name === name);
+          if (current?.lifecycle !== "exited") {
+            finish();
+            return;
+          }
+          await sleep(100);
+        }
+        if (!settled) {
+          finish(new Error(`timed out waiting for zellij session '${name}' to revive`));
+        }
+      };
+
+      void poll();
+    });
   }
 
   // ── Tab operations ──
@@ -294,7 +406,31 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     paneId: string,
     options?: { lines?: number }
   ): Promise<{ text: string; paneWidth: number; isApproximate: boolean }> {
-    const session = this.paneSessionMap.get(paneId);
+    const session = this.paneSessionMap.get(paneId)
+      ?? this.nativeBridgeStateStore.findPaneSnapshot(paneId)?.session;
+    this.logger?.log?.(
+      `[zellij-capture] pane=${paneId} session=${session ?? "unknown"} lines=${options?.lines ?? "default"}`
+    );
+    if (session) {
+      try {
+        const nativeCapture = await this.capturePaneFromNativeBridge(session, paneId, options);
+        if (nativeCapture) {
+          this.logger?.log?.(`[zellij-capture] using cached native bridge snapshot for ${session}:${paneId}`);
+          return nativeCapture;
+        }
+        const liveNativeCapture = await this.capturePaneFromFreshNativeBridge(session, paneId, options);
+        if (liveNativeCapture) {
+          this.logger?.log?.(`[zellij-capture] using fresh native bridge snapshot for ${session}:${paneId}`);
+          return liveNativeCapture;
+        }
+        this.logger?.log?.(`[zellij-capture] native bridge unavailable for ${session}:${paneId}, falling back to CLI`);
+      } catch (error) {
+        this.logger?.error?.(
+          `[zellij] native bridge capture failed for ${paneId}, falling back to CLI capture: ${String(error)}`
+        );
+      }
+    }
+
     const [rawText, json] = await Promise.all([
       this.runZellij(
         ["action", "dump-screen", "--pane-id", paneId, "--full", "--ansi"],
@@ -315,11 +451,118 @@ export class ZellijCliExecutor implements MultiplexerBackend {
       }
     }
     let panes: Array<{ id: number; is_plugin: boolean; pane_content_columns: number }>;
-    try { panes = JSON.parse(json); } catch { return { text, paneWidth: 80, isApproximate: false }; }
-    if (!Array.isArray(panes)) return { text, paneWidth: 80, isApproximate: false };
+    try { panes = JSON.parse(json); } catch { return { text, paneWidth: 80, isApproximate: true }; }
+    if (!Array.isArray(panes)) return { text, paneWidth: 80, isApproximate: true };
     const numId = extractPaneNumericId(paneId);
     const pane = panes.find((p) => !p.is_plugin && p.id === numId);
-    return { text, paneWidth: pane?.pane_content_columns ?? 80, isApproximate: false };
+    return { text, paneWidth: pane?.pane_content_columns ?? 80, isApproximate: true };
+  }
+
+  private async capturePaneFromNativeBridge(
+    session: string,
+    paneId: string,
+    options?: { lines?: number }
+  ): Promise<{ text: string; paneWidth: number; isApproximate: boolean } | null> {
+    const snapshot = this.nativeBridgeStateStore.getPaneSnapshot(session, paneId);
+    if (!snapshot || snapshot.scrollback === null) {
+      return null;
+    }
+
+    const paneWidth = await this.resolvePaneWidth(session, paneId);
+    const combinedLines = [...snapshot.scrollback, ...snapshot.viewport];
+    const textLines = typeof options?.lines === "number" && options.lines > 0 && combinedLines.length > options.lines
+      ? combinedLines.slice(-options.lines)
+      : combinedLines;
+
+    return {
+      text: textLines.join("\n"),
+      paneWidth,
+      isApproximate: false
+    };
+  }
+
+  private async capturePaneFromFreshNativeBridge(
+    session: string,
+    paneId: string,
+    options?: { lines?: number }
+  ): Promise<{ text: string; paneWidth: number; isApproximate: boolean } | null> {
+    const bridge = await this.nativeBridgeFactory({
+      session,
+      paneId,
+      zellijBinary: this.binary,
+      socketDir: this.socketDir,
+      logger: this.logger,
+      env: this.baseEnv,
+      scrollbackLines: options?.lines
+    });
+    if (!bridge) {
+      return null;
+    }
+
+    try {
+      const render = await this.waitForInitialPaneRender(bridge, paneId);
+      if (!render || render.scrollback === null) {
+        return null;
+      }
+
+      const paneWidth = await this.resolvePaneWidth(session, paneId);
+      const combinedLines = [...render.scrollback, ...render.viewport];
+      const textLines = typeof options?.lines === "number" && options.lines > 0 && combinedLines.length > options.lines
+        ? combinedLines.slice(-options.lines)
+        : combinedLines;
+
+      return {
+        text: textLines.join("\n"),
+        paneWidth,
+        isApproximate: false
+      };
+    } finally {
+      bridge.kill();
+    }
+  }
+
+  private async waitForInitialPaneRender(
+    bridge: Awaited<ReturnType<ZellijNativeBridgeFactory>>,
+    paneId: string
+  ): Promise<ZellijNativeBridgePaneRenderEvent | null> {
+    return new Promise<ZellijNativeBridgePaneRenderEvent | null>((resolve) => {
+      let settled = false;
+      const finish = (event: ZellijNativeBridgePaneRenderEvent | null): void => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timeout);
+        resolve(event);
+      };
+
+      const timeout = setTimeout(() => finish(null), Math.min(this.timeoutMs, 2_000));
+      bridge?.onEvent((event) => {
+        if (event.type === "pane_render" && event.paneId === paneId) {
+          finish(event);
+        }
+      });
+      bridge?.onExit(() => finish(null));
+    });
+  }
+
+  private async resolvePaneWidth(session: string | undefined, paneId: string): Promise<number> {
+    const json = await this.runZellij(
+      ["action", "list-panes", "--json", "--all"],
+      session
+    );
+    let panes: Array<{ id: number; is_plugin: boolean; pane_content_columns: number }>;
+    try {
+      panes = JSON.parse(json);
+    } catch {
+      return 80;
+    }
+    if (!Array.isArray(panes)) {
+      return 80;
+    }
+    const numId = extractPaneNumericId(paneId);
+    const pane = panes.find((candidate) => !candidate.is_plugin && candidate.id === numId);
+    return pane?.pane_content_columns ?? 80;
   }
 
   // ── Focus plugin helpers ──
@@ -401,7 +644,8 @@ export class ZellijCliExecutor implements MultiplexerBackend {
         while (!settled && Date.now() < deadline) {
           try {
             const sessions = await this.listSessionSummariesImmediate();
-            if (sessions.some((session) => session.name === name)) {
+            const current = sessions.find((session) => session.name === name);
+            if (current && current.lifecycle !== "exited") {
               finish();
               return;
             }
@@ -443,7 +687,8 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     const deadline = Date.now() + this.timeoutMs;
     while (Date.now() < deadline) {
       const sessions = await this.listSessionSummariesImmediate();
-      if (sessions.some((session) => session.name === name)) {
+      const current = sessions.find((session) => session.name === name);
+      if (current && current.lifecycle !== "exited") {
         return true;
       }
       await sleep(100);
@@ -453,7 +698,7 @@ export class ZellijCliExecutor implements MultiplexerBackend {
 
   private async listSessionSummaries() {
     try {
-      const output = await this.runZellij(["list-sessions", "-s", "-n"]);
+      const output = await this.runZellij(["list-sessions", "-n"]);
       return output ? parseSessions(output) : [];
     } catch {
       return [];
@@ -462,7 +707,7 @@ export class ZellijCliExecutor implements MultiplexerBackend {
 
   private async listSessionSummariesImmediate() {
     try {
-      const output = await this.runZellijImmediate(["list-sessions", "-s", "-n"]);
+      const output = await this.runZellijImmediate(["list-sessions", "-n"]);
       return output ? parseSessions(output) : [];
     } catch {
       return [];
@@ -547,6 +792,56 @@ export class ZellijCliExecutor implements MultiplexerBackend {
       return [];
     }
     return Array.isArray(panes) ? panes : [];
+  }
+
+  private async listRawTabs(session: string): Promise<ZellijTabJson[]> {
+    const json = await this.runZellij(
+      ["action", "list-tabs", "--json", "--all"],
+      session
+    );
+    let tabs: ZellijTabJson[];
+    try {
+      tabs = JSON.parse(json);
+    } catch {
+      return [];
+    }
+    return Array.isArray(tabs) ? tabs : [];
+  }
+
+  private buildTabState(
+    sessionName: string,
+    rawTab: ZellijTabJson,
+    rawPanes: ZellijPaneJson[],
+    paneSessionMap: Map<string, string>,
+    paneTabMap: Map<string, number>
+  ): TabState {
+    const panes = parsePanes(JSON.stringify(rawPanes), rawTab.tab_id);
+    for (const pane of panes) {
+      paneSessionMap.set(pane.id, sessionName);
+      paneTabMap.set(pane.id, rawTab.position);
+    }
+    return {
+      index: rawTab.position,
+      id: String(rawTab.tab_id),
+      name: rawTab.name,
+      active: rawTab.active,
+      paneCount: panes.length,
+      panes
+    };
+  }
+
+  private replacePaneIndexes(
+    nextPaneSessionMap: Map<string, string>,
+    nextPaneTabMap: Map<string, number>
+  ): void {
+    this.paneSessionMap.clear();
+    this.paneTabMap.clear();
+    for (const [paneId, sessionName] of nextPaneSessionMap) {
+      this.paneSessionMap.set(paneId, sessionName);
+    }
+    for (const [paneId, tabIndex] of nextPaneTabMap) {
+      this.paneTabMap.set(paneId, tabIndex);
+    }
   }
 
   private async enqueueCommand<T>(fn: () => Promise<T>): Promise<T> {

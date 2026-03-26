@@ -11,10 +11,13 @@ export interface MultiplexerBackend {
   readonly kind: "tmux" | "zellij" | "conpty";
   readonly capabilities: BackendCapabilities;
 
+  buildSnapshot?(): Promise<WorkspaceSnapshot>;
+
   listSessions(): Promise<SessionSummary[]>;
   createSession(name: string, options?: { cwd?: string }): Promise<void>;
   killSession(name: string): Promise<void>;
   renameSession(name: string, newName: string): Promise<void>;
+  reviveSession?(name: string): Promise<void>;
 
   listTabs(session: string): Promise<Omit<TabState, "panes">[]>;
   newTab(session: string, options?: { cwd?: string }): Promise<void>;
@@ -43,6 +46,10 @@ export interface MultiplexerBackend {
 export const buildSnapshot = async (
   backend: MultiplexerBackend
 ): Promise<WorkspaceSnapshot> => {
+  if (backend.buildSnapshot) {
+    return backend.buildSnapshot();
+  }
+
   const sessions = await backend.listSessions();
 
   const sessionStates = await Promise.allSettled(

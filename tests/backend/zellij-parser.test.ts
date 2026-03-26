@@ -3,19 +3,19 @@ import { parseSessions, parseTabs, parsePanes, findTabId } from "../../src/backe
 
 describe("zellij parser", () => {
   describe("parseSessions", () => {
-    it("parses session names from list-sessions output", () => {
+    it("parses session names from short list-sessions output", () => {
       const output = "main\ndev\ntest-session";
       const result = parseSessions(output);
       expect(result).toEqual([
-        { name: "main", attached: false, tabCount: 0 },
-        { name: "dev", attached: false, tabCount: 0 },
-        { name: "test-session", attached: false, tabCount: 0 }
+        { name: "main", attached: true, tabCount: 0, lifecycle: "live" },
+        { name: "dev", attached: true, tabCount: 0, lifecycle: "live" },
+        { name: "test-session", attached: true, tabCount: 0, lifecycle: "live" }
       ]);
     });
 
     it("handles single session", () => {
       expect(parseSessions("main")).toEqual([
-        { name: "main", attached: false, tabCount: 0 }
+        { name: "main", attached: true, tabCount: 0, lifecycle: "live" }
       ]);
     });
 
@@ -26,8 +26,20 @@ describe("zellij parser", () => {
     it("trims whitespace and skips empty lines", () => {
       const output = "  main  \n\n  dev  \n";
       expect(parseSessions(output)).toEqual([
-        { name: "main", attached: false, tabCount: 0 },
-        { name: "dev", attached: false, tabCount: 0 }
+        { name: "main", attached: true, tabCount: 0, lifecycle: "live" },
+        { name: "dev", attached: true, tabCount: 0, lifecycle: "live" }
+      ]);
+    });
+
+    it("parses lifecycle from non-formatted list-sessions output", () => {
+      const output = [
+        "main [Created 1day 5h 48m 44s ago] ",
+        "other [Created 8h 6m 9s ago] (EXITED - attach to resurrect)"
+      ].join("\n");
+
+      expect(parseSessions(output)).toEqual([
+        { name: "main", attached: true, tabCount: 0, lifecycle: "live" },
+        { name: "other", attached: false, tabCount: 0, lifecycle: "exited" }
       ]);
     });
   });
@@ -59,8 +71,8 @@ describe("zellij parser", () => {
 
       const result = parseTabs(json);
       expect(result).toEqual([
-        { index: 0, name: "Tab #1", active: true, paneCount: 2 },
-        { index: 1, name: "editor", active: false, paneCount: 2 }
+        { index: 0, id: "0", name: "Tab #1", active: true, paneCount: 2 },
+        { index: 1, id: "1", name: "editor", active: false, paneCount: 2 }
       ]);
     });
 
@@ -132,7 +144,8 @@ describe("zellij parser", () => {
         width: 38,
         height: 46,
         zoomed: false,
-        currentPath: "/Users/test/dev"
+        currentPath: "/Users/test/dev",
+        isFloating: false
       });
       expect(result[1]).toEqual({
         index: 1,
@@ -142,7 +155,8 @@ describe("zellij parser", () => {
         width: 38,
         height: 46,
         zoomed: false,
-        currentPath: "/Users/test/dev"
+        currentPath: "/Users/test/dev",
+        isFloating: false
       });
     });
 

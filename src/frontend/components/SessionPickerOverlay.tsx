@@ -11,18 +11,40 @@ const SessionPickerOverlay = ({ mobileLayout, onSelectSession, sessions }: Sessi
     return null;
   }
 
+  const liveSessions = sessions.filter((session) => session.lifecycle !== "exited");
+  const resurrectableSessions = sessions.filter((session) => session.lifecycle === "exited");
+
   return (
     <div className={`overlay${mobileLayout ? " overlay-sheet" : ""}`} data-testid="session-picker-overlay">
       <div className={`card${mobileLayout ? " card-sheet" : ""}`}>
         <h2>Select Session</h2>
-        {sessions.map((session) => (
-          <button
-            key={session.name}
-            onClick={() => onSelectSession(session.name)}
-          >
-            {session.name}
-          </button>
-        ))}
+        {liveSessions.length > 0 ? (
+          <div className="session-picker-section">
+            {liveSessions.map((session) => (
+              <button
+                key={session.name}
+                onClick={() => onSelectSession(session.name)}
+              >
+                {session.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {resurrectableSessions.length > 0 ? (
+          <div className="session-picker-section session-picker-section-muted">
+            <h3>Resurrectable</h3>
+            <p className="session-picker-note">Saved zellij sessions that are not currently live.</p>
+            {resurrectableSessions.map((session) => (
+              <button
+                key={session.name}
+                className="session-picker-secondary"
+                onClick={() => onSelectSession(session.name)}
+              >
+                {session.name}
+              </button>
+            ))}
+          </div>
+        ) : null}
       </div>
     </div>
   );
