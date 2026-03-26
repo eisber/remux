@@ -93,6 +93,7 @@ export const App = () => {
     scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
 
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
+  const [streamMode, setStreamMode] = useState<string | undefined>(undefined);
   const viewModeRef = useRef(viewMode);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   const [inspectLineCount, setInspectLineCount] = useState(1000);
@@ -168,6 +169,9 @@ export const App = () => {
             attachedSessionRef.current = inferredAttachedSession;
           }
           workspace.onWorkspaceState(message.workspace, message.clientView ?? null);
+          if (message.streamMode !== undefined) {
+            setStreamMode(message.streamMode);
+          }
           if (inferredAttachedSession) {
             connectionActionsRef.current.setStatusMessage(`attached: ${inferredAttachedSession}`);
           }
@@ -1038,6 +1042,7 @@ export const App = () => {
         topStatus={topStatus}
         viewMode={viewMode}
         supportsPreciseScrollback={capabilities?.supportsPreciseScrollback ?? true}
+        streamMode={streamMode}
         formatBytes={formatBytes}
           />
         )}

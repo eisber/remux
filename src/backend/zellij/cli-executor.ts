@@ -51,6 +51,11 @@ export class ZellijCliExecutor implements MultiplexerBackend {
     supportsFullscreenPane: true,
   };
 
+  /** Update capabilities dynamically (e.g., when native bridge becomes available). */
+  public setNativeBridgeActive(active: boolean): void {
+    (this.capabilities as { supportsPreciseScrollback: boolean }).supportsPreciseScrollback = active;
+  }
+
   private readonly binary: string;
   private readonly timeoutMs: number;
   private readonly logger?: Pick<Console, "log" | "error">;
