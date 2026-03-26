@@ -2,7 +2,7 @@ import type { ControlServerMessage } from "../../src/shared/protocol.js";
 import type { ServerConfig } from "../../src/frontend/app-types.js";
 
 export const nativeConfigFixture: ServerConfig = {
-  version: "0.1.55",
+  version: "0.1.56",
   passwordRequired: false,
   scrollbackLines: 1000,
   pollIntervalMs: 2500,
