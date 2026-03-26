@@ -467,12 +467,35 @@ button, input {
   margin-top: 0.85rem;
 }
 
-.drawer-session-subgroup h4 {
+.drawer-collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
   margin: 0 0 0.45rem;
+  padding: 0.3rem 0.5rem;
   font-size: 0.68rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.drawer-collapsible-header:hover {
+  color: var(--text-secondary);
+}
+
+.collapse-chevron {
+  display: inline-block;
+  transition: transform 0.15s ease;
+  font-size: 0.7rem;
+}
+
+.collapse-chevron.expanded {
+  transform: rotate(90deg);
 }
 
 .drawer-session-subgroup ul {

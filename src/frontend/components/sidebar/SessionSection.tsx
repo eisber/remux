@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { deriveContext, formatContext } from "../../context-label";
 import type { SessionState, WorkspaceSnapshot } from "../../../shared/protocol";
 import type { DragEvent, MutableRefObject } from "react";
@@ -55,7 +56,20 @@ export const SessionSection = ({
   snapshot,
   supportsSessionRename
 }: SessionSectionProps) => {
-  const liveSessions = sessions.filter((session) => session.lifecycle !== "exited");
+  const [savedExpanded, setSavedExpanded] = useState(false);
+
+  const liveSessions = sessions
+    .filter((session) => session.lifecycle !== "exited")
+    .sort((a, b) => {
+      // Attached/selected first, then by name
+      const aActive = a.name === attachedSession || a.name === selectedSessionName;
+      const bActive = b.name === attachedSession || b.name === selectedSessionName;
+      if (aActive !== bActive) return aActive ? -1 : 1;
+      const aAttached = a.attached;
+      const bAttached = b.attached;
+      if (aAttached !== bAttached) return aAttached ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
   const resurrectableSessions = sessions.filter((session) => session.lifecycle === "exited");
 
   const renderSession = (session: SessionState) => (
@@ -203,16 +217,27 @@ export const SessionSection = ({
 
   return (
     <>
-      <h3>Sessions</h3>
+      <h3>Live Sessions</h3>
       <ul data-testid="sessions-list">
         {liveSessions.map(renderSession)}
       </ul>
       {resurrectableSessions.length > 0 ? (
         <div className="drawer-session-subgroup">
-          <h4>Resurrectable</h4>
-          <ul data-testid="archived-sessions-list">
-            {resurrectableSessions.map(renderSession)}
-          </ul>
+          <button
+            type="button"
+            className="drawer-collapsible-header"
+            onClick={() => setSavedExpanded(!savedExpanded)}
+            data-testid="saved-sessions-toggle"
+            aria-expanded={savedExpanded}
+          >
+            <span className={`collapse-chevron${savedExpanded ? " expanded" : ""}`}>▸</span>
+            {" "}Saved Sessions ({resurrectableSessions.length})
+          </button>
+          {savedExpanded ? (
+            <ul data-testid="archived-sessions-list">
+              {resurrectableSessions.map(renderSession)}
+            </ul>
+          ) : null}
         </div>
       ) : null}
       <button
