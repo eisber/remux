@@ -53,6 +53,7 @@
   },
   "dependencies": {
     "@microsoft/snapfeed": "file:../snapfeed/snapfeed.main/packages/client",
+    "@microsoft/snapfeed-server": "^0.1.0",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
