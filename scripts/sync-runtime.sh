@@ -117,7 +117,7 @@ sync_instance() {
 
   if [[ "$needs_install" == true || ! -d "$dir/node_modules" ]]; then
     echo "[sync] npm ci in $dir"
-    (cd "$dir" && npm ci)
+    install_runtime_dependencies "$dir"
   fi
 
   echo "[sync] quality gate for $name"

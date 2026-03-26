@@ -142,6 +142,13 @@ current_worktree_sha_for() {
   git -C "$(runtime_dir "$1")" rev-parse HEAD
 }
 
+install_runtime_dependencies() {
+  local dir="$1"
+  # Deploy runners may export NODE_ENV=production or omit devDependencies by
+  # default, but the runtime quality gate requires TypeScript/Vitest typings.
+  (cd "$dir" && npm ci --include=dev)
+}
+
 worktree_is_clean() {
   ensure_instance_name "$1"
   local dir
