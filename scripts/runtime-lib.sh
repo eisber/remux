@@ -4,7 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-RUNTIME_WORKTREE_ROOT="$PROJECT_DIR/.worktrees"
+RUNTIME_WORKTREE_ROOT="${REMUX_RUNTIME_WORKTREE_ROOT:-$HOME/.remux/runtime-worktrees}"
 GIT_DIR="$(git -C "$PROJECT_DIR" rev-parse --absolute-git-dir)"
 SYNC_LOCK_DIR="$GIT_DIR/remux-runtime-sync.lock"
 LAUNCHD_GUI_DOMAIN="gui/$(id -u)"
@@ -197,7 +197,7 @@ restart_runtime_service() {
     return 1
   fi
 
-  launchctl bootstrap "$LAUNCHD_GUI_DOMAIN" "$plist" 2>/dev/null || true
+  load_launchd_service "$(runtime_service "$name")" "$plist"
   launchctl kickstart -k "$LAUNCHD_GUI_DOMAIN/$(runtime_service "$name")"
 }
 
