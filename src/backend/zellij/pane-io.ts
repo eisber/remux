@@ -5,7 +5,6 @@ import type { PtyProcess, PtyFactory } from "../pty/pty-adapter.js";
 import type { ZellijSubscribeEvent } from "./parser.js";
 
 const execFileAsync = promisify(execFile);
-const hiddenClients = new Map<string, { client: pty.IPty; refs: number }>();
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\"'\"'")}'`;
 
@@ -29,10 +28,10 @@ export class ZellijPaneIO implements PtyProcess {
   private readonly paneId: string;
   private readonly logger?: Pick<Console, "log" | "error">;
   private readonly env: NodeJS.ProcessEnv;
-  private readonly hiddenClientKey: string;
 
   private dataHandlers: Array<(data: string) => void> = [];
   private exitHandlers: Array<(code: number) => void> = [];
+  private hiddenClient: pty.IPty | null = null;
   private subscribeProc: ReturnType<typeof spawn> | null = null;
   private killed = false;
 
@@ -60,23 +59,15 @@ export class ZellijPaneIO implements PtyProcess {
       ...process.env,
       ...(options.socketDir ? { ZELLIJ_SOCKET_DIR: options.socketDir } : {})
     };
-    this.hiddenClientKey = [
-      this.binary,
-      options.socketDir ?? "",
-      this.session
-    ].join("\u0000");
 
     this.acquireHiddenClient();
     this.startSubscribe();
   }
 
   private acquireHiddenClient(): void {
-    const existing = hiddenClients.get(this.hiddenClientKey);
-    if (existing) {
-      existing.refs += 1;
+    if (this.hiddenClient) {
       return;
     }
-
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
     const args = process.platform === "win32"
       ? ["/c", this.binary, "attach", this.session]
@@ -95,26 +86,20 @@ export class ZellijPaneIO implements PtyProcess {
         // Ignore races when the hidden client exits during setup.
       }
     }, 150);
-
-    hiddenClients.set(this.hiddenClientKey, { client, refs: 1 });
     client.onExit(() => {
-      const current = hiddenClients.get(this.hiddenClientKey);
-      if (current?.client === client) {
-        hiddenClients.delete(this.hiddenClientKey);
+      if (this.hiddenClient === client) {
+        this.hiddenClient = null;
       }
     });
+    this.hiddenClient = client;
   }
 
   private releaseHiddenClient(): void {
-    const current = hiddenClients.get(this.hiddenClientKey);
-    if (!current) {
+    if (!this.hiddenClient) {
       return;
     }
-    current.refs -= 1;
-    if (current.refs <= 0) {
-      hiddenClients.delete(this.hiddenClientKey);
-      current.client.kill();
-    }
+    this.hiddenClient.kill();
+    this.hiddenClient = null;
   }
 
   private startSubscribe(): void {
@@ -278,8 +263,10 @@ export class ZellijPaneIO implements PtyProcess {
   }
 
   resize(_cols: number, _rows: number): void {
-    // Zellij pane sizes can't be set from CLI — no-op.
-    // Column fitting is handled by xterm.js FitAddon on the client side.
+    if (!_cols || !_rows || !this.hiddenClient) {
+      return;
+    }
+    this.hiddenClient.resize(Math.max(2, Math.floor(_cols)), Math.max(2, Math.floor(_rows)));
   }
 
   onData(handler: (data: string) => void): void {

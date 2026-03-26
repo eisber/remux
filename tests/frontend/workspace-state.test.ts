@@ -172,6 +172,29 @@ describe("workspace state reducer", () => {
     expect(derived.activePane?.id).toBe("%main-2");
   });
 
+  test("derived view follows clientView when backend truth points elsewhere", () => {
+    const state = {
+      ...createInitialWorkspaceState(),
+      snapshot: buildWorkspace([buildSession("main", { attached: true, activeTabIndex: 0, activePaneId: "%main-0" })]),
+      attachedSession: "main",
+      clientView: {
+        sessionName: "main",
+        tabIndex: 1,
+        paneId: "%main-2",
+        followBackendFocus: false,
+      },
+    };
+
+    const derived = deriveWorkspaceStateView(state, {
+      sessions: [],
+      tabsBySession: {},
+    });
+
+    expect(derived.activeSession?.name).toBe("main");
+    expect(derived.activeTab?.index).toBe(1);
+    expect(derived.activePane?.id).toBe("%main-2");
+  });
+
   test("derived view falls back to server-active tab when local selection no longer exists", () => {
     const state = {
       ...createInitialWorkspaceState(),

@@ -14,13 +14,15 @@ export const resolveActiveSession = (
   sessions: SessionState[],
   attachedSession: string,
   awaitingSessionSelection: boolean,
-  awaitingSessionAttachment = false
+  awaitingSessionAttachment = false,
+  clientView: ClientView | null = null
 ): SessionState | undefined => {
   if (awaitingSessionSelection || awaitingSessionAttachment) {
     return undefined;
   }
 
-  const selected = sessions.find((session) => session.name === attachedSession);
+  const preferredSessionName = clientView?.sessionName || attachedSession;
+  const selected = sessions.find((session) => session.name === preferredSessionName);
   if (selected) {
     return selected;
   }
@@ -42,4 +44,4 @@ export const inferAttachedSessionFromWorkspace = (
 
 export const shouldUsePaneViewportCols = (
   backendKind?: "tmux" | "zellij" | "conpty"
-): boolean => backendKind === "zellij";
+): boolean => false;
