@@ -755,9 +755,10 @@ export const App = () => {
     if (!activeSession) {
       return;
     }
+    const switchingTabs = tab.index !== activeTab?.index;
     workspace.selectWindowIndex(tab.index);
     sendControl({ type: "select_tab", session: activeSession.name, tabIndex: tab.index });
-    if (stickyZoom && capabilities?.supportsFullscreenPane && !tab.active) {
+    if (stickyZoom && capabilities?.supportsFullscreenPane && switchingTabs) {
       const pane = tab.panes.find((p) => p.active) ?? tab.panes[0];
       if (pane && !pane.zoomed) {
         sendControl({ type: "toggle_fullscreen", paneId: pane.id });

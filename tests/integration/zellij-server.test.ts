@@ -284,6 +284,139 @@ class ScenarioZellijGateway implements MultiplexerBackend {
   }
 }
 
+class NoFocusChangeZellijGateway extends ScenarioZellijGateway {
+  public override async selectTab(): Promise<void> {
+    // Intentionally preserve backend focus to verify that workspace_state
+    // stays honest and clientView carries the local selection.
+  }
+}
+
+class LifecycleZellijGateway implements MultiplexerBackend {
+  public readonly kind = "zellij" as const;
+  public readonly capabilities = {
+    supportsPaneFocusById: true,
+    supportsTabRename: true,
+    supportsSessionRename: true,
+    supportsPreciseScrollback: false,
+    supportsFloatingPanes: true,
+    supportsFullscreenPane: true,
+  };
+
+  public readonly reviveCalls: string[] = [];
+
+  private readonly sessions = [
+    {
+      name: "main",
+      attached: true,
+      lifecycle: "live" as const,
+      tabs: [{ index: 0, name: "shell", active: true, panes: [{ id: "terminal_1", active: true }] }]
+    },
+    {
+      name: "other",
+      attached: false,
+      lifecycle: "live" as const,
+      tabs: [{ index: 0, name: "shell", active: true, panes: [{ id: "terminal_2", active: true }] }]
+    },
+    {
+      name: "saved",
+      attached: false,
+      lifecycle: "exited" as const,
+      tabs: [{ index: 0, name: "shell", active: true, panes: [{ id: "terminal_3", active: true }] }]
+    }
+  ];
+
+  public async listSessions() {
+    return this.sessions.map((session) => ({
+      name: session.name,
+      attached: session.attached,
+      lifecycle: session.lifecycle,
+      tabCount: session.lifecycle === "live" ? session.tabs.length : 0
+    }));
+  }
+
+  public async reviveSession(name: string): Promise<void> {
+    const session = this.mustFindSession(name);
+    this.reviveCalls.push(name);
+    session.lifecycle = "live";
+  }
+
+  public async createSession(): Promise<void> {}
+  public async killSession(): Promise<void> {}
+  public async renameSession(): Promise<void> {}
+  public async newTab(): Promise<void> {}
+  public async closeTab(): Promise<void> {}
+  public async selectTab(): Promise<void> {}
+  public async renameTab(): Promise<void> {}
+  public async splitPane(): Promise<void> {}
+  public async closePane(): Promise<void> {}
+
+  public async listTabs(session: string) {
+    const sessionState = this.mustFindSession(session);
+    if (sessionState.lifecycle !== "live") {
+      return [];
+    }
+    return sessionState.tabs.map((tab) => ({
+      index: tab.index,
+      name: tab.name,
+      active: tab.active,
+      paneCount: tab.panes.length
+    }));
+  }
+
+  public async listPanes(session: string, tabIndex: number) {
+    const sessionState = this.mustFindSession(session);
+    if (sessionState.lifecycle !== "live") {
+      return [];
+    }
+    const tab = sessionState.tabs.find((candidate) => candidate.index === tabIndex);
+    return (tab?.panes ?? []).map((pane, index) => ({
+      index,
+      id: pane.id,
+      currentCommand: "bash",
+      active: pane.active,
+      width: 120,
+      height: 40,
+      zoomed: false,
+      currentPath: "/tmp"
+    }));
+  }
+
+  public async focusPane(paneId: string): Promise<void> {
+    for (const session of this.sessions) {
+      if (session.lifecycle !== "live") continue;
+      for (const tab of session.tabs) {
+        for (const pane of tab.panes) {
+          pane.active = pane.id === paneId;
+          if (pane.active) {
+            tab.active = true;
+          }
+        }
+      }
+    }
+  }
+
+  public async toggleFullscreen(): Promise<void> {}
+  public async isPaneFullscreen(): Promise<boolean> {
+    return false;
+  }
+
+  public async capturePane(): Promise<{ text: string; paneWidth: number; isApproximate: boolean }> {
+    return { text: "", paneWidth: 80, isApproximate: true };
+  }
+
+  public setSessionLifecycle(name: string, lifecycle: "live" | "exited"): void {
+    this.mustFindSession(name).lifecycle = lifecycle;
+  }
+
+  private mustFindSession(name: string) {
+    const session = this.sessions.find((candidate) => candidate.name === name);
+    if (!session) {
+      throw new Error(`missing session: ${name}`);
+    }
+    return session;
+  }
+}
+
 class DuplicatePaneIdZellijGateway implements MultiplexerBackend {
   public readonly kind = "zellij" as const;
   public readonly capabilities = {
@@ -533,10 +666,22 @@ describe("zellij backend server", () => {
     }
   });
 
-  test("workspace_state reflects view active flags", async () => {
-    // newTab makes tab 1 active (initial attach picks tab 1)
-    // Select tab 0 to change the view
-    await gateway.newTab("main");
+  test("workspace_state preserves backend active flags and sends clientView separately", async () => {
+    const scenarioGateway = new NoFocusChangeZellijGateway();
+    const authService = new AuthService({ token: "test-token" });
+    const config = buildConfig("test-token");
+    await runningServer.stop();
+    runningServer = createRemuxServer(config, {
+      backend: scenarioGateway,
+      ptyFactory,
+      authService,
+      logger: { log: () => {}, error: () => {} }
+    });
+    await runningServer.start();
+    const port = (runningServer.server.address() as AddressInfo).port;
+    baseWsUrl = `ws://127.0.0.1:${port}`;
+
+    await scenarioGateway.newTab("main");
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     try {
       await authControl(control);
@@ -547,18 +692,95 @@ describe("zellij backend server", () => {
 
       const state = await waitForMessage<{
         type: string;
+        clientView: { tabIndex: number };
         workspace: { sessions: Array<{ tabs: Array<{ index: number; active: boolean }> }> };
       }>(control, (msg) => {
         if (msg.type !== "workspace_state") return false;
         const ts = msg.workspace?.sessions?.[0]?.tabs;
-        return ts?.some((t: { index: number; active: boolean }) => t.index === 0 && t.active) ?? false;
+        const tabZero = ts?.find((t: { index: number; active: boolean }) => t.index === 0);
+        const tabOne = ts?.find((t: { index: number; active: boolean }) => t.index === 1);
+        return msg.clientView?.tabIndex === 0
+          && tabZero?.active === false
+          && tabOne?.active === true;
       });
 
       const tabs = state.workspace.sessions[0].tabs;
       const t0 = tabs.find((t) => t.index === 0);
       const t1 = tabs.find((t) => t.index === 1);
-      expect(t0?.active).toBe(true);
-      expect(t1?.active).toBe(false);
+      expect(state.clientView.tabIndex).toBe(0);
+      expect(t0?.active).toBe(false);
+      expect(t1?.active).toBe(true);
+    } finally {
+      control.close();
+    }
+  });
+
+  test("auth auto-attaches the only live session even when exited sessions exist", async () => {
+    const scenarioGateway = new LifecycleZellijGateway();
+    scenarioGateway.setSessionLifecycle("other", "exited");
+    const authService = new AuthService({ token: "test-token" });
+    const config = { ...buildConfig("test-token"), defaultSession: "ghost" };
+    await runningServer.stop();
+    runningServer = createRemuxServer(config, {
+      backend: scenarioGateway,
+      ptyFactory,
+      authService,
+      logger: { log: () => {}, error: () => {} }
+    });
+    await runningServer.start();
+    const port = (runningServer.server.address() as AddressInfo).port;
+    baseWsUrl = `ws://127.0.0.1:${port}`;
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    try {
+      const { attachedSession } = await authControl(control);
+      expect(attachedSession).toBe("main");
+      expect(ptyFactory.lastSpawnedSession).toContain("main:terminal_1");
+    } finally {
+      control.close();
+    }
+  });
+
+  test("select_session revives exited zellij sessions before attaching", async () => {
+    const scenarioGateway = new LifecycleZellijGateway();
+    const authService = new AuthService({ token: "test-token" });
+    const config = { ...buildConfig("test-token"), defaultSession: "ghost" };
+    await runningServer.stop();
+    runningServer = createRemuxServer(config, {
+      backend: scenarioGateway,
+      ptyFactory,
+      authService,
+      logger: { log: () => {}, error: () => {} }
+    });
+    await runningServer.start();
+    const port = (runningServer.server.address() as AddressInfo).port;
+    baseWsUrl = `ws://127.0.0.1:${port}`;
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    try {
+      const authOkPromise = waitForMessage<{ type: string }>(
+        control,
+        (msg) => msg.type === "auth_ok"
+      );
+      const pickerPromise = waitForMessage<{ type: string; sessions: Array<{ name: string }> }>(
+        control,
+        (msg) => msg.type === "session_picker"
+      );
+      control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+      await authOkPromise;
+      await pickerPromise;
+
+      const attachedPromise = waitForMessage<{ type: string; session: string }>(
+        control,
+        (msg) => msg.type === "attached" && msg.session === "saved",
+        5_000
+      );
+      control.send(JSON.stringify({ type: "select_session", session: "saved" }));
+      const attached = await attachedPromise;
+
+      expect(attached.session).toBe("saved");
+      expect(scenarioGateway.reviveCalls).toEqual(["saved"]);
+      expect(ptyFactory.lastSpawnedSession).toContain("saved:terminal_3");
     } finally {
       control.close();
     }

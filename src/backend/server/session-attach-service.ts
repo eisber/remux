@@ -263,6 +263,13 @@ export const createSessionAttachService = ({
       return { workspace: baseSessions, clientView: defaultView };
     }
 
+    if (deps.backend.kind === "zellij") {
+      return {
+        workspace: baseSessions,
+        clientView: view,
+      };
+    }
+
     const mobileSession = deps.backend.createGroupedSession
       ? fullState.sessions.find((session) => session.name === buildMobileSessionName(client.clientId))
       : undefined;
@@ -361,6 +368,7 @@ export const createSessionAttachService = ({
         await runtime.shutdown();
       }
 
+      await deps.backend.reviveSession?.(baseSession);
       const snapshot = snapshotForInit ?? await waitForSessionSnapshot(baseSession);
       for (const session of snapshot.sessions) {
         knownSessionTopologies.set(session.name, session);
@@ -405,7 +413,8 @@ export const createSessionAttachService = ({
           .map((session) => ({
             name: session.name,
             attached: session.attached,
-            tabCount: session.tabCount
+            tabCount: session.tabCount,
+            lifecycle: session.lifecycle
           }));
 
     if (forceSession && sessions.some((session) => session.name === forceSession)) {
@@ -421,6 +430,14 @@ export const createSessionAttachService = ({
       await deps.backend.createSession(config.defaultSession);
       logger.log("created default session", config.defaultSession);
       await attachControlToBaseSession(context, config.defaultSession);
+      return;
+    }
+
+    const liveSessions = sessions.filter((session) => session.lifecycle !== "exited");
+
+    if (liveSessions.length === 1) {
+      logger.log("attach only live session", liveSessions[0].name);
+      await attachControlToBaseSession(context, liveSessions[0].name);
       return;
     }
 

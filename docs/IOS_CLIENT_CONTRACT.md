@@ -26,7 +26,7 @@ Returns server configuration. Call this first to determine auth requirements.
 
 ```json
 {
-  "version": "0.1.56",
+  "version": "0.1.57",
   "passwordRequired": false,
   "scrollbackLines": 1000,
   "pollIntervalMs": 2500,

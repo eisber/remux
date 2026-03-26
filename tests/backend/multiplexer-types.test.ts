@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { MultiplexerBackend } from "../../src/backend/multiplexer/types.js";
 import { buildSnapshot } from "../../src/backend/multiplexer/types.js";
 import type {
@@ -80,6 +80,18 @@ class PartiallyBrokenBackend extends SnapshotStubBackend {
   }
 }
 
+class PrebuiltSnapshotBackend extends SnapshotStubBackend {
+  public readonly buildSnapshot = vi.fn(async () => ({
+    capturedAt: "2026-03-26T00:00:00.000Z",
+    sessions: [{
+      name: "prebuilt",
+      attached: true,
+      tabCount: 0,
+      tabs: []
+    }]
+  }));
+}
+
 describe("buildSnapshot", () => {
   test("normalizes tab and session counts from actual tab/pane lists", async () => {
     const snapshot = await buildSnapshot(new SnapshotStubBackend());
@@ -95,5 +107,16 @@ describe("buildSnapshot", () => {
 
     expect(snapshot.sessions).toHaveLength(1);
     expect(snapshot.sessions[0].name).toBe("main");
+  });
+
+  test("uses backend-provided snapshots when available", async () => {
+    const backend = new PrebuiltSnapshotBackend();
+
+    const snapshot = await buildSnapshot(backend);
+
+    expect(backend.buildSnapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot.sessions).toEqual([
+      { name: "prebuilt", attached: true, tabCount: 0, tabs: [] }
+    ]);
   });
 });

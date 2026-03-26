@@ -1,9 +1,12 @@
 // ── Workspace domain types (multiplexer-neutral) ──
 
+export type SessionLifecycle = "live" | "exited";
+
 export interface SessionSummary {
   name: string;
   attached: boolean;
   tabCount: number;
+  lifecycle?: SessionLifecycle;
   /** @deprecated Use tabCount */
   windows?: number;
 }

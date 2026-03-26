@@ -139,13 +139,15 @@ export const deriveWorkspaceStateView = (
     state.attachedSession,
     awaitingSessionSelection,
     awaitingSessionAttachment,
+    state.clientView,
   );
   const activeTab = (() => {
     if (!activeSession) {
       return undefined;
     }
-    if (state.selectedWindowIndex !== null) {
-      const selected = activeSession.tabs.find((tab) => tab.index === state.selectedWindowIndex);
+    const preferredTabIndex = state.selectedWindowIndex ?? state.clientView?.tabIndex ?? null;
+    if (preferredTabIndex !== null) {
+      const selected = activeSession.tabs.find((tab) => tab.index === preferredTabIndex);
       if (selected) {
         return selected;
       }
@@ -156,8 +158,9 @@ export const deriveWorkspaceStateView = (
     if (!activeTab) {
       return undefined;
     }
-    if (state.selectedPaneId !== null) {
-      const selected = activeTab.panes.find((pane) => pane.id === state.selectedPaneId);
+    const preferredPaneId = state.selectedPaneId ?? state.clientView?.paneId ?? null;
+    if (preferredPaneId !== null) {
+      const selected = activeTab.panes.find((pane) => pane.id === preferredPaneId);
       if (selected) {
         return selected;
       }
