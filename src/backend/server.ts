@@ -1382,24 +1382,40 @@ export const createRemuxServer = (
         return;
       }
 
-      // Initialize snapfeed telemetry (optional) — must be before server.listen.
+      // Initialize snapfeed telemetry — use openDb directly, skip createExpressRouter
+      // (which uses require('express') that fails in ESM).
       try {
         const { openDb } = await import("@microsoft/snapfeed-server");
-        const { createExpressRouter } = await import("@microsoft/snapfeed-server/express");
         fs.mkdirSync(path.join(os.homedir(), ".remux"), { recursive: true });
         const feedbackDb = openDb({ path: path.join(os.homedir(), ".remux", "feedback.db") });
-        // Insert before static middleware by re-stacking the router.
-        const telemetryRouter = createExpressRouter(feedbackDb);
-        app.post("/api/telemetry/events", (req, res, next) => {
-          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
+
+        app.post("/api/telemetry/events", (req, res) => {
+          const body = req.body as { events?: Array<Record<string, unknown>> };
+          const events = body?.events;
+          if (!Array.isArray(events) || events.length === 0) {
+            res.status(400).json({ error: "events array required" });
+            return;
+          }
+          const insert = feedbackDb.prepare(
+            `INSERT OR IGNORE INTO ui_telemetry
+              (session_id, seq, ts, event_type, page, target, detail_json, screenshot)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          const insertMany = feedbackDb.transaction((rows: typeof events) => {
+            for (const e of rows) {
+              insert.run(
+                e.session_id, e.seq, e.ts, e.event_type,
+                e.page ?? null, e.target ?? null,
+                e.detail ? JSON.stringify(e.detail) : null,
+                e.screenshot ?? null,
+              );
+            }
+          });
+          insertMany(events);
+          res.json({ accepted: events.length });
         });
-        app.get("/api/telemetry/events", (req, res, next) => {
-          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
-        });
-        app.get("/api/telemetry/sessions", (req, res, next) => {
-          (telemetryRouter as unknown as express.RequestHandler)(req, res, next);
-        });
-        logger.log("snapfeed telemetry enabled");
+
+        logger.log("snapfeed telemetry enabled at /api/telemetry/events");
       } catch (err) { logger.error("snapfeed init failed:", String(err)); }
 
       logger.log("server start requested", `${config.host}:${config.port}`);

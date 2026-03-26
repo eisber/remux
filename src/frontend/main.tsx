@@ -131,7 +131,7 @@ async function githubDeviceFlow(): Promise<string | null> {
 }
 
 /** Custom adapter that lazily triggers Device Flow on first feedback. */
-function lazyGithubAdapter(): { name: string; send: (event: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; deliveryId?: string }> } {
+function lazyGithubAdapter(): { name: string; send: (event: Record<string, unknown>) => Promise<{ ok: boolean; error?: string; deliveryId?: string; deliveryUrl?: string }> } {
   return {
     name: "github-device-flow",
     async send(event) {
@@ -261,9 +261,9 @@ function lazyGithubAdapter(): { name: string; send: (event: Record<string, unkno
         return { ok: false, error: `GitHub API ${resp.status}` };
       }
 
-      const issue = await resp.json() as { number?: number };
+      const issue = await resp.json() as { number?: number; html_url?: string };
       console.log("[github-adapter] issue created:", issue.number);
-      return { ok: true, deliveryId: String(issue.number ?? "") };
+      return { ok: true, deliveryId: String(issue.number ?? ""), deliveryUrl: issue.html_url };
     } catch (err) {
       console.error("[github-adapter] unexpected error:", err);
       return { ok: false, error: String(err) };
