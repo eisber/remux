@@ -59,6 +59,12 @@ export interface ClientView {
   followBackendFocus: boolean;
 }
 
+export interface LaunchContextHint {
+  session: string;
+  tabIndex?: number;
+  paneId?: string;
+}
+
 // ── Inspect / history types ──
 
 export interface TabHistoryEvent {
@@ -85,7 +91,7 @@ export interface TabHistoryPane {
 // ── Protocol messages ──
 
 export type ControlClientMessage =
-  | { type: "auth"; token?: string; password?: string; clientId?: string; session?: string }
+  | { type: "auth"; token?: string; password?: string; clientId?: string; session?: string; tabIndex?: number; paneId?: string }
   | { type: "select_session"; session: string }
   | { type: "new_session"; name: string }
   | { type: "close_session"; session: string }

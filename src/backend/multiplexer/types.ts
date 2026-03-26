@@ -12,12 +12,12 @@ export interface MultiplexerBackend {
   readonly capabilities: BackendCapabilities;
 
   listSessions(): Promise<SessionSummary[]>;
-  createSession(name: string): Promise<void>;
+  createSession(name: string, options?: { cwd?: string }): Promise<void>;
   killSession(name: string): Promise<void>;
   renameSession(name: string, newName: string): Promise<void>;
 
   listTabs(session: string): Promise<Omit<TabState, "panes">[]>;
-  newTab(session: string): Promise<void>;
+  newTab(session: string, options?: { cwd?: string }): Promise<void>;
   closeTab(session: string, tabIndex: number): Promise<void>;
   selectTab(session: string, tabIndex: number): Promise<void>;
   renameTab(session: string, tabIndex: number, newName: string): Promise<void>;

@@ -76,4 +76,37 @@ test.describe("inspect mode", () => {
       await server.stop();
     }
   });
+
+  test("opens Inspect at the latest content and returns to latest on refresh", async ({ page }) => {
+    const server = await startE2EServer({ sessions: ["main"], defaultSession: "main" });
+
+    try {
+      const [pane] = await server.gateway.listPanes("main", 0);
+      const history = Array.from({ length: 320 }, (_, index) => `line ${index + 1}`).join("\n");
+      server.gateway.setPaneCapture(pane!.id, history);
+
+      await page.goto(`${server.baseUrl}/?token=${server.token}`);
+      await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+      await page.getByRole("button", { name: "Inspect" }).click();
+      await expect(page.getByTestId(`inspect-pane-${pane!.id}`)).toContainText("line 320");
+
+      const scrollbackMain = page.getByTestId("scrollback-main");
+      await expect.poll(async () => (
+        await scrollbackMain.evaluate((el) => Math.abs((el.scrollTop + el.clientHeight) - el.scrollHeight) < 8)
+      )).toBe(true);
+
+      await scrollbackMain.evaluate((el) => { el.scrollTop = 0; });
+      server.gateway.setPaneCapture(pane!.id, `${history}\nline 321`);
+      await page.getByTestId("inspect-refresh-button").click();
+
+      await expect(page.getByTestId(`inspect-pane-${pane!.id}`)).toContainText("line 321");
+      await expect.poll(async () => (
+        await scrollbackMain.evaluate((el) => Math.abs((el.scrollTop + el.clientHeight) - el.scrollHeight) < 8)
+      )).toBe(true);
+    } finally {
+      await page.goto("about:blank");
+      await server.stop();
+    }
+  });
 });

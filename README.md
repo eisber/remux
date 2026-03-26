@@ -36,6 +36,18 @@ Remux uses a multiplexer-neutral workspace model internally, but it does not pro
 
 If you want the most polished experience, use `tmux`. For current zellij caveats, see [docs/ZELLIJ_MODE_AUDIT_2026-03-25.md](./docs/ZELLIJ_MODE_AUDIT_2026-03-25.md).
 
+## Remux vs Zellij
+
+`zellij` and Remux are complementary, not substitutes.
+
+- `zellij` is a terminal multiplexer you run on the machine itself
+- Remux is a remote awareness and control layer you open from another device
+- `zellij` gives you native local pane and tab management
+- Remux gives you mobile-friendly Inspect, browser control surfaces, remote attach flows, and structured workspace navigation
+
+If you want the best local terminal multiplexer experience, use `zellij` or `tmux` directly.
+If you want to monitor and intervene from a phone, tablet, or second laptop, Remux is the product layer on top.
+
 ## Quick Start
 
 ### Run from npm

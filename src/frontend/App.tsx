@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { Suspense, lazy, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { AppHeader } from "./components/AppHeader";
 import { TerminalStage } from "./components/TerminalStage";
@@ -49,12 +49,14 @@ import {
   debugLog,
   debugMode,
   formatPasswordError,
+  initialLaunchContext,
   parseMessage,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
   token,
   wsOrigin
 } from "./remux-runtime";
+import { createTerminalWriteBuffer } from "./terminal-write-buffer";
 import type {
   PaneState,
   SessionState,
@@ -103,6 +105,7 @@ export const App = () => {
   const paneViewportColsRef = useRef(0);
   /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
   const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
+  const launchContextRef = useRef(initialLaunchContext);
 
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -113,6 +116,7 @@ export const App = () => {
   const [authReady, setAuthReady] = useState(false);
 
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>({ sessions: [], capturedAt: "" });
+  const deferredSnapshot = useDeferredValue(snapshot);
   const [capabilities, setCapabilities] = useState<BackendCapabilities | null>(null);
   const [clientView, setClientView] = useState<ClientView | null>(null);
   const [attachedSession, setAttachedSession] = useState<string>("");
@@ -176,6 +180,12 @@ export const App = () => {
     theme,
     toolbarRef
   });
+  const terminalWriteBufferRef = useRef<ReturnType<typeof createTerminalWriteBuffer> | null>(null);
+  if (!terminalWriteBufferRef.current) {
+    terminalWriteBufferRef.current = createTerminalWriteBuffer((chunk) => {
+      terminalRef.current?.write(chunk);
+    });
+  }
   const notifyTerminalResize = useCallback(() => {
     sendTerminalResize(terminalSocketRef);
   }, [sendTerminalResize]);
@@ -211,10 +221,13 @@ export const App = () => {
     requestKey: string;
     sessionName: string;
     tabIndex: number;
+    scrollToLatest: boolean;
   } | null>(null);
   const inspectRequestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInspectRequestKeyRef = useRef<string | null>(null);
   const inspectLineCountInitializedRef = useRef(false);
+  const inspectAutoScrollPendingRef = useRef(false);
+  const nextInspectScrollModeRef = useRef<"latest" | "preserve">("latest");
 
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameSessionValue, setRenameSessionValue] = useState("");
@@ -244,12 +257,12 @@ export const App = () => {
 
   const activeSession: SessionState | undefined = useMemo(() => {
     return resolveActiveSession(
-      snapshot.sessions,
+      deferredSnapshot.sessions,
       attachedSession,
       awaitingSessionSelection,
       awaitingSessionAttachment
     );
-  }, [snapshot.sessions, attachedSession, awaitingSessionSelection, awaitingSessionAttachment]);
+  }, [deferredSnapshot.sessions, attachedSession, awaitingSessionSelection, awaitingSessionAttachment]);
 
   const activeTab: TabState | undefined = useMemo(() => {
     if (!activeSession) {
@@ -290,8 +303,8 @@ export const App = () => {
   });
 
   const orderedSessions = useMemo(
-    () => orderSessions(snapshot.sessions, workspaceOrder),
-    [snapshot.sessions, workspaceOrder]
+    () => orderSessions(deferredSnapshot.sessions, workspaceOrder),
+    [deferredSnapshot.sessions, workspaceOrder]
   );
   const orderedActiveTabs = useMemo(
     () => activeSession ? orderTabs(activeSession.name, activeSession.tabs, workspaceOrder) : [],
@@ -367,7 +380,11 @@ export const App = () => {
     setQuickSnippetIndex(0);
   }, [snippetPickerQuery]);
 
-  const requestTabInspect = useCallback((session: SessionState, tab: TabState): void => {
+  const requestTabInspect = useCallback((
+    session: SessionState,
+    tab: TabState,
+    options?: { scrollToLatest?: boolean }
+  ): void => {
     if (!authReady || controlSocketRef.current?.readyState !== WebSocket.OPEN) {
       return;
     }
@@ -381,7 +398,8 @@ export const App = () => {
     inspectRequestRef.current = {
       requestKey,
       sessionName: session.name,
-      tabIndex: tab.index
+      tabIndex: tab.index,
+      scrollToLatest: options?.scrollToLatest ?? true
     };
     lastInspectRequestKeyRef.current = requestKey;
     setInspectLoading(true);
@@ -413,6 +431,43 @@ export const App = () => {
     });
   }, [authReady, inspectLineCount, sendControl]);
 
+  const scrollInspectToLatest = useCallback((): void => {
+    const container = scrollbackContentRef.current;
+    if (!container) {
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+  }, [scrollbackContentRef]);
+
+  const restoreTerminalState = useCallback(async (sessionName: string, passwordValue: string): Promise<void> => {
+    if (!sessionName) {
+      return;
+    }
+
+    terminalWriteBufferRef.current?.clear();
+    resetTerminalBuffer();
+
+    try {
+      const response = await fetch(`/api/state/${encodeURIComponent(sessionName)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(passwordValue ? { "X-Password": passwordValue } : {})
+        }
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const snapshot = await response.json() as { content?: string };
+      if (attachedSessionRef.current !== sessionName || !snapshot.content) {
+        return;
+      }
+      terminalRef.current?.write(snapshot.content);
+    } catch {
+      // Ignore restore failures and fall back to live stream only.
+    }
+  }, [resetTerminalBuffer, terminalRef]);
+
   const cancelReconnect = (): void => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current);
@@ -439,6 +494,7 @@ export const App = () => {
 
   const openTerminalSocket = (passwordValue: string, clientId: string): void => {
     debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
+    terminalWriteBufferRef.current?.clear();
     if (terminalSocketRef.current) {
       terminalSocketRef.current.onclose = null;
       terminalSocketRef.current.close();
@@ -472,7 +528,7 @@ export const App = () => {
         bytes: typeof event.data === "string" ? event.data.length : 0
       });
       const data = typeof event.data === "string" ? event.data : "";
-      terminalRef.current?.write(data);
+      terminalWriteBufferRef.current?.enqueue(data);
       if (data.includes("\x07") && attachedSession) {
         setBellSessions((current) => new Set(current).add(attachedSession));
       }
@@ -500,11 +556,16 @@ export const App = () => {
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
     socket.onopen = () => {
       debugLog("control_socket.onopen");
+      const launchContext = launchContextRef.current;
       socket.send(JSON.stringify({
         type: "auth",
         token,
         password: passwordValue || undefined,
-        ...(attachedSessionRef.current ? { session: attachedSessionRef.current } : {})
+        ...(launchContext
+          ? launchContext
+          : attachedSessionRef.current
+            ? { session: attachedSessionRef.current }
+            : {})
       }));
     };
     socket.onmessage = (event) => {
@@ -562,9 +623,9 @@ export const App = () => {
           return;
         }
         case "attached": {
-          resetTerminalBuffer();
           setAttachedSession(message.session);
           attachedSessionRef.current = message.session;
+          launchContextRef.current = null;
           setPendingSessionAttachment(null);
           setSelectedWindowIndex(null);
           setSelectedPaneId(null);
@@ -572,17 +633,25 @@ export const App = () => {
           setDrawerOpen(false);
           setStatusMessage(`attached: ${message.session}`);
           if (pendingTerminalAuthRef.current) {
-            openTerminalSocket(
-              pendingTerminalAuthRef.current.password,
-              pendingTerminalAuthRef.current.clientId
-            );
+            const auth = pendingTerminalAuthRef.current;
             pendingTerminalAuthRef.current = null;
+            void restoreTerminalState(message.session, auth.password)
+              .finally(() => {
+                if (attachedSessionRef.current === message.session) {
+                  openTerminalSocket(auth.password, auth.clientId);
+                }
+              });
+          } else {
+            terminalWriteBufferRef.current?.clear();
+            resetTerminalBuffer();
           }
           fitAddonRef.current?.fit();
           notifyTerminalResize();
           return;
         }
         case "session_picker": {
+          launchContextRef.current = null;
+          terminalWriteBufferRef.current?.clear();
           resetTerminalBuffer();
           setAttachedSession("");
           attachedSessionRef.current = "";
@@ -593,21 +662,25 @@ export const App = () => {
           return;
         }
         case "workspace_state": {
-          setSnapshot(message.workspace);
-          if (message.clientView) setClientView(message.clientView);
           const inferredAttachedSession = inferAttachedSessionFromWorkspace(
             message.workspace.sessions,
             message.clientView ?? null
           );
           if (inferredAttachedSession) {
-            setAttachedSession(inferredAttachedSession);
             attachedSessionRef.current = inferredAttachedSession;
-            setPendingSessionAttachment(null);
-            setSessionChoices(null);
-            setStatusMessage(`attached: ${inferredAttachedSession}`);
           }
-          setSelectedWindowIndex(null);
-          setSelectedPaneId(null);
+          startTransition(() => {
+            setSnapshot(message.workspace);
+            if (message.clientView) setClientView(message.clientView);
+            if (inferredAttachedSession) {
+              setAttachedSession(inferredAttachedSession);
+              setPendingSessionAttachment(null);
+              setSessionChoices(null);
+              setStatusMessage(`attached: ${inferredAttachedSession}`);
+            }
+            setSelectedWindowIndex(null);
+            setSelectedPaneId(null);
+          });
           if (message.clientView && shouldUsePaneViewportCols(serverConfig?.backendKind)) {
             const session = message.workspace.sessions.find((entry) => entry.name === message.clientView!.sessionName);
             const tab = session?.tabs.find((entry) => entry.index === message.clientView!.tabIndex);
@@ -649,9 +722,12 @@ export const App = () => {
             clearTimeout(inspectRequestTimerRef.current);
             inspectRequestTimerRef.current = null;
           }
-          setInspectSnapshot(buildInspectSnapshotFromServerHistory(message));
-          setInspectLoading(false);
-          setInspectErrorMessage("");
+          inspectAutoScrollPendingRef.current = pending.scrollToLatest;
+          startTransition(() => {
+            setInspectSnapshot(buildInspectSnapshotFromServerHistory(message));
+            setInspectLoading(false);
+            setInspectErrorMessage("");
+          });
           return;
         }
       }
@@ -762,10 +838,20 @@ export const App = () => {
       if (inspectRequestTimerRef.current) {
         clearTimeout(inspectRequestTimerRef.current);
       }
+      terminalWriteBufferRef.current?.clear();
       controlSocketRef.current?.close();
       terminalSocketRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!inspectSnapshot || !inspectAutoScrollPendingRef.current) {
+      return;
+    }
+
+    inspectAutoScrollPendingRef.current = false;
+    requestAnimationFrame(scrollInspectToLatest);
+  }, [inspectSnapshot, scrollInspectToLatest]);
 
   useEffect(() => {
     if (viewMode !== "inspect") {
@@ -788,7 +874,9 @@ export const App = () => {
       return;
     }
 
-    requestTabInspect(activeSession, activeTab);
+    const scrollToLatest = nextInspectScrollModeRef.current !== "preserve";
+    nextInspectScrollModeRef.current = "latest";
+    requestTabInspect(activeSession, activeTab, { scrollToLatest });
   }, [activeSession, activeTab, authReady, inspectLineCount, requestTabInspect, viewMode]);
 
   // Re-fit terminal when switching to terminal mode
@@ -1052,11 +1140,12 @@ export const App = () => {
       return;
     }
     lastInspectRequestKeyRef.current = null;
-    requestTabInspect(activeSession, activeTab);
+    requestTabInspect(activeSession, activeTab, { scrollToLatest: true });
   }, [activeSession, activeTab, requestTabInspect]);
 
   const loadMoreInspect = useCallback((): void => {
     const step = serverConfig?.scrollbackLines ?? 1000;
+    nextInspectScrollModeRef.current = "preserve";
     setInspectLineCount((current) => current + step);
   }, [serverConfig?.scrollbackLines]);
 
