@@ -1077,3 +1077,137 @@ That strategy gives Remux a broader ceiling than a single-runtime product while 
 6. prove the abstraction with a second adapter
 
 That sequence preserves the current strengths of the project while creating a path toward a much more ambitious product.
+
+## Appendix A: Implementation Status Audit
+
+Date: 2026-03-26
+Scope: current repository state relative to the roadmap above
+Status: audit note appended after the first roadmap execution slice
+
+This appendix keeps the main body forward-looking while making the current implementation state explicit. It distinguishes between:
+
+- completed platform-boundary work
+- groundwork that exists only as a skeleton
+- milestones that still have no product implementation in the repository
+
+### Snapshot
+
+- Milestone 1: mostly complete
+- Milestone 2: preparation only
+- Milestone 3: skeletons only
+- Milestone 4: semantic platform skeletons only
+- Milestone 5: not started
+- Milestone 6: not started
+
+### Milestone 1 Checklist
+
+Done:
+
+- shared contract split under `src/shared/contracts/`
+- `ServerCapabilities` and protocol versioning
+- server composition split into `http-routes.ts`, `control-socket.ts`, `terminal-socket.ts`, and `session-attach-service.ts`
+- web hooks extracted for connection, workspace state, terminal runtime, and client preferences
+- native-client contract fixtures and integration coverage
+
+Partial:
+
+- `src/frontend/App.tsx` is still a large assembly file rather than a thin composition root
+- `src/backend/extensions.ts` still acts as a compatibility composition layer instead of being fully separated into transport, semantic, and observability modules
+
+Assessment:
+
+- the milestone goal is effectively satisfied for platform-boundary work, but the refactor is not fully "finished" in code-shape terms
+
+### Milestone 2 Checklist
+
+Done:
+
+- `docs/IOS_CLIENT_CONTRACT.md`
+- `tests/harness/nativeClientFixtures.ts`
+- `tests/backend/native-contract-fixtures.test.ts`
+
+Not started:
+
+- iOS app shell
+- embedded terminal surface
+- native reconnect UI
+- one-handed phone workflows
+
+Assessment:
+
+- preparation exists, but there is no native client implementation in this repository yet
+
+### Milestone 3 Checklist
+
+Done:
+
+- `src/backend/device/identity-store.ts`
+- `src/backend/device/pairing-service.ts`
+- `src/backend/device/trust-store.ts`
+- `src/backend/device/push-registration-service.ts`
+- device capability wiring through `ServerCapabilities`
+
+Partial:
+
+- device services are in-memory skeletons; persistence, revoke flows, and trusted reconnect are not complete
+
+Not started:
+
+- relay session layer
+- native push registration flow
+- background reconnect strategy
+
+Assessment:
+
+- groundwork exists, but milestone acceptance criteria are not met
+
+### Milestone 4 Checklist
+
+Done:
+
+- semantic contracts
+- adapter registry
+- semantic event transport
+- passive `generic-shell` adapter
+- semantic capability wiring
+
+Partial:
+
+- protocol domain envelope types exist, but runtime transport still uses legacy `auth_ok`, `workspace_state`, and `tab_history` messages
+
+Not started:
+
+- client rendering of adapter presence and health
+- shared semantic timeline UI model
+- end-to-end multi-adapter runtime wiring
+
+Assessment:
+
+- the platform skeleton exists, but the semantic product layer does not yet exist
+
+### Milestone 5 Checklist
+
+Not started:
+
+- Codex adapter
+- thread and turn model
+- tool event ingestion
+- approval and action surface
+- Codex timeline UI
+
+### Milestone 6 Checklist
+
+Not started:
+
+- second adapter
+- proof that the architecture is genuinely multi-runtime at the product layer
+
+### Additional Progress Outside This Slice
+
+- the workspace core is ahead of the minimum platform slice in one important area: Inspect/tab history is already a real server-backed feature with frontend behavior and E2E coverage
+
+### Validation Note
+
+- verified locally with `npm run typecheck`
+- verified locally with `npm test`
+- `npm run build` and `npm run test:e2e` were not re-run as part of this appendix update
