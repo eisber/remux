@@ -449,6 +449,23 @@ button, input {
   margin-top: 0.4rem;
 }
 
+.drawer-toggle-row {
+  display: grid;
+  margin-top: 0.4rem;
+}
+
+.drawer-toggle-row button.active {
+  background: var(--active-btn-bg);
+  border-color: var(--border-active);
+}
+
+.drawer-toggle-copy {
+  margin: 0.45rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
 .drawer-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -123,6 +123,13 @@ export const App = () => {
   const [composeText, setComposeText] = useState("");
 
   const [viewMode, setViewMode] = useState<"scroll" | "terminal">("terminal");
+  const [scrollbackData, setScrollbackData] = useState<{
+    paneId: string;
+    text: string;
+    lines: number;
+    paneWidth: number;
+    isApproximate?: boolean;
+  } | null>(null);
   const [scrollFontSize, setScrollFontSize] = useState<number>(
     Number(localStorage.getItem("remux-scroll-font-size")) || 0
   );
@@ -152,7 +159,6 @@ export const App = () => {
     fileInputRef,
     fitAddonRef,
     focusTerminal,
-    readTerminalBuffer,
     resetTerminalBuffer,
     scrollbackContentRef,
     sendTerminalResize,
@@ -325,7 +331,7 @@ export const App = () => {
     statusMessage
   ]);
 
-  const sendControl = (payload: Record<string, unknown>): void => {
+  const sendControl = useCallback((payload: Record<string, unknown>): void => {
     if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
       debugLog("send_control.blocked", {
         payload,
@@ -337,7 +343,7 @@ export const App = () => {
     setErrorMessage("");
     debugLog("send_control", payload);
     controlSocketRef.current.send(JSON.stringify(payload));
-  };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(getSnippetStorageKey(), JSON.stringify(snippets));
@@ -351,12 +357,15 @@ export const App = () => {
     setQuickSnippetIndex(0);
   }, [snippetPickerQuery]);
 
+  const visibleScrollbackText = scrollbackData && scrollbackData.paneId === activePane?.id
+    ? scrollbackData.text
+    : "";
+
   useScrollbackView({
     authReady,
-    readTerminalBuffer,
     scrollViewActive: viewMode === "scroll",
     scrollbackContentRef,
-    terminalRef
+    scrollbackText: visibleScrollbackText
   });
 
   const cancelReconnect = (): void => {
@@ -530,6 +539,7 @@ export const App = () => {
         }
         case "session_picker": {
           resetTerminalBuffer();
+          setScrollbackData(null);
           setAttachedSession("");
           attachedSessionRef.current = "";
           setPendingSessionAttachment(null);
@@ -579,6 +589,13 @@ export const App = () => {
           setStatusMessage(message.message);
           return;
         case "scrollback":
+          setScrollbackData({
+            paneId: message.paneId,
+            text: message.text,
+            lines: message.lines,
+            paneWidth: message.paneWidth,
+            isApproximate: message.isApproximate
+          });
           return;
       }
     };
@@ -588,6 +605,7 @@ export const App = () => {
       setErrorMessage("");
       terminalSocketRef.current?.close();
       terminalSocketRef.current = null;
+      setScrollbackData(null);
       scheduleReconnect(passwordValue);
     };
     controlSocketRef.current = socket;
@@ -647,6 +665,14 @@ export const App = () => {
   }, [attachedSession]);
 
   useEffect(() => {
+    setScrollbackData((current) => (
+      current && current.paneId === activePane?.id
+        ? current
+        : null
+    ));
+  }, [activePane?.id]);
+
+  useEffect(() => {
     if (
       !sessionChoices ||
       attachedSession ||
@@ -669,6 +695,27 @@ export const App = () => {
       terminalSocketRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!authReady || viewMode !== "scroll" || !activePane) {
+      return;
+    }
+
+    const captureScrollback = (): void => {
+      if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      sendControl({
+        type: "capture_scrollback",
+        paneId: activePane.id,
+        lines: serverConfig?.scrollbackLines
+      });
+    };
+
+    captureScrollback();
+    const timer = setInterval(captureScrollback, 500);
+    return () => clearInterval(timer);
+  }, [activePane?.id, authReady, sendControl, serverConfig?.scrollbackLines, viewMode]);
 
   // Re-fit terminal when switching to terminal mode
   useEffect(() => {
@@ -1103,6 +1150,11 @@ export const App = () => {
         />
 
         <AppearanceSection
+          followBackendFocus={clientView?.followBackendFocus ?? false}
+          onToggleFollowBackendFocus={() => sendControl({
+            type: "set_follow_focus",
+            follow: !(clientView?.followBackendFocus ?? false)
+          })}
           onResetScrollFontSize={() => {
             setScrollFontSize(0);
             localStorage.removeItem("remux-scroll-font-size");
@@ -1113,6 +1165,7 @@ export const App = () => {
             localStorage.setItem("remux-scroll-font-size", String(value));
           }}
           scrollFontSize={scrollFontSize}
+          showFollowFocus={serverConfig?.backendKind === "zellij"}
           theme={theme}
         />
 
