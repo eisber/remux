@@ -45,7 +45,7 @@ describe("ZellijCliExecutor", () => {
     executorWithInternals.listTabs = vi.fn().mockResolvedValue([{ index: 0 }]);
 
     await expect(executor.listSessions()).resolves.toEqual([
-      { name: "isolated", attached: false, tabCount: 1 }
+      { name: "isolated", attached: false, tabCount: 0 }
     ]);
   });
 
@@ -157,6 +157,116 @@ describe("ZellijCliExecutor", () => {
       ["action", "new-pane", "-d", "right", "--", ...shellCommand],
       "main"
     );
+  });
+
+  test("builds a snapshot with one tabs call and one panes call per live session", async () => {
+    const { ZellijCliExecutor } = await import("../../src/backend/zellij/cli-executor.js");
+    const executor = new ZellijCliExecutor({
+      logger: { log: vi.fn(), error: vi.fn() }
+    });
+
+    const executorWithInternals = executor as unknown as {
+      buildSnapshot: () => Promise<{
+        sessions: Array<{ name: string; lifecycle?: string; tabCount: number; tabs: Array<{ paneCount: number }> }>;
+      }>;
+      listSessionSummaries: () => Promise<Array<{ name: string; attached: boolean; tabCount: number; lifecycle?: string }>>;
+      sessionExistsInSocketDir: (name: string) => Promise<boolean>;
+      runZellij: (args: string[], session?: string) => Promise<string>;
+    };
+
+    executorWithInternals.listSessionSummaries = vi.fn().mockResolvedValue([
+      { name: "live", attached: true, tabCount: 0, lifecycle: "live" },
+      { name: "saved", attached: false, tabCount: 0, lifecycle: "exited" }
+    ]);
+    executorWithInternals.sessionExistsInSocketDir = vi.fn().mockResolvedValue(true);
+    executorWithInternals.runZellij = vi.fn()
+      .mockResolvedValueOnce(JSON.stringify([
+        {
+          position: 0,
+          name: "shell",
+          active: true,
+          is_fullscreen_active: false,
+          is_sync_panes_active: false,
+          are_floating_panes_visible: false,
+          viewport_rows: 24,
+          viewport_columns: 120,
+          display_area_rows: 24,
+          display_area_columns: 120,
+          selectable_tiled_panes_count: 1,
+          selectable_floating_panes_count: 0,
+          tab_id: 7
+        }
+      ]))
+      .mockResolvedValueOnce(JSON.stringify([
+        {
+          id: 3,
+          is_plugin: false,
+          is_focused: true,
+          is_fullscreen: false,
+          is_floating: false,
+          is_suppressed: false,
+          title: "shell",
+          exited: false,
+          exit_status: null,
+          is_held: false,
+          pane_x: 0,
+          pane_y: 0,
+          pane_rows: 24,
+          pane_columns: 120,
+          pane_content_rows: 22,
+          pane_content_columns: 118,
+          cursor_coordinates_in_pane: [0, 0],
+          terminal_command: "/bin/zsh",
+          plugin_url: null,
+          is_selectable: true,
+          tab_id: 7,
+          tab_position: 0,
+          tab_name: "shell",
+          pane_cwd: "/tmp"
+        }
+      ]));
+
+    const snapshot = await executorWithInternals.buildSnapshot();
+
+    expect(executorWithInternals.runZellij).toHaveBeenCalledTimes(2);
+    expect(snapshot.sessions).toHaveLength(2);
+    expect(snapshot.sessions[0]).toMatchObject({
+      name: "live",
+      tabCount: 1,
+      tabs: [{ paneCount: 1 }]
+    });
+    expect(snapshot.sessions[1]).toMatchObject({
+      name: "saved",
+      lifecycle: "exited",
+      tabCount: 0,
+      tabs: []
+    });
+  });
+
+  test("reports zellij scrollback as approximate", async () => {
+    const { ZellijCliExecutor } = await import("../../src/backend/zellij/cli-executor.js");
+    const executor = new ZellijCliExecutor({
+      logger: { log: vi.fn(), error: vi.fn() }
+    });
+
+    expect(executor.capabilities.supportsPreciseScrollback).toBe(false);
+
+    const executorWithInternals = executor as unknown as {
+      paneSessionMap: Map<string, string>;
+      runZellij: (args: string[], session?: string, options?: { raw?: boolean }) => Promise<string>;
+    };
+    executorWithInternals.paneSessionMap.set("terminal_3", "main");
+    executorWithInternals.runZellij = vi.fn()
+      .mockResolvedValueOnce("line 1\nline 2\n")
+      .mockResolvedValueOnce(JSON.stringify([
+        { id: 3, is_plugin: false, pane_content_columns: 118 }
+      ]));
+
+    await expect(executor.capturePane("terminal_3", { lines: 10 })).resolves.toEqual({
+      text: "line 1\nline 2\n",
+      paneWidth: 118,
+      isApproximate: true
+    });
   });
 
   test("passes the remux shell wrapper to background session creation", async () => {
