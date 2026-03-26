@@ -341,7 +341,7 @@ export const App = () => {
     statusMessage
   ]);
 
-  const sendControl = (payload: Record<string, unknown>): void => {
+  const sendControl = useCallback((payload: Record<string, unknown>): void => {
     if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
       debugLog("send_control.blocked", {
         payload,
@@ -353,7 +353,7 @@ export const App = () => {
     setErrorMessage("");
     debugLog("send_control", payload);
     controlSocketRef.current.send(JSON.stringify(payload));
-  };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(getSnippetStorageKey(), JSON.stringify(snippets));
@@ -1247,6 +1247,11 @@ export const App = () => {
         />
 
         <AppearanceSection
+          followBackendFocus={clientView?.followBackendFocus ?? false}
+          onToggleFollowBackendFocus={() => sendControl({
+            type: "set_follow_focus",
+            follow: !(clientView?.followBackendFocus ?? false)
+          })}
           onResetScrollFontSize={() => {
             setScrollFontSize(0);
             localStorage.removeItem("remux-scroll-font-size");
@@ -1257,6 +1262,7 @@ export const App = () => {
             localStorage.setItem("remux-scroll-font-size", String(value));
           }}
           scrollFontSize={scrollFontSize}
+          showFollowFocus={serverConfig?.backendKind === "zellij"}
           theme={theme}
         />
 
