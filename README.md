@@ -36,6 +36,18 @@ Remux uses a multiplexer-neutral workspace model internally, but it does not pro
 
 If you want the most polished experience, use `tmux`. For current zellij caveats, see [docs/ZELLIJ_MODE_AUDIT_2026-03-25.md](./docs/ZELLIJ_MODE_AUDIT_2026-03-25.md).
 
+## Remux vs Zellij
+
+`zellij` and Remux are complementary, not substitutes.
+
+- `zellij` is a terminal multiplexer you run on the machine itself
+- Remux is a remote awareness and control layer you open from another device
+- `zellij` gives you native local pane and tab management
+- Remux gives you mobile-friendly Inspect, browser control surfaces, remote attach flows, and structured workspace navigation
+
+If you want the best local terminal multiplexer experience, use `zellij` or `tmux` directly.
+If you want to monitor and intervene from a phone, tablet, or second laptop, Remux is the product layer on top.
+
 ## Quick Start
 
 ### Run from npm
@@ -124,7 +136,7 @@ Options:
 | `REMUX_SOCKET_PATH` | Custom tmux socket path (`tmux -S`) |
 | `REMUX_TRACE_TMUX=1` | Print tmux CLI calls |
 | `REMUX_VERBOSE_DEBUG=1` | Enable verbose server logging |
-| `REMUX_FORCE_SCRIPT_PTY=1` | Force `script(1)` PTY fallback on Unix |
+| `REMUX_FORCE_SCRIPT_PTY=1` | Force a fail-fast check for degraded tmux PTY mode; Remux refuses `script(1)` because it breaks resize invariants |
 | `REMUX_TOKEN` | Reuse a fixed auth token across restarts |
 | `VITE_DEV_MODE=1` | Backend knows frontend is served by Vite during development |
 

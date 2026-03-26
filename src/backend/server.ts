@@ -14,6 +14,8 @@ import type {
   TabState,
   WorkspaceSnapshot
 } from "../shared/protocol.js";
+import { PROTOCOL_VERSION } from "../shared/contracts/core.js";
+import type { ServerCapabilities } from "../shared/contracts/core.js";
 import { randomToken } from "./util/random.js";
 import { AuthService } from "./auth/auth-service.js";
 import type { MultiplexerBackend } from "./multiplexer/types.js";
@@ -73,7 +75,15 @@ const getSingleParam = (value: string | string[] | undefined): string =>
   Array.isArray(value) ? value.join("/") : (value ?? "");
 
 const controlClientMessageSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("auth"), token: z.string().optional(), password: z.string().optional(), clientId: z.string().optional(), session: z.string().optional() }),
+  z.object({
+    type: z.literal("auth"),
+    token: z.string().optional(),
+    password: z.string().optional(),
+    clientId: z.string().optional(),
+    session: z.string().optional(),
+    tabIndex: z.number().int().min(0).optional(),
+    paneId: z.string().optional()
+  }),
   z.object({ type: z.literal("select_session"), session: z.string() }),
   z.object({ type: z.literal("new_session"), name: z.string() }),
   z.object({ type: z.literal("close_session"), session: z.string() }),
@@ -212,6 +222,23 @@ export const createRemuxServer = (
   };
 
   const UPLOAD_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+
+  const buildServerCapabilities = (): ServerCapabilities => ({
+    protocolVersion: PROTOCOL_VERSION,
+    workspace: {
+      ...deps.backend.capabilities,
+      supportsUpload: true,
+    },
+    notifications: {
+      supportsPushNotifications: Boolean(deps.extensions),
+    },
+    transport: {
+      supportsTrustedReconnect: false,
+    },
+    semantic: {
+      adaptersAvailable: [],
+    },
+  });
 
   const runtimeMetadata = readRuntimeMetadata();
 
@@ -616,6 +643,89 @@ export const createRemuxServer = (
     return null;
   };
 
+  const findViewPane = (
+    snapshot: WorkspaceSnapshot,
+    view: ClientView
+  ): SessionState["tabs"][number]["panes"][number] | null => {
+    const session = snapshot.sessions.find((entry) => entry.name === view.sessionName);
+    const tab = session?.tabs.find((entry) => entry.index === view.tabIndex);
+    return tab?.panes.find((entry) => entry.id === view.paneId) ?? null;
+  };
+
+  const resolveViewCwd = async (view: ClientView | undefined): Promise<string | undefined> => {
+    if (!view) {
+      return undefined;
+    }
+
+    const sessionSnapshot = await buildSingleSessionSnapshot(view.sessionName);
+    const pane = findViewPane(sessionSnapshot, view);
+    if (pane?.currentPath) {
+      return pane.currentPath;
+    }
+
+    const paneFromLatest = latestSnapshot ? findViewPane(latestSnapshot, view) : null;
+    return paneFromLatest?.currentPath || undefined;
+  };
+
+  const applyInitialViewHint = async (
+    context: ControlContext,
+    hint: { tabIndex?: number; paneId?: string }
+  ): Promise<void> => {
+    if (hint.tabIndex === undefined && !hint.paneId) {
+      return;
+    }
+
+    const view = viewStore.getView(context.clientId);
+    if (!view) {
+      return;
+    }
+
+    const sessionSnapshot = await buildSingleSessionSnapshot(view.sessionName);
+    const session = sessionSnapshot.sessions[0];
+    if (!session) {
+      return;
+    }
+
+    let targetTab = hint.tabIndex !== undefined
+      ? session.tabs.find((entry) => entry.index === hint.tabIndex)
+      : undefined;
+
+    if (!targetTab && hint.paneId) {
+      targetTab = session.tabs.find((entry) => entry.panes.some((pane) => pane.id === hint.paneId));
+    }
+
+    if (!targetTab) {
+      return;
+    }
+
+    if (targetTab.index !== view.tabIndex) {
+      viewStore.selectTab(context.clientId, targetTab.index, sessionSnapshot);
+      if (deps.backend.createGroupedSession) {
+        await deps.backend.selectTab(buildMobileSessionName(context.clientId), targetTab.index);
+      } else {
+        await deps.backend.selectTab(view.sessionName, targetTab.index);
+      }
+    }
+
+    const targetPane = hint.paneId
+      ? targetTab.panes.find((pane) => pane.id === hint.paneId)
+      : undefined;
+    if (targetPane) {
+      viewStore.selectPane(context.clientId, targetPane.id);
+      if (deps.backend.createGroupedSession || deps.backend.capabilities.supportsPaneFocusById) {
+        await deps.backend.focusPane(targetPane.id);
+      }
+    }
+
+    if (isNonGroupedBackend()) {
+      const updatedView = viewStore.getView(context.clientId);
+      if (updatedView) {
+        const runtime = getOrCreateRuntime(context);
+        runtime.attachToSession(`${updatedView.sessionName}:${updatedView.paneId}`);
+      }
+    }
+  };
+
   const buildClientState = (
     baseSessions: WorkspaceSnapshot,
     fullState: WorkspaceSnapshot,
@@ -967,7 +1077,7 @@ export const createRemuxServer = (
         await attachControlToBaseSession(context, message.session);
         return;
       case "new_session":
-        await deps.backend.createSession(message.name);
+        await deps.backend.createSession(message.name, { cwd: await resolveViewCwd(view) });
         if (isNonGroupedBackend()) {
           const sessionSnapshot = await waitForSessionSnapshot(message.name);
           await attachControlToBaseSession(context, message.name, sessionSnapshot);
@@ -1012,7 +1122,7 @@ export const createRemuxServer = (
         }
         const previousSnapshot = latestSnapshot ?? await buildSnapshot(deps.backend);
         const previousSession = previousSnapshot.sessions.find((session) => session.name === sessionForNew);
-        await deps.backend.newTab(sessionForNew);
+        await deps.backend.newTab(sessionForNew, { cwd: await resolveViewCwd(view) });
         // New tab becomes active — update view to the new tab
         if (isNonGroupedBackend()) {
           let snapshot = await waitForWorkspace((candidate) => {
@@ -1351,10 +1461,15 @@ export const createRemuxServer = (
               clientId: context.clientId,
               requiresPassword: authService.requiresPassword(),
               capabilities: deps.backend.capabilities,
+              serverCapabilities: buildServerCapabilities(),
               backendKind: deps.backend.kind
             });
             try {
               await ensureAttachedSession(context, message.session);
+              await applyInitialViewHint(context, {
+                tabIndex: message.tabIndex,
+                paneId: message.paneId
+              });
             } catch (error) {
               logger.error("initial attach failed", error);
               sendJson(socket, {

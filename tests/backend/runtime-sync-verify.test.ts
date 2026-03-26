@@ -12,6 +12,46 @@ afterEach(async () => {
 });
 
 describe("runtime sync verification", () => {
+  test("installs runtime dependencies with dev packages even in production-like environments", async () => {
+    const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-install-test-"));
+    tempDirs.push(tempHome);
+
+    const fakeBinDir = path.join(tempHome, "bin");
+    const runtimeDir = path.join(tempHome, "runtime-dir");
+    const npmLogPath = path.join(tempHome, "npm.log");
+    await fs.promises.mkdir(fakeBinDir, { recursive: true });
+    await fs.promises.mkdir(runtimeDir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(fakeBinDir, "npm"),
+      `#!/bin/bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${npmLogPath}"
+`,
+      { mode: 0o755 }
+    );
+
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        "source scripts/runtime-lib.sh && install_runtime_dependencies \"$TARGET_DIR\""
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: tempHome,
+          NODE_ENV: "production",
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          TARGET_DIR: runtimeDir
+        },
+        stdio: "pipe"
+      }
+    );
+
+    await expect(fs.promises.readFile(npmLogPath, "utf8")).resolves.toContain("ci --include=dev");
+  });
+
   test("accepts legacy config payloads that only expose version", async () => {
     const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-verify-test-"));
     tempDirs.push(tempHome);

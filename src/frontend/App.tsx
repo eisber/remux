@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { Suspense, lazy, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { AppHeader } from "./components/AppHeader";
 import { TerminalStage } from "./components/TerminalStage";
@@ -27,20 +27,20 @@ import {
 } from "./snippets";
 import {
   getTabOrderKey,
-  normalizeWorkspaceOrder,
   orderSessions,
   orderTabs,
   reorderSessionState,
   reorderSessionTabs,
-  WORKSPACE_ORDER_STORAGE_KEY,
-  type WorkspaceOrderState
 } from "./workspace-order";
 import { deriveTopStatus, formatBytes } from "./app-status";
 import { deriveSnippetPickerState } from "./compose-picker";
-import type { BandwidthStats, PendingSnippetExecution, ServerConfig } from "./app-types";
+import type { PendingSnippetExecution } from "./app-types";
 import { useFileUpload } from "./hooks/useFileUpload";
-import { matchesMobileLayout, useViewportLayout } from "./mobile-layout";
+import { useViewportLayout } from "./mobile-layout";
+import { buildControlAuthHint } from "./launch-context";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
+import { useRemuxConnection } from "./hooks/useRemuxConnection";
+import { useClientPreferences } from "./hooks/useClientPreferences";
 import {
   buildInspectSnapshotFromServerHistory,
   type TabInspectSnapshot
@@ -48,21 +48,18 @@ import {
 import {
   debugLog,
   debugMode,
-  formatPasswordError,
-  parseMessage,
-  RECONNECT_BASE_MS,
-  RECONNECT_MAX_MS,
+  initialLaunchContext,
   token,
   wsOrigin
 } from "./remux-runtime";
+import { createTerminalWriteBuffer } from "./terminal-write-buffer";
 import type {
   PaneState,
   SessionState,
   SessionSummary,
   WorkspaceSnapshot,
   TabState,
-  ClientView,
-  BackendCapabilities
+  ClientView
 } from "../shared/protocol";
 
 declare global {
@@ -76,71 +73,43 @@ declare global {
   }
 }
 
-const getInitialStickyZoom = (): boolean => {
-  const stored = localStorage.getItem("remux-sticky-zoom");
-  if (stored === "true") {
-    return true;
-  }
-  if (stored === "false") {
-    return false;
-  }
-  return matchesMobileLayout();
-};
-
 const LazyBandwidthStatsModal = lazy(() => import("./components/BandwidthStatsModal"));
 const LazyPasswordOverlay = lazy(() => import("./components/PasswordOverlay"));
 const LazySessionPickerOverlay = lazy(() => import("./components/SessionPickerOverlay"));
 const LazyUploadToast = lazy(() => import("./components/UploadToast"));
 
 export const App = () => {
-  const controlSocketRef = useRef<WebSocket | null>(null);
-  const terminalSocketRef = useRef<WebSocket | null>(null);
-  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const reconnectAttemptRef = useRef(0);
-  /** Set to true when user-initiated or expected close (e.g. auth error) */
-  const suppressReconnectRef = useRef(false);
   /** Zellij pane viewport width — used to match xterm cols to pane content. */
   const paneViewportColsRef = useRef(0);
+  const terminalSocketRef = useRef<WebSocket | null>(null);
   /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
   const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
-
-  const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string>("");
-  const [statusMessage, setStatusMessage] = useState<string>("");
-  const [password, setPassword] = useState(sessionStorage.getItem("remux-password") ?? "");
-  const [needsPasswordInput, setNeedsPasswordInput] = useState(false);
-  const [passwordErrorMessage, setPasswordErrorMessage] = useState("");
-  const [authReady, setAuthReady] = useState(false);
+  const launchContextRef = useRef(initialLaunchContext);
 
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>({ sessions: [], capturedAt: "" });
-  const [capabilities, setCapabilities] = useState<BackendCapabilities | null>(null);
+  const deferredSnapshot = useDeferredValue(snapshot);
   const [clientView, setClientView] = useState<ClientView | null>(null);
   const [attachedSession, setAttachedSession] = useState<string>("");
   const attachedSessionRef = useRef("");
   const [pendingSessionAttachment, setPendingSessionAttachment] = useState<string | null>(null);
   const [sessionChoices, setSessionChoices] = useState<SessionSummary[] | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
-    localStorage.getItem("remux-sidebar-collapsed") === "true"
-  );
   const [composeText, setComposeText] = useState("");
 
+  // ── Preferences hook ──
+  const prefs = useClientPreferences();
+  const { theme, sidebarCollapsed, setSidebarCollapsed, stickyZoom, setStickyZoom,
+    scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
+
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
-  const [scrollFontSize, setScrollFontSize] = useState<number>(
-    Number(localStorage.getItem("remux-scroll-font-size")) || 0
-  );
+  const viewModeRef = useRef(viewMode);
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   const [inspectLineCount, setInspectLineCount] = useState(1000);
   const [inspectPaneFilter, setInspectPaneFilter] = useState("all");
   const [inspectSearchQuery, setInspectSearchQuery] = useState("");
   const [inspectSnapshot, setInspectSnapshot] = useState<TabInspectSnapshot | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
   const [inspectErrorMessage, setInspectErrorMessage] = useState("");
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const stored = localStorage.getItem("remux-theme");
-    if (stored === "light") return "light";
-    return "dark"; // migrate old themes (midnight, amber, etc.) to dark
-  });
-  const [stickyZoom, setStickyZoom] = useState(getInitialStickyZoom);
   const { mobileLandscape, mobileLayout, viewportHeight } = useViewportLayout();
   const sendRawToSocket = useCallback((data: string): void => {
     const socket = terminalSocketRef.current;
@@ -155,15 +124,153 @@ export const App = () => {
     socket.send(data);
   }, []);
 
+  // ── Connection hook ──
+  // Ref to hold connection actions for use inside callbacks before `connection` is assigned.
+  const connectionActionsRef = useRef<{
+    setStatusMessage: (msg: string) => void;
+    setErrorMessage: (msg: string) => void;
+    serverConfig: import("./app-types").ServerConfig | null;
+  }>({ setStatusMessage: () => {}, setErrorMessage: () => {}, serverConfig: null });
+
+  const connection = useRemuxConnection({
+    onAuthOk: (passwordValue, clientId) => {
+      pendingTerminalAuthRef.current = { password: passwordValue, clientId };
+    },
+    onControlMessage: (message) => {
+      switch (message.type) {
+        case "attached": {
+          terminalWriteBufferRef.current?.clear();
+          resetTerminalBufferRef.current();
+          setAttachedSession(message.session);
+          attachedSessionRef.current = message.session;
+          launchContextRef.current = null;
+          setPendingSessionAttachment(null);
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
+          setSessionChoices(null);
+          setDrawerOpen(false);
+          connectionActionsRef.current.setStatusMessage(`attached: ${message.session}`);
+          if (pendingTerminalAuthRef.current) {
+            const auth = pendingTerminalAuthRef.current;
+            pendingTerminalAuthRef.current = null;
+            void restoreTerminalState(message.session, auth.password)
+              .finally(() => {
+                if (attachedSessionRef.current === message.session) {
+                  openTerminalSocket(auth.password, auth.clientId);
+                }
+              });
+          }
+          notifyTerminalResizeRef.current({ notify: true, retryUntilVisible: true });
+          return;
+        }
+        case "session_picker": {
+          launchContextRef.current = null;
+          terminalWriteBufferRef.current?.clear();
+          resetTerminalBufferRef.current();
+          setAttachedSession("");
+          attachedSessionRef.current = "";
+          setPendingSessionAttachment(null);
+          setSelectedWindowIndex(null);
+          setSelectedPaneId(null);
+          setSessionChoices(message.sessions);
+          return;
+        }
+        case "workspace_state": {
+          const inferredAttachedSession = inferAttachedSessionFromWorkspace(
+            message.workspace.sessions,
+            message.clientView ?? null
+          );
+          if (inferredAttachedSession) {
+            attachedSessionRef.current = inferredAttachedSession;
+          }
+          startTransition(() => {
+            setSnapshot(message.workspace);
+            if (message.clientView) setClientView(message.clientView);
+            if (inferredAttachedSession) {
+              setAttachedSession(inferredAttachedSession);
+              setPendingSessionAttachment(null);
+              setSessionChoices(null);
+              connectionActionsRef.current.setStatusMessage(`attached: ${inferredAttachedSession}`);
+            }
+            setSelectedWindowIndex(null);
+            setSelectedPaneId(null);
+          });
+          if (message.clientView && shouldUsePaneViewportCols(connectionActionsRef.current.serverConfig?.backendKind)) {
+            const session = message.workspace.sessions.find((entry) => entry.name === message.clientView!.sessionName);
+            const tab = session?.tabs.find((entry: TabState) => entry.index === message.clientView!.tabIndex);
+            const pane = tab?.panes.find((entry: PaneState) => entry.id === message.clientView!.paneId);
+            const paneWidth = pane?.width ?? 0;
+            if (paneWidth > 0) {
+              paneViewportColsRef.current = paneWidth;
+              notifyTerminalResizeRef.current({ notify: true, retryUntilVisible: true });
+            }
+          } else {
+            paneViewportColsRef.current = 0;
+          }
+          return;
+        }
+        case "error":
+          connectionActionsRef.current.setErrorMessage(message.message);
+          if (viewModeRef.current === "inspect") {
+            setInspectErrorMessage(message.message);
+          }
+          return;
+        case "info":
+          connectionActionsRef.current.setStatusMessage(message.message);
+          return;
+        case "scrollback":
+          return;
+        case "tab_history": {
+          const pending = inspectRequestRef.current;
+          if (!pending) return;
+          if (pending.sessionName !== message.sessionName || pending.tabIndex !== message.tabIndex) return;
+          if (inspectRequestTimerRef.current) {
+            clearTimeout(inspectRequestTimerRef.current);
+            inspectRequestTimerRef.current = null;
+          }
+          inspectAutoScrollPendingRef.current = pending.scrollToLatest;
+          startTransition(() => {
+            setInspectSnapshot(buildInspectSnapshotFromServerHistory(message));
+            setInspectLoading(false);
+            setInspectErrorMessage("");
+          });
+          return;
+        }
+      }
+    },
+    onControlClose: () => {
+      if (viewModeRef.current === "inspect") {
+        setInspectErrorMessage("Inspect disconnected. Reconnecting…");
+      }
+      terminalWriteBufferRef.current?.clear();
+      terminalSocketRef.current?.close();
+      terminalSocketRef.current = null;
+    },
+    getAuthPayload: () => buildControlAuthHint(attachedSessionRef.current, launchContextRef.current),
+  });
+
+  const { authReady, serverConfig, capabilities, errorMessage, statusMessage, password,
+    needsPasswordInput, passwordErrorMessage, bandwidthStats, sendControl } = connection;
+
+  // Keep connectionActionsRef in sync so callbacks always access latest
+  connectionActionsRef.current = {
+    setStatusMessage: connection.setStatusMessage,
+    setErrorMessage: connection.setErrorMessage,
+    serverConfig,
+  };
+
+  // Forward refs for use in connection callbacks (avoids stale closures)
+  const resetTerminalBufferRef = useRef(() => {});
+  const notifyTerminalResizeRef = useRef((_: { notify?: boolean; retryUntilVisible?: boolean } = {}) => {});
+
   const toolbarRef = useRef<ToolbarHandle>(null);
   const {
     copySelection,
     fileInputRef,
-    fitAddonRef,
     focusTerminal,
+    requestTerminalFit,
     resetTerminalBuffer,
     scrollbackContentRef,
-    sendTerminalResize,
     terminalContainerRef,
     terminalRef
   } = useTerminalRuntime({
@@ -171,14 +278,64 @@ export const App = () => {
     mobileLayout,
     paneViewportColsRef,
     serverConfig,
-    setStatusMessage,
+    setStatusMessage: connection.setStatusMessage,
+    terminalVisible: viewMode === "terminal",
     terminalSocketRef,
     theme,
     toolbarRef
   });
-  const notifyTerminalResize = useCallback(() => {
-    sendTerminalResize(terminalSocketRef);
-  }, [sendTerminalResize]);
+  const terminalWriteBufferRef = useRef<ReturnType<typeof createTerminalWriteBuffer> | null>(null);
+  if (!terminalWriteBufferRef.current) {
+    terminalWriteBufferRef.current = createTerminalWriteBuffer((chunk) => {
+      terminalRef.current?.write(chunk);
+    });
+  }
+
+  // Keep forwarded refs in sync
+  useEffect(() => {
+    resetTerminalBufferRef.current = resetTerminalBuffer;
+  }, [resetTerminalBuffer]);
+  useEffect(() => {
+    notifyTerminalResizeRef.current = requestTerminalFit;
+  }, [requestTerminalFit]);
+
+  // ── Terminal socket management ──
+  const openTerminalSocket = useCallback((passwordValue: string, clientId: string): void => {
+    debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
+    if (terminalSocketRef.current) {
+      terminalSocketRef.current.onclose = null;
+      terminalSocketRef.current.close();
+    }
+
+    const socket = new WebSocket(`${wsOrigin}/ws/terminal`);
+    socket.onopen = () => {
+      debugLog("terminal_socket.onopen");
+      socket.send(JSON.stringify({ type: "auth", token, password: passwordValue || undefined, clientId }));
+      connectionActionsRef.current.setStatusMessage("terminal connected");
+      requestTerminalFit({ notify: true, retryUntilVisible: true });
+    };
+    socket.onmessage = (event) => {
+      debugLog("terminal_socket.onmessage", {
+        type: typeof event.data,
+        bytes: typeof event.data === "string" ? event.data.length : 0
+      });
+      const data = typeof event.data === "string" ? event.data : "";
+      terminalWriteBufferRef.current?.enqueue(data);
+      if (data.includes("\x07") && attachedSessionRef.current) {
+        setBellSessions((current) => new Set(current).add(attachedSessionRef.current));
+      }
+    };
+    socket.onclose = (event) => {
+      debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
+      if (event.code === 4001) {
+        connectionActionsRef.current.setErrorMessage("terminal authentication failed");
+      }
+    };
+    socket.onerror = () => {
+      debugLog("terminal_socket.onerror");
+    };
+    terminalSocketRef.current = socket;
+  }, [requestTerminalFit]);
 
   const [snippets, setSnippets] = useState<Snippet[]>(() => {
     try {
@@ -192,29 +349,20 @@ export const App = () => {
   const [editingSnippet, setEditingSnippet] = useState<Snippet | null>(null);
   const [collapsedSnippetGroups, setCollapsedSnippetGroups] = useState<Record<string, boolean>>({});
   const [pendingSnippetExecution, setPendingSnippetExecution] = useState<PendingSnippetExecution | null>(null);
-  const [workspaceOrder, setWorkspaceOrder] = useState<WorkspaceOrderState>(() => {
-    try {
-      const stored = localStorage.getItem(WORKSPACE_ORDER_STORAGE_KEY);
-      if (!stored) {
-        return { sessions: [], tabsBySession: {} };
-      }
-      return normalizeWorkspaceOrder(JSON.parse(stored));
-    } catch {
-      return { sessions: [], tabsBySession: {} };
-    }
-  });
 
-  const [bandwidthStats, setBandwidthStats] = useState<BandwidthStats | null>(null);
   const [statsVisible, setStatsVisible] = useState(false);
   const rttTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const inspectRequestRef = useRef<{
     requestKey: string;
     sessionName: string;
     tabIndex: number;
+    scrollToLatest: boolean;
   } | null>(null);
   const inspectRequestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastInspectRequestKeyRef = useRef<string | null>(null);
   const inspectLineCountInitializedRef = useRef(false);
+  const inspectAutoScrollPendingRef = useRef(false);
+  const nextInspectScrollModeRef = useRef<"latest" | "preserve">("latest");
 
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameSessionValue, setRenameSessionValue] = useState("");
@@ -244,12 +392,12 @@ export const App = () => {
 
   const activeSession: SessionState | undefined = useMemo(() => {
     return resolveActiveSession(
-      snapshot.sessions,
+      deferredSnapshot.sessions,
       attachedSession,
       awaitingSessionSelection,
       awaitingSessionAttachment
     );
-  }, [snapshot.sessions, attachedSession, awaitingSessionSelection, awaitingSessionAttachment]);
+  }, [deferredSnapshot.sessions, attachedSession, awaitingSessionSelection, awaitingSessionAttachment]);
 
   const activeTab: TabState | undefined = useMemo(() => {
     if (!activeSession) {
@@ -284,14 +432,14 @@ export const App = () => {
     activePane,
     password,
     serverConfig,
-    setStatusMessage,
+    setStatusMessage: connection.setStatusMessage,
     setUploadToast,
     token
   });
 
   const orderedSessions = useMemo(
-    () => orderSessions(snapshot.sessions, workspaceOrder),
-    [snapshot.sessions, workspaceOrder]
+    () => orderSessions(deferredSnapshot.sessions, workspaceOrder),
+    [deferredSnapshot.sessions, workspaceOrder]
   );
   const orderedActiveTabs = useMemo(
     () => activeSession ? orderTabs(activeSession.name, activeSession.tabs, workspaceOrder) : [],
@@ -341,34 +489,20 @@ export const App = () => {
     statusMessage
   ]);
 
-  const sendControl = useCallback((payload: Record<string, unknown>): void => {
-    if (controlSocketRef.current?.readyState !== WebSocket.OPEN) {
-      debugLog("send_control.blocked", {
-        payload,
-        readyState: controlSocketRef.current?.readyState
-      });
-      setErrorMessage("control websocket disconnected");
-      return;
-    }
-    setErrorMessage("");
-    debugLog("send_control", payload);
-    controlSocketRef.current.send(JSON.stringify(payload));
-  }, []);
-
   useEffect(() => {
     localStorage.setItem(getSnippetStorageKey(), JSON.stringify(snippets));
   }, [snippets]);
 
   useEffect(() => {
-    localStorage.setItem(WORKSPACE_ORDER_STORAGE_KEY, JSON.stringify(workspaceOrder));
-  }, [workspaceOrder]);
-
-  useEffect(() => {
     setQuickSnippetIndex(0);
   }, [snippetPickerQuery]);
 
-  const requestTabInspect = useCallback((session: SessionState, tab: TabState): void => {
-    if (!authReady || controlSocketRef.current?.readyState !== WebSocket.OPEN) {
+  const requestTabInspect = useCallback((
+    session: SessionState,
+    tab: TabState,
+    options?: { scrollToLatest?: boolean }
+  ): void => {
+    if (!authReady || connection.controlSocketRef.current?.readyState !== WebSocket.OPEN) {
       return;
     }
 
@@ -381,7 +515,8 @@ export const App = () => {
     inspectRequestRef.current = {
       requestKey,
       sessionName: session.name,
-      tabIndex: tab.index
+      tabIndex: tab.index,
+      scrollToLatest: options?.scrollToLatest ?? true
     };
     lastInspectRequestKeyRef.current = requestKey;
     setInspectLoading(true);
@@ -413,303 +548,41 @@ export const App = () => {
     });
   }, [authReady, inspectLineCount, sendControl]);
 
-  const cancelReconnect = (): void => {
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
-    }
-  };
-
-  const scheduleReconnect = (passwordValue: string): void => {
-    if (suppressReconnectRef.current) {
+  const scrollInspectToLatest = useCallback((): void => {
+    const container = scrollbackContentRef.current;
+    if (!container) {
       return;
     }
-    cancelReconnect();
-    const attempt = reconnectAttemptRef.current++;
-    const delay = Math.min(RECONNECT_BASE_MS * 2 ** attempt, RECONNECT_MAX_MS);
-    debugLog("reconnect.schedule", { attempt, delay });
-    setStatusMessage(`reconnecting in ${(delay / 1000).toFixed(0)}s...`);
-    reconnectTimerRef.current = setTimeout(() => {
-      reconnectTimerRef.current = null;
-      debugLog("reconnect.attempt", { attempt });
-      setStatusMessage("reconnecting...");
-      openControlSocket(passwordValue);
-    }, delay);
-  };
+    container.scrollTop = container.scrollHeight;
+  }, [scrollbackContentRef]);
 
-  const openTerminalSocket = (passwordValue: string, clientId: string): void => {
-    debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
-    if (terminalSocketRef.current) {
-      terminalSocketRef.current.onclose = null;
-      terminalSocketRef.current.close();
+  const restoreTerminalState = useCallback(async (sessionName: string, passwordValue: string): Promise<void> => {
+    if (!sessionName) {
+      return;
     }
 
-    const socket = new WebSocket(`${wsOrigin}/ws/terminal`);
-    socket.onopen = () => {
-      debugLog("terminal_socket.onopen");
-      socket.send(JSON.stringify({ type: "auth", token, password: passwordValue || undefined, clientId }));
-      setStatusMessage("terminal connected");
-      let retries = 0;
-      const tryFit = () => {
-        if (fitAddonRef.current && terminalRef.current) {
-          fitAddonRef.current.fit();
-          if (terminalRef.current.cols < 20 && retries < 5) {
-            retries++;
-            setTimeout(tryFit, 200);
-            return;
-          }
-          if (terminalRef.current.cols < 20) {
-            terminalRef.current.resize(80, 24);
-          }
+    try {
+      const response = await fetch(`/api/state/${encodeURIComponent(sessionName)}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(passwordValue ? { "X-Password": passwordValue } : {})
         }
-        notifyTerminalResize();
-      };
-      setTimeout(tryFit, 300);
-    };
-    socket.onmessage = (event) => {
-      debugLog("terminal_socket.onmessage", {
-        type: typeof event.data,
-        bytes: typeof event.data === "string" ? event.data.length : 0
       });
-      const data = typeof event.data === "string" ? event.data : "";
-      terminalRef.current?.write(data);
-      if (data.includes("\x07") && attachedSession) {
-        setBellSessions((current) => new Set(current).add(attachedSession));
-      }
-    };
-    socket.onclose = (event) => {
-      debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
-      if (event.code === 4001) {
-        setErrorMessage("terminal authentication failed");
-      }
-    };
-    socket.onerror = () => {
-      debugLog("terminal_socket.onerror");
-    };
-    terminalSocketRef.current = socket;
-  };
-
-  const openControlSocket = (passwordValue: string): void => {
-    debugLog("control_socket.open.begin", { hasPassword: Boolean(passwordValue) });
-    cancelReconnect();
-    if (controlSocketRef.current) {
-      controlSocketRef.current.onclose = null;
-      controlSocketRef.current.close();
-    }
-
-    const socket = new WebSocket(`${wsOrigin}/ws/control`);
-    socket.onopen = () => {
-      debugLog("control_socket.onopen");
-      socket.send(JSON.stringify({
-        type: "auth",
-        token,
-        password: passwordValue || undefined,
-        ...(attachedSessionRef.current ? { session: attachedSessionRef.current } : {})
-      }));
-    };
-    socket.onmessage = (event) => {
-      debugLog("control_socket.onmessage.raw", { bytes: String(event.data).length });
-      try {
-        const raw = JSON.parse(String(event.data)) as Record<string, unknown>;
-        if (raw.type === "bandwidth_stats" && raw.stats) {
-          setBandwidthStats(raw.stats as BandwidthStats);
-          return;
-        }
-        if (raw.type === "pong" && typeof raw.timestamp === "number") {
-          const rtt = Math.round(performance.now() - raw.timestamp);
-          setBandwidthStats((prev) => prev ? { ...prev, rttMs: rtt } : null);
-          return;
-        }
-      } catch {
-        // continue to typed parsing
-      }
-
-      const message = parseMessage(String(event.data));
-      if (!message) {
-        debugLog("control_socket.onmessage.parse_error", { raw: String(event.data) });
+      if (!response.ok) {
         return;
       }
-      debugLog("control_socket.onmessage", { type: message.type });
 
-      switch (message.type) {
-        case "auth_ok": {
-          reconnectAttemptRef.current = 0;
-          suppressReconnectRef.current = false;
-          setErrorMessage("");
-          setPasswordErrorMessage("");
-          setAuthReady(true);
-          setNeedsPasswordInput(false);
-          if (message.requiresPassword && passwordValue) {
-            sessionStorage.setItem("remux-password", passwordValue);
-          } else {
-            sessionStorage.removeItem("remux-password");
-          }
-          if (message.capabilities) setCapabilities(message.capabilities);
-          pendingTerminalAuthRef.current = { password: passwordValue, clientId: message.clientId };
-          return;
-        }
-        case "auth_error": {
-          suppressReconnectRef.current = true;
-          setErrorMessage(message.reason);
-          setAuthReady(false);
-          const passwordAuthFailed =
-            message.reason === "invalid password" || Boolean(serverConfig?.passwordRequired);
-          if (passwordAuthFailed) {
-            setNeedsPasswordInput(true);
-            setPasswordErrorMessage(formatPasswordError(message.reason));
-            sessionStorage.removeItem("remux-password");
-          }
-          return;
-        }
-        case "attached": {
-          resetTerminalBuffer();
-          setAttachedSession(message.session);
-          attachedSessionRef.current = message.session;
-          setPendingSessionAttachment(null);
-          setSelectedWindowIndex(null);
-          setSelectedPaneId(null);
-          setSessionChoices(null);
-          setDrawerOpen(false);
-          setStatusMessage(`attached: ${message.session}`);
-          if (pendingTerminalAuthRef.current) {
-            openTerminalSocket(
-              pendingTerminalAuthRef.current.password,
-              pendingTerminalAuthRef.current.clientId
-            );
-            pendingTerminalAuthRef.current = null;
-          }
-          fitAddonRef.current?.fit();
-          notifyTerminalResize();
-          return;
-        }
-        case "session_picker": {
-          resetTerminalBuffer();
-          setAttachedSession("");
-          attachedSessionRef.current = "";
-          setPendingSessionAttachment(null);
-          setSelectedWindowIndex(null);
-          setSelectedPaneId(null);
-          setSessionChoices(message.sessions);
-          return;
-        }
-        case "workspace_state": {
-          setSnapshot(message.workspace);
-          if (message.clientView) setClientView(message.clientView);
-          const inferredAttachedSession = inferAttachedSessionFromWorkspace(
-            message.workspace.sessions,
-            message.clientView ?? null
-          );
-          if (inferredAttachedSession) {
-            setAttachedSession(inferredAttachedSession);
-            attachedSessionRef.current = inferredAttachedSession;
-            setPendingSessionAttachment(null);
-            setSessionChoices(null);
-            setStatusMessage(`attached: ${inferredAttachedSession}`);
-          }
-          setSelectedWindowIndex(null);
-          setSelectedPaneId(null);
-          if (message.clientView && shouldUsePaneViewportCols(serverConfig?.backendKind)) {
-            const session = message.workspace.sessions.find((entry) => entry.name === message.clientView!.sessionName);
-            const tab = session?.tabs.find((entry) => entry.index === message.clientView!.tabIndex);
-            const pane = tab?.panes.find((entry) => entry.id === message.clientView!.paneId);
-            const paneWidth = pane?.width ?? 0;
-            if (paneWidth > 0) {
-              paneViewportColsRef.current = paneWidth;
-              const terminal = terminalRef.current;
-              if (terminal && terminal.cols !== paneWidth) {
-                terminal.resize(paneWidth, terminal.rows);
-                notifyTerminalResize();
-              }
-            }
-          } else {
-            paneViewportColsRef.current = 0;
-          }
-          return;
-        }
-        case "error":
-          setErrorMessage(message.message);
-          if (viewMode === "inspect") {
-            setInspectErrorMessage(message.message);
-          }
-          return;
-        case "info":
-          setStatusMessage(message.message);
-          return;
-        case "scrollback":
-          return;
-        case "tab_history": {
-          const pending = inspectRequestRef.current;
-          if (!pending) {
-            return;
-          }
-          if (pending.sessionName !== message.sessionName || pending.tabIndex !== message.tabIndex) {
-            return;
-          }
-          if (inspectRequestTimerRef.current) {
-            clearTimeout(inspectRequestTimerRef.current);
-            inspectRequestTimerRef.current = null;
-          }
-          setInspectSnapshot(buildInspectSnapshotFromServerHistory(message));
-          setInspectLoading(false);
-          setInspectErrorMessage("");
-          return;
-        }
+      const snapshot = await response.json() as { content?: string };
+      if (attachedSessionRef.current !== sessionName || !snapshot.content) {
+        return;
       }
-    };
-    socket.onclose = () => {
-      debugLog("control_socket.onclose");
-      setAuthReady(false);
-      setErrorMessage("");
-      if (viewMode === "inspect") {
-        setInspectErrorMessage("Inspect disconnected. Reconnecting…");
-      }
-      terminalSocketRef.current?.close();
-      terminalSocketRef.current = null;
-      scheduleReconnect(passwordValue);
-    };
-    controlSocketRef.current = socket;
-  };
-
-  // Theme effect: apply data-theme attribute and persist selection
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    localStorage.setItem("remux-theme", theme);
-  }, [theme]);
-
-  useEffect(() => {
-    if (!token) {
-      setErrorMessage("Missing token in URL");
-      return;
+      terminalWriteBufferRef.current?.enqueue(snapshot.content);
+    } catch {
+      // Ignore restore failures and fall back to live stream only.
     }
-
-    debugLog("config.fetch.begin");
-    fetch("/api/config")
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`config request failed: ${response.status}`);
-        }
-        const config = (await response.json()) as ServerConfig;
-        debugLog("config.fetch.ok", config);
-        setServerConfig(config);
-
-        if (config.passwordRequired && !password) {
-          debugLog("config.fetch.password_required");
-          setNeedsPasswordInput(true);
-          setPasswordErrorMessage("");
-          return;
-        }
-
-        openControlSocket(password);
-      })
-      .catch((error: Error) => {
-        debugLog("config.fetch.error", { message: error.message });
-        setErrorMessage(error.message);
-      });
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem("remux-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
-  }, [sidebarCollapsed]);
+  // Theme and sidebar persistence now handled by useClientPreferences
 
   useEffect(() => {
     if (!serverConfig?.scrollbackLines || inspectLineCountInitializedRef.current) {
@@ -752,7 +625,7 @@ export const App = () => {
 
     const [onlySession] = snapshot.sessions;
     setPendingSessionAttachment(onlySession.name);
-    setStatusMessage(`attaching: ${onlySession.name}`);
+    connection.setStatusMessage(`attaching: ${onlySession.name}`);
     setDrawerOpen(false);
     sendControl({ type: "select_session", session: onlySession.name });
   }, [attachedSession, pendingSessionAttachment, sessionChoices, snapshot.sessions]);
@@ -762,10 +635,19 @@ export const App = () => {
       if (inspectRequestTimerRef.current) {
         clearTimeout(inspectRequestTimerRef.current);
       }
-      controlSocketRef.current?.close();
+      terminalWriteBufferRef.current?.clear();
       terminalSocketRef.current?.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!inspectSnapshot || !inspectAutoScrollPendingRef.current) {
+      return;
+    }
+
+    inspectAutoScrollPendingRef.current = false;
+    requestAnimationFrame(scrollInspectToLatest);
+  }, [inspectSnapshot, scrollInspectToLatest]);
 
   useEffect(() => {
     if (viewMode !== "inspect") {
@@ -788,35 +670,25 @@ export const App = () => {
       return;
     }
 
-    requestTabInspect(activeSession, activeTab);
+    const scrollToLatest = nextInspectScrollModeRef.current !== "preserve";
+    nextInspectScrollModeRef.current = "latest";
+    requestTabInspect(activeSession, activeTab, { scrollToLatest });
   }, [activeSession, activeTab, authReady, inspectLineCount, requestTabInspect, viewMode]);
 
   // Re-fit terminal when switching to terminal mode
   useEffect(() => {
-    if (viewMode === "terminal" && fitAddonRef.current) {
-      // Double-fit: once immediately, once after CSS settles
-      const doFit = () => {
-        fitAddonRef.current?.fit();
-        notifyTerminalResize();
-      };
-      requestAnimationFrame(doFit);
-      const timer = setTimeout(doFit, 150);
+    if (viewMode === "terminal") {
+      requestTerminalFit({ notify: true, retryUntilVisible: true });
+      const timer = setTimeout(() => {
+        requestTerminalFit({ notify: true, retryUntilVisible: true });
+      }, 150);
       return () => clearTimeout(timer);
     }
-  }, [fitAddonRef, notifyTerminalResize, viewMode]);
+  }, [requestTerminalFit, viewMode]);
 
   // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
-  // Persist sticky zoom state — only when user explicitly toggles (not on
-  // programmatic defaults like the zellij fallback below).
-  const stickyZoomUserSetRef = useRef(false);
-  useEffect(() => {
-    if (!stickyZoomUserSetRef.current) return;
-    localStorage.setItem("remux-sticky-zoom", stickyZoom ? "true" : "false");
-  }, [stickyZoom]);
-
   // Default sticky zoom OFF for zellij when user has no stored preference.
-  // Does NOT persist to localStorage so it won't affect other backends.
   useEffect(() => {
     if (!serverConfig) return;
     const stored = localStorage.getItem("remux-sticky-zoom");
@@ -824,7 +696,7 @@ export const App = () => {
     if (serverConfig.backendKind === "zellij") {
       setStickyZoom(false);
     }
-  }, [serverConfig]);
+  }, [serverConfig, setStickyZoom]);
 
   useEffect(() => {
     if (!debugMode) {
@@ -877,18 +749,13 @@ export const App = () => {
     return () => document.removeEventListener("paste", handlePaste, true);
   }, [uploadFile]);
 
-  const submitPassword = (): void => {
-    setPasswordErrorMessage("");
-    openControlSocket(password);
-  };
-
   const createSession = (): void => {
     const name = window.prompt("Session name", "main");
     if (!name) {
       return;
     }
     setPendingSessionAttachment(name);
-    setStatusMessage(`attaching: ${name}`);
+    connection.setStatusMessage(`attaching: ${name}`);
     setSessionChoices(null);
     sendControl({ type: "new_session", name });
   };
@@ -1052,11 +919,12 @@ export const App = () => {
       return;
     }
     lastInspectRequestKeyRef.current = null;
-    requestTabInspect(activeSession, activeTab);
+    requestTabInspect(activeSession, activeTab, { scrollToLatest: true });
   }, [activeSession, activeTab, requestTabInspect]);
 
   const loadMoreInspect = useCallback((): void => {
     const step = serverConfig?.scrollbackLines ?? 1000;
+    nextInspectScrollModeRef.current = "preserve";
     setInspectLineCount((current) => current + step);
   }, [serverConfig?.scrollbackLines]);
 
@@ -1159,7 +1027,7 @@ export const App = () => {
         sendRaw={sendRawToSocket}
         onFocusTerminal={focusTerminal}
         fileInputRef={fileInputRef}
-        setStatusMessage={setStatusMessage}
+        setStatusMessage={connection.setStatusMessage}
         snippets={snippets}
         onExecuteSnippet={executeSnippet}
         hidden={viewMode !== "terminal"}
@@ -1244,15 +1112,9 @@ export const App = () => {
             type: "set_follow_focus",
             follow: !(clientView?.followBackendFocus ?? false)
           })}
-          onResetScrollFontSize={() => {
-            setScrollFontSize(0);
-            localStorage.removeItem("remux-scroll-font-size");
-          }}
-          onSetTheme={setTheme}
-          onUpdateScrollFontSize={(value) => {
-            setScrollFontSize(value);
-            localStorage.setItem("remux-scroll-font-size", String(value));
-          }}
+          onResetScrollFontSize={prefs.resetScrollFontSize}
+          onSetTheme={prefs.setTheme}
+          onUpdateScrollFontSize={prefs.setScrollFontSize}
           scrollFontSize={scrollFontSize}
           showFollowFocus={serverConfig?.backendKind === "zellij"}
           theme={theme}
@@ -1308,13 +1170,14 @@ export const App = () => {
                             if (resp.ok) {
                               // Refresh config to update backendKind display
                               const newConfig = await fetch("/api/config").then((r) => r.json());
-                              setServerConfig(newConfig);
+                              // serverConfig is managed by the connection hook — trigger a page reload
+                              window.location.reload();
                             } else {
                               const err = await resp.json().catch(() => ({}));
-                              setErrorMessage(`Switch failed: ${(err as {error?: string}).error ?? resp.statusText}`);
+                              connection.setErrorMessage(`Switch failed: ${(err as {error?: string}).error ?? resp.statusText}`);
                             }
                           } catch {
-                            setErrorMessage("Failed to switch backend");
+                            connection.setErrorMessage("Failed to switch backend");
                           }
                         }}
                       >{kind}</button>
@@ -1356,12 +1219,9 @@ export const App = () => {
         {needsPasswordInput && (
           <LazyPasswordOverlay
             onChange={(value) => {
-              setPassword(value);
-              if (passwordErrorMessage) {
-                setPasswordErrorMessage("");
-              }
+              connection.setPassword(value);
             }}
-            onSubmit={submitPassword}
+            onSubmit={connection.submitPassword}
             password={password}
             passwordErrorMessage={passwordErrorMessage}
           />

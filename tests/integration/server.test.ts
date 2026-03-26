@@ -169,6 +169,62 @@ describe("tmux mobile server", () => {
     control.close();
   });
 
+  test("initial auth applies launch session, tab, and pane hints", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main", "work"]);
+
+    await tmux.newTab("work");
+    const workSnapshot = await buildSnapshot(tmux);
+    const workTab = workSnapshot.sessions.find((session) => session.name === "work")?.tabs.find((tab) => tab.index === 1);
+    const workPaneId = workTab?.panes[0]?.id ?? "";
+    await tmux.splitPane(workPaneId, "right");
+    const updatedSnapshot = await buildSnapshot(tmux);
+    const targetPaneId = updatedSnapshot.sessions
+      .find((session) => session.name === "work")
+      ?.tabs.find((tab) => tab.index === 1)
+      ?.panes[1]?.id ?? "";
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    const authOkPromise = waitForMessage<{ type: string; clientId: string }>(
+      control,
+      (msg) => msg.type === "auth_ok"
+    );
+    const attachedPromise = waitForMessage<{ type: string; session: string }>(
+      control,
+      (msg) => msg.type === "attached"
+    );
+    const workspacePromise = waitForMessage<{
+      type: string;
+      clientView?: { sessionName: string; tabIndex: number; paneId: string };
+    }>(
+      control,
+      (msg) => msg.type === "workspace_state"
+        && msg.clientView?.sessionName === "work"
+        && msg.clientView?.tabIndex === 1
+        && msg.clientView?.paneId === targetPaneId
+    );
+
+    control.send(JSON.stringify({
+      type: "auth",
+      token: "test-token",
+      session: "work",
+      tabIndex: 1,
+      paneId: targetPaneId
+    }));
+
+    await authOkPromise;
+    await expect(attachedPromise).resolves.toMatchObject({ session: "work" });
+    await expect(workspacePromise).resolves.toMatchObject({
+      clientView: {
+        sessionName: "work",
+        tabIndex: 1,
+        paneId: targetPaneId
+      }
+    });
+
+    control.close();
+  });
+
   test("requires terminal auth to bind to an authenticated control client", async () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     await authControl(control);
@@ -267,6 +323,38 @@ describe("tmux mobile server", () => {
     control.close();
   });
 
+  test("new_tab uses the active pane cwd in tmux mode", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    await authControl(control);
+    const snapshot = await buildSnapshot(tmux);
+    const paneId = snapshot.sessions.find((session) => session.name === "main")?.tabs[0]?.panes[0]?.id ?? "";
+    tmux.setPanePath(paneId, "/Users/test/project-alpha");
+
+    control.send(JSON.stringify({ type: "new_tab", session: "main" }));
+    await waitForTmuxCall((call) => call === "newTab:main:/Users/test/project-alpha");
+
+    control.close();
+  });
+
+  test("new_session uses the active pane cwd in tmux mode", async () => {
+    await runningServer.stop();
+    await startWithSessions(["main"]);
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    await authControl(control);
+    const snapshot = await buildSnapshot(tmux);
+    const paneId = snapshot.sessions.find((session) => session.name === "main")?.tabs[0]?.panes[0]?.id ?? "";
+    tmux.setPanePath(paneId, "/Users/test/project-beta");
+
+    control.send(JSON.stringify({ type: "new_session", name: "feature-branch" }));
+    await waitForTmuxCall((call) => call === "createSession:feature-branch:/Users/test/project-beta");
+
+    control.close();
+  });
+
   test("capture_tab_history returns pane history and timeline events", async () => {
     await runningServer.stop();
     await startWithSessions(["main"]);
@@ -349,7 +437,7 @@ describe("tmux mobile server", () => {
 
     // Create a second tab — new_tab now goes to the base session "main" via view store
     control.send(JSON.stringify({ type: "new_tab", session: attachedSession }));
-    await waitForTmuxCall((call) => call === "newTab:main");
+    await waitForTmuxCall((call) => call.startsWith("newTab:main"));
 
     // Drain any pending workspace_state messages from new_tab
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -403,7 +491,7 @@ describe("tmux mobile server", () => {
 
     control.send(JSON.stringify({ type: "new_tab", session: attachedSession }));
 
-    await waitForTmuxCall((call) => call === "newTab:main");
+    await waitForTmuxCall((call) => call.startsWith("newTab:main"));
     await waitForTmuxCall(
       (call) => call.startsWith("selectTab:remux-client-") && call.endsWith(":1")
     );
@@ -428,7 +516,7 @@ describe("tmux mobile server", () => {
 
     // Create tab 1 — new_tab goes to base session "main" via view store
     control.send(JSON.stringify({ type: "new_tab", session: attachedSession }));
-    await waitForTmuxCall((call) => call === "newTab:main");
+    await waitForTmuxCall((call) => call.startsWith("newTab:main"));
 
     // Select tab 1 on mobile session
     control.send(
