@@ -384,6 +384,16 @@ function isNativeBridgeEnabled(env: NodeJS.ProcessEnv): boolean {
   return !DISABLED_VALUES.has(raw.trim().toLowerCase());
 }
 
+function resolvePlatformSuffix(): string | null {
+  const platform = process.platform;
+  const arch = process.arch;
+  if (platform === "darwin" && arch === "arm64") return "darwin-arm64";
+  if (platform === "darwin" && arch === "x64") return "darwin-x64";
+  if (platform === "linux" && arch === "x64") return "linux-x64";
+  if (platform === "linux" && arch === "arm64") return "linux-arm64";
+  return null;
+}
+
 function resolveZellijNativeBridgeBinary(options: {
   env: NodeJS.ProcessEnv;
   explicitPath?: string;
@@ -394,16 +404,26 @@ function resolveZellijNativeBridgeBinary(options: {
   }
 
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+
+  // Platform-specific prebuilt binary name (from CI multi-platform build)
+  const platformSuffix = resolvePlatformSuffix();
+  const platformBinaryName = platformSuffix ? `remux-zellij-bridge-${platformSuffix}` : null;
+
   const packagedBinaryNames = process.platform === "win32"
     ? ["remux-zellij-bridge.exe", "zellij-bridge.exe"]
     : ["remux-zellij-bridge", "zellij-bridge"];
   const devBinaryNames = process.platform === "win32"
     ? ["zellij-bridge.exe", "remux-zellij-bridge.exe"]
     : ["zellij-bridge", "remux-zellij-bridge"];
+
   const candidates = [
+    // 1. Platform-specific prebuilt (from npm package)
+    ...(platformBinaryName ? [path.resolve(moduleDir, platformBinaryName)] : []),
+    // 2. Generic packaged binary
+    ...packagedBinaryNames.map((binaryName) => path.resolve(moduleDir, binaryName)),
+    // 3. Dev build (release then debug)
     ...devBinaryNames.map((binaryName) => path.resolve(moduleDir, "../../../native/zellij-bridge/target/release", binaryName)),
     ...devBinaryNames.map((binaryName) => path.resolve(moduleDir, "../../../native/zellij-bridge/target/debug", binaryName)),
-    ...packagedBinaryNames.map((binaryName) => path.resolve(moduleDir, binaryName))
   ];
 
   for (const candidate of candidates) {
