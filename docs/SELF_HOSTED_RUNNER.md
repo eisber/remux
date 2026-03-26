@@ -21,7 +21,7 @@ The deploy workflow is intentionally limited to:
 
 Keep the runner dedicated to deployment work. Do not add plain `self-hosted` to unrelated workflows.
 
-The deploy workflow also uses `actions/checkout` with `clean: false` so the checked-out workspace keeps the runtime worktrees under `.worktrees/`.
+The deploy workflow keeps the checked-out workspace disposable. Runtime worktrees live under `$HOME/.remux/runtime-worktrees`, outside the Actions checkout, so `actions/checkout` can safely refresh the repo without deleting the live runtime tree.
 
 ## Install the runner
 
@@ -59,13 +59,13 @@ npm run runner:remove
 
 ## Optional manual bootstrap
 
-The `Deploy Runtime` workflow already runs `install-launchd` and `load-launchd`, so a manual bootstrap is not required after merge.
+The `Deploy Runtime` workflow already runs `install-launchd` and `sync-runtime`, so a manual bootstrap is not required after merge.
 
 If you want to preheat the runtime services from the runner workspace clone before the first workflow run, use:
 
 ```bash
 npm run runtime:install-launchd
-bash scripts/load-launchd.sh all
+npm run runtime:sync
 ```
 
 After that, `Deploy Runtime` in GitHub Actions will keep the instances aligned.

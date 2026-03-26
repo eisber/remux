@@ -156,9 +156,8 @@ Managed runtime sync for long-running `main` / `dev` instances:
 
 ```bash
 npm run runtime:install-launchd
-npm run runtime:load-launchd
-npm run runtime:status
 npm run runtime:sync
+npm run runtime:status
 ```
 
 See [docs/RUNTIME_SYNC.md](./docs/RUNTIME_SYNC.md) for the detached runtime worktree layout and launchd setup.

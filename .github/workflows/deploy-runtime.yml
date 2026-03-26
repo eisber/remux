@@ -37,13 +37,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          clean: false
 
       - name: Install runtime launchd definitions
         run: bash scripts/install-launchd.sh
-
-      - name: Load production runtime service
-        run: bash scripts/load-launchd.sh main
 
       - name: Sync production runtime
         run: bash scripts/sync-runtime.sh main --verify-public
@@ -72,13 +68,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          clean: false
 
       - name: Install runtime launchd definitions
         run: bash scripts/install-launchd.sh
-
-      - name: Load development runtime service
-        run: bash scripts/load-launchd.sh dev
 
       - name: Sync development runtime
         run: bash scripts/sync-runtime.sh dev --verify-public

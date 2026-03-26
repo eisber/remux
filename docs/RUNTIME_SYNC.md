@@ -15,8 +15,9 @@ The new runtime flow fixes that by:
 
 ## Runtime Layout
 
-- `main` runtime worktree: `.worktrees/runtime-main`
-- `dev` runtime worktree: `.worktrees/runtime-dev`
+- runtime worktree root: `$HOME/.remux/runtime-worktrees`
+- `main` runtime worktree: `$HOME/.remux/runtime-worktrees/runtime-main`
+- `dev` runtime worktree: `$HOME/.remux/runtime-worktrees/runtime-dev`
 - local services:
   - `com.remux.main`
   - `com.remux.dev`
@@ -31,16 +32,10 @@ Generate the launch agents:
 npm run runtime:install-launchd
 ```
 
-Then load them:
+Then sync once to create the detached worktrees, install dependencies, build the runtime, and restart the services:
 
 ```bash
-launchctl bootout gui/$(id -u)/com.remux.main 2>/dev/null || true
-launchctl bootout gui/$(id -u)/com.remux.dev 2>/dev/null || true
-launchctl bootout gui/$(id -u)/com.remux.runtime-sync 2>/dev/null || true
-
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.remux.main.plist"
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.remux.dev.plist"
-launchctl bootstrap gui/$(id -u) "$HOME/Library/LaunchAgents/com.remux.runtime-sync.plist"
+npm run runtime:sync
 ```
 
 ## Manual Commands
@@ -65,10 +60,10 @@ scripts/sync-runtime.sh all --dry-run
 
 ## Operational Rules
 
-- do not make manual edits inside `.worktrees/runtime-main` or `.worktrees/runtime-dev`
+- do not make manual edits inside `$HOME/.remux/runtime-worktrees/runtime-main` or `$HOME/.remux/runtime-worktrees/runtime-dev`
 - if `runtime:status` shows `dirty=true`, treat that instance as out of policy
 - if `runtime:status` shows a branch or SHA mismatch, run `runtime:sync`
-- if launchd plists still point at the root repo or `.worktrees/main`, rerun `runtime:install-launchd`
+- if launchd plists still point at the root repo checkout or `.worktrees/main`, rerun `runtime:install-launchd`
 
 ## Next Upgrade
 
