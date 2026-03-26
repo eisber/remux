@@ -31,4 +31,59 @@ describe("runtime launchd install", () => {
     expect(plist).toContain(path.join(tempHome, ".remux", "runtime-worktrees", "runtime-dev"));
     expect(plist).not.toContain(path.join(process.cwd(), ".worktrees", "runtime-dev"));
   });
+
+  test("restarts an already-loaded runtime with kickstart when the working directory already matches", async () => {
+    const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-restart-test-"));
+    tempDirs.push(tempHome);
+
+    const fakeBinDir = path.join(tempHome, "bin");
+    const launchAgentsDir = path.join(tempHome, "Library", "LaunchAgents");
+    const runtimeRoot = path.join(tempHome, ".remux", "runtime-worktrees");
+    const logPath = path.join(tempHome, "launchctl.log");
+    const plistPath = path.join(launchAgentsDir, "com.remux.dev.plist");
+
+    await fs.promises.mkdir(fakeBinDir, { recursive: true });
+    await fs.promises.mkdir(launchAgentsDir, { recursive: true });
+    await fs.promises.mkdir(path.join(runtimeRoot, "runtime-dev"), { recursive: true });
+    await fs.promises.writeFile(plistPath, "<plist />\n");
+    await fs.promises.writeFile(
+      path.join(fakeBinDir, "launchctl"),
+      `#!/bin/bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${logPath}"
+if [[ "$1" == "print" ]]; then
+  cat <<'EOF'
+working directory = ${runtimeRoot}/runtime-dev
+EOF
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 }
+    );
+
+    execFileSync(
+      "bash",
+      [
+        "-c",
+        "source scripts/runtime-lib.sh && restart_runtime_service dev"
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HOME: tempHome,
+          PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+          REMUX_RUNTIME_WORKTREE_ROOT: runtimeRoot
+        },
+        stdio: "pipe"
+      }
+    );
+
+    const log = await fs.promises.readFile(logPath, "utf8");
+    expect(log).toContain(`print gui/${process.getuid?.() ?? process.getuid()}/com.remux.dev`);
+    expect(log).toContain(`kickstart -k gui/${process.getuid?.() ?? process.getuid()}/com.remux.dev`);
+    expect(log).not.toContain("bootout");
+    expect(log).not.toContain("bootstrap");
+  });
 });
