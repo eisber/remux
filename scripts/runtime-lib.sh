@@ -89,6 +89,10 @@ runtime_sync_service() {
   echo "com.remux.runtime-sync"
 }
 
+runtime_service_domain() {
+  echo "$LAUNCHD_GUI_DOMAIN/$1"
+}
+
 runtime_local_config_url() {
   ensure_instance_name "$1"
   echo "http://127.0.0.1:$(runtime_port "$1")/api/config"
@@ -186,19 +190,35 @@ verify_runtime_plist() {
   return 0
 }
 
+loaded_service_working_dir() {
+  local service="$1"
+  launchctl print "$(runtime_service_domain "$service")" 2>/dev/null | awk -F' = ' '/working directory = / { print $2; exit }'
+}
+
 restart_runtime_service() {
   ensure_instance_name "$1"
   local name="$1"
+  local service
   local plist
+  local expected_working_dir
+  local loaded_working_dir
+  service="$(runtime_service "$name")"
   plist="$(runtime_plist_path "$name")"
+  expected_working_dir="$(runtime_dir "$name")"
 
   if [[ ! -f "$plist" ]]; then
     echo "[runtime] launchd plist not installed for $name: $plist" >&2
     return 1
   fi
 
-  load_launchd_service "$(runtime_service "$name")" "$plist"
-  launchctl kickstart -k "$LAUNCHD_GUI_DOMAIN/$(runtime_service "$name")"
+  loaded_working_dir="$(loaded_service_working_dir "$service")"
+  if [[ "$loaded_working_dir" == "$expected_working_dir" ]]; then
+    launchctl kickstart -k "$(runtime_service_domain "$service")"
+    return 0
+  fi
+
+  load_launchd_service "$service" "$plist"
+  launchctl kickstart -k "$(runtime_service_domain "$service")"
 }
 
 load_launchd_service() {
@@ -210,7 +230,7 @@ load_launchd_service() {
     return 1
   fi
 
-  launchctl bootout "$LAUNCHD_GUI_DOMAIN/$service" 2>/dev/null || true
+  launchctl bootout "$(runtime_service_domain "$service")" 2>/dev/null || true
   launchctl bootstrap "$LAUNCHD_GUI_DOMAIN" "$plist"
 }
 
