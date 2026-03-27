@@ -715,6 +715,61 @@ describe("zellij backend server", () => {
     }
   });
 
+  test("workspace_state includes runtime state emitted by the attached PTY", async () => {
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    try {
+      await authControl(control);
+
+      ptyFactory.latestProcess().emitRuntimeState({
+        streamMode: "native-bridge",
+        scrollbackPrecision: "precise"
+      });
+
+      const state = await waitForMessage<{
+        type: "workspace_state";
+        runtimeState: { streamMode: string; scrollbackPrecision: string };
+      }>(
+        control,
+        (message) => message.type === "workspace_state" && message.runtimeState?.streamMode === "native-bridge"
+      );
+
+      expect(state.runtimeState).toEqual({
+        streamMode: "native-bridge",
+        scrollbackPrecision: "precise"
+      });
+    } finally {
+      control.close();
+    }
+  });
+
+  test("workspace change events trigger an immediate workspace refresh for follow-focus clients", async () => {
+    await gateway.newTab("main");
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    try {
+      await authControl(control);
+      control.send(JSON.stringify({ type: "set_follow_focus", follow: true }));
+      await waitForMessage<{ type: "workspace_state"; clientView: { followBackendFocus: boolean } }>(
+        control,
+        (message) => message.type === "workspace_state" && message.clientView.followBackendFocus === true
+      );
+
+      await gateway.selectTab("main", 1);
+      ptyFactory.latestProcess().emitWorkspaceChange("session_switch");
+
+      const state = await waitForMessage<{
+        type: "workspace_state";
+        clientView: { tabIndex: number };
+      }>(
+        control,
+        (message) => message.type === "workspace_state" && message.clientView.tabIndex === 1
+      );
+
+      expect(state.clientView.tabIndex).toBe(1);
+    } finally {
+      control.close();
+    }
+  });
+
   test("auth auto-attaches the only live session even when exited sessions exist", async () => {
     const scenarioGateway = new LifecycleZellijGateway();
     scenarioGateway.setSessionLifecycle("other", "exited");

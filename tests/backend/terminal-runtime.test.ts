@@ -44,4 +44,50 @@ describe("terminal runtime", () => {
     runtime.replayLast((data) => replayedAfterShutdown.push(data));
     expect(replayedAfterShutdown).toEqual([]);
   });
+
+  test("forwards runtime state changes from PTY processes", () => {
+    const factory = new FakePtyFactory();
+    const runtime = new TerminalRuntime(factory);
+    const states: Array<{ streamMode: string; scrollbackPrecision: string }> = [];
+
+    runtime.on("runtimeState", (state) => states.push(state));
+    runtime.attachToSession("main");
+
+    factory.latestProcess().emitRuntimeState({
+      streamMode: "native-bridge",
+      scrollbackPrecision: "precise"
+    });
+    factory.latestProcess().emitRuntimeState({
+      streamMode: "cli-polling",
+      degradedReason: "bridge_crashed",
+      scrollbackPrecision: "approximate"
+    });
+
+    expect(states).toEqual([
+      { streamMode: "native-bridge", scrollbackPrecision: "precise" },
+      {
+        streamMode: "cli-polling",
+        degradedReason: "bridge_crashed",
+        scrollbackPrecision: "approximate"
+      }
+    ]);
+    expect(runtime.currentRuntimeState()).toEqual({
+      streamMode: "cli-polling",
+      degradedReason: "bridge_crashed",
+      scrollbackPrecision: "approximate"
+    });
+  });
+
+  test("forwards workspace change signals from PTY processes", () => {
+    const factory = new FakePtyFactory();
+    const runtime = new TerminalRuntime(factory);
+    const reasons: string[] = [];
+
+    runtime.on("workspaceChange", (reason) => reasons.push(reason));
+    runtime.attachToSession("main");
+    factory.latestProcess().emitWorkspaceChange("session_switch");
+    factory.latestProcess().emitWorkspaceChange("session_renamed");
+
+    expect(reasons).toEqual(["session_switch", "session_renamed"]);
+  });
 });

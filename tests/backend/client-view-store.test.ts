@@ -155,4 +155,17 @@ describe("ClientViewStore", () => {
     expect(view.tabIndex).toBe(1);
     expect(view.paneId).toBe("terminal_1");
   });
+
+  test("hasFollowFocusClients reports whether any client opted in", () => {
+    const store = new ClientViewStore();
+    const snapshot = makeSnapshot();
+    store.initView("client-1", "main", snapshot);
+    store.initView("client-2", "main", snapshot);
+
+    expect(store.hasFollowFocusClients()).toBe(false);
+
+    store.setFollowFocus("client-2", true);
+
+    expect(store.hasFollowFocusClients()).toBe(true);
+  });
 });

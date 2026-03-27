@@ -5,6 +5,7 @@ import type {
   TabState,
   WorkspaceSnapshot,
 } from "../../shared/protocol.js";
+import type { WorkspaceRuntimeState } from "../../shared/contracts/workspace.js";
 import type { RuntimeConfig } from "../config.js";
 import type { ServerDependencies } from "../server.js";
 import { buildSnapshot } from "../multiplexer/types.js";
@@ -57,6 +58,14 @@ export interface SessionAttachServiceOptions {
   knownSessionTopologies: Map<string, SessionState>;
   latestSnapshotRef: { current: WorkspaceSnapshot | undefined };
   logger: Pick<Console, "log" | "error">;
+  onRuntimeStateChange?: (
+    context: ControlContext,
+    state: WorkspaceRuntimeState | null
+  ) => void | Promise<void>;
+  onRuntimeWorkspaceChange?: (
+    context: ControlContext,
+    reason: "session_switch" | "session_renamed"
+  ) => void | Promise<void>;
   tabHistoryStore: TabHistoryStore;
   viewStore: ClientViewStore;
 }
@@ -72,7 +81,11 @@ export interface SessionAttachService {
     baseSessions: WorkspaceSnapshot,
     fullState: WorkspaceSnapshot,
     client: ControlContext
-  ) => { workspace: WorkspaceSnapshot; clientView: ClientView };
+  ) => {
+    workspace: WorkspaceSnapshot;
+    clientView: ClientView;
+    runtimeState: WorkspaceRuntimeState | null;
+  };
   buildTabHistoryPayload: (
     sessionName: string,
     tabIndex: number,
@@ -105,6 +118,8 @@ export const createSessionAttachService = ({
   knownSessionTopologies,
   latestSnapshotRef,
   logger,
+  onRuntimeStateChange,
+  onRuntimeWorkspaceChange,
   tabHistoryStore,
   viewStore,
 }: SessionAttachServiceOptions): SessionAttachService => {
@@ -240,7 +255,19 @@ export const createSessionAttachService = ({
       deps.extensions?.onSessionExit(context.baseSession ?? context.clientId, code);
       sendJson(context.socket, { type: "info", message: "terminal client exited" });
     });
+    runtime.on("runtimeState", (state) => {
+      context.runtimeState = state;
+      void Promise.resolve(onRuntimeStateChange?.(context, state)).catch((error) => {
+        logger.error("runtime state callback failed", error);
+      });
+    });
+    runtime.on("workspaceChange", (reason) => {
+      void Promise.resolve(onRuntimeWorkspaceChange?.(context, reason)).catch((error) => {
+        logger.error("workspace change callback failed", error);
+      });
+    });
     context.runtime = runtime;
+    context.runtimeState = runtime.currentRuntimeState();
     if (context.pendingResize) {
       runtime.resize(context.pendingResize.cols, context.pendingResize.rows);
     }
@@ -251,7 +278,8 @@ export const createSessionAttachService = ({
     baseSessions: WorkspaceSnapshot,
     fullState: WorkspaceSnapshot,
     client: ControlContext
-  ): { workspace: WorkspaceSnapshot; clientView: ClientView } => {
+  ): { workspace: WorkspaceSnapshot; clientView: ClientView; runtimeState: WorkspaceRuntimeState | null } => {
+    const runtimeState = client.runtimeState ?? client.runtime?.currentRuntimeState() ?? null;
     const view = viewStore.getView(client.clientId);
     if (!view) {
       const defaultView: ClientView = {
@@ -260,13 +288,14 @@ export const createSessionAttachService = ({
         paneId: "terminal_0",
         followBackendFocus: false,
       };
-      return { workspace: baseSessions, clientView: defaultView };
+      return { workspace: baseSessions, clientView: defaultView, runtimeState };
     }
 
     if (deps.backend.kind === "zellij") {
       return {
         workspace: baseSessions,
         clientView: view,
+        runtimeState,
       };
     }
 
@@ -301,6 +330,7 @@ export const createSessionAttachService = ({
     return {
       workspace: { ...baseSessions, sessions },
       clientView: view,
+      runtimeState,
     };
   };
 
@@ -317,6 +347,7 @@ export const createSessionAttachService = ({
   const resetControlAttachment = async (context: ControlContext): Promise<void> => {
     await context.runtime?.shutdown();
     context.runtime = undefined;
+    context.runtimeState = null;
     context.baseSession = undefined;
     context.attachedSession = undefined;
     context.pendingResize = undefined;

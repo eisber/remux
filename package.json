@@ -1,6 +1,6 @@
 {
   "name": "remux",
-  "version": "0.1.64",
+  "version": "0.1.65",
   "description": "Remote workspace cockpit for terminal-first work, with tmux, zellij, and conpty backends",
   "license": "MIT",
   "repository": {
@@ -51,6 +51,7 @@
     "runner:status": "scripts/github-runner-status.sh",
     "test:smoke": "REAL_TMUX_SMOKE=1 vitest run tests/smoke",
     "test:e2e": "npm run build && playwright test",
+    "test:e2e:real-zellij": "REAL_ZELLIJ_E2E=1 playwright test tests/e2e/real-zellij.spec.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "prepack": "npm run build"

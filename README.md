@@ -34,10 +34,10 @@ Remux is intentionally not a generic browser SSH client and not a thin browser w
 Remux uses a multiplexer-neutral workspace model internally, but it does not promise equal fidelity across all backends.
 
 - `tmux`: flagship backend and the most polished path today
-- `zellij`: supported with explicit capability and history-fidelity caveats
+- `zellij`: supported with native bridge streaming, visible CLI fallback state, and Focus Sync
 - `conpty`: Windows fallback for simpler persistent shell access
 
-If you want the most polished experience, use `tmux`. For current zellij caveats, see [docs/ZELLIJ_MODE_AUDIT_2026-03-25.md](./docs/ZELLIJ_MODE_AUDIT_2026-03-25.md).
+If you want the most polished experience, use `tmux`. For current zellij posture and verification status, see [docs/ZELLIJ_PERFECT_RUN_TODO_2026-03-27.md](./docs/ZELLIJ_PERFECT_RUN_TODO_2026-03-27.md).
 
 ## Remux vs Zellij
 
@@ -159,6 +159,7 @@ Read the full model in [docs/SECURITY.md](./docs/SECURITY.md).
 - [docs/SPEC.md](./docs/SPEC.md): current architecture and protocol model
 - [docs/SECURITY.md](./docs/SECURITY.md): security assumptions, risks, and operating guidance
 - [docs/NATIVE_PLATFORM_ROADMAP_2026-03-26.md](./docs/NATIVE_PLATFORM_ROADMAP_2026-03-26.md): native-client and semantic-adapter evolution plan
+- [docs/ZELLIJ_PERFECT_RUN_TODO_2026-03-27.md](./docs/ZELLIJ_PERFECT_RUN_TODO_2026-03-27.md): current zellij acceptance status and verification commands
 - [docs/ZELLIJ_MODE_AUDIT_2026-03-25.md](./docs/ZELLIJ_MODE_AUDIT_2026-03-25.md): current zellij backend audit
 
 ## Development
@@ -198,6 +199,7 @@ Additional test commands:
 
 ```bash
 npm run test:e2e
+npm run test:e2e:real-zellij
 npm run test:smoke
 ```
 

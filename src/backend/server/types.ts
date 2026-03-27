@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import type { TerminalRuntime } from "../pty/terminal-runtime.js";
+import type { WorkspaceRuntimeState } from "../../shared/contracts/workspace.js";
 
 export interface ControlContext {
   socket: WebSocket;
@@ -7,6 +8,7 @@ export interface ControlContext {
   clientId: string;
   messageQueue: Promise<void>;
   runtime?: TerminalRuntime;
+  runtimeState?: WorkspaceRuntimeState | null;
   baseSession?: string;
   attachedSession?: string;
   terminalClients: Set<DataContext>;

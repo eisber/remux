@@ -1,10 +1,13 @@
 import { EventEmitter } from "node:events";
+import type { WorkspaceRuntimeState } from "../../shared/protocol.js";
 import type { PtyFactory, PtyProcess } from "./pty-adapter.js";
 
 interface TerminalRuntimeEvents {
   data: (payload: string) => void;
   exit: (code: number) => void;
   attach: (session: string) => void;
+  runtimeState: (state: WorkspaceRuntimeState) => void;
+  workspaceChange: (reason: "session_switch" | "session_renamed") => void;
 }
 
 export class TerminalRuntime {
@@ -14,6 +17,7 @@ export class TerminalRuntime {
   private lastDimensions: { cols: number; rows: number } = { cols: 80, rows: 24 };
   /** Cached last data chunk for replaying to late-joining terminal clients. */
   private lastDataChunk?: string;
+  private runtimeState: WorkspaceRuntimeState | null = null;
 
   public constructor(private readonly factory: PtyFactory) {}
 
@@ -23,6 +27,10 @@ export class TerminalRuntime {
 
   public isAlive(): boolean {
     return this.process !== undefined;
+  }
+
+  public currentRuntimeState(): WorkspaceRuntimeState | null {
+    return this.runtimeState;
   }
 
   public attachToSession(session: string, force = false): void {
@@ -47,6 +55,26 @@ export class TerminalRuntime {
         this.process = undefined;
       }
     });
+    if (processRef.onRuntimeStateChange) {
+      processRef.onRuntimeStateChange((state) => {
+        this.runtimeState = state;
+        this.events.emit("runtimeState", state);
+      });
+    }
+    if (processRef.onWorkspaceChange) {
+      processRef.onWorkspaceChange((reason) => {
+        this.events.emit("workspaceChange", reason);
+      });
+    }
+    if (processRef.getRuntimeState) {
+      const currentState = processRef.getRuntimeState();
+      if (currentState) {
+        this.runtimeState = currentState;
+        this.events.emit("runtimeState", currentState);
+      }
+    } else {
+      this.runtimeState = null;
+    }
     processRef.resize(this.lastDimensions.cols, this.lastDimensions.rows);
     this.process = processRef;
     this.events.emit("attach", session);
@@ -83,6 +111,7 @@ export class TerminalRuntime {
     if (!this.process) {
       this.session = undefined;
       this.lastDataChunk = undefined;
+      this.runtimeState = null;
       return Promise.resolve();
     }
     return new Promise<void>((resolve) => {
@@ -91,6 +120,7 @@ export class TerminalRuntime {
         this.process = undefined;
         this.session = undefined;
         this.lastDataChunk = undefined;
+        this.runtimeState = null;
         resolve();
       }, 500);
       proc.onExit(() => {
@@ -98,6 +128,7 @@ export class TerminalRuntime {
         this.process = undefined;
         this.session = undefined;
         this.lastDataChunk = undefined;
+        this.runtimeState = null;
         resolve();
       });
       proc.kill();

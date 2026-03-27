@@ -1,8 +1,13 @@
+import type { WorkspaceRuntimeState } from "../../shared/protocol.js";
+
 export interface PtyProcess {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   onData(handler: (data: string) => void): void;
   onExit(handler: (code: number) => void): void;
+  getRuntimeState?(): WorkspaceRuntimeState | null;
+  onRuntimeStateChange?(handler: (state: WorkspaceRuntimeState) => void): void;
+  onWorkspaceChange?(handler: (reason: "session_switch" | "session_renamed") => void): void;
   kill(): void;
 }
 
