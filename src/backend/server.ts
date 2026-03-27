@@ -206,6 +206,12 @@ export const createRemuxServer = (
   const tabHistoryStore = new TabHistoryStore();
   const knownSessionTopologies = new Map<string, SessionState>();
   const isNonGroupedBackend = (): boolean => !deps.backend.createGroupedSession;
+  const resolveMonitorPollIntervalMs = (): number => {
+    if (deps.backend.kind !== "zellij") {
+      return config.pollIntervalMs;
+    }
+    return viewStore.hasFollowFocusClients() ? 250 : config.pollIntervalMs;
+  };
   const getControlContext = (clientId: string): ControlContext | undefined =>
     Array.from(controlClients).find((candidate) => candidate.clientId === clientId);
 
@@ -217,6 +223,17 @@ export const createRemuxServer = (
     knownSessionTopologies,
     latestSnapshotRef,
     logger,
+    onRuntimeStateChange: async (context, runtimeState) => {
+      context.runtimeState = runtimeState;
+      const maybeBridgeBackend = deps.backend as MultiplexerBackend & {
+        setNativeBridgeActive?: (active: boolean) => void;
+      };
+      maybeBridgeBackend.setNativeBridgeActive?.(runtimeState?.scrollbackPrecision === "precise");
+      await monitor?.forcePublish();
+    },
+    onRuntimeWorkspaceChange: async () => {
+      await monitor?.forcePublish();
+    },
     tabHistoryStore,
     viewStore,
   });
@@ -313,8 +330,13 @@ export const createRemuxServer = (
     );
     for (const client of controlClients) {
       if (client.authed) {
-        const { workspace, clientView } = sessionAttachService.buildClientState(baseSessions, state, client);
-        sendJson(client.socket, { type: "workspace_state", workspace, clientView });
+        const { workspace, clientView, runtimeState } = sessionAttachService.buildClientState(baseSessions, state, client);
+        sendJson(client.socket, {
+          type: "workspace_state",
+          workspace,
+          clientView,
+          runtimeState: runtimeState ?? undefined
+        });
       }
     }
   };
@@ -725,7 +747,7 @@ export const createRemuxServer = (
 
     monitor = new TmuxStateMonitor(
       deps.backend,
-      config.pollIntervalMs,
+      resolveMonitorPollIntervalMs,
       broadcastState,
       (error) => logger.error(error)
     );
@@ -845,7 +867,7 @@ export const createRemuxServer = (
       logger.log("server start requested", `${config.host}:${config.port}`);
       monitor = new TmuxStateMonitor(
         deps.backend,
-        config.pollIntervalMs,
+        resolveMonitorPollIntervalMs,
         broadcastState,
         (error) => logger.error(error)
       );

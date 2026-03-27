@@ -315,7 +315,7 @@ describe("ZellijPaneIO", () => {
     io.kill();
   });
 
-  test("renders bridge pane updates and only polls pane metadata for cursor", async () => {
+  test("renders bridge pane updates without CLI cursor polling when the bridge supplies cursor", async () => {
     const hiddenClient = {
       resize: vi.fn(),
       write: vi.fn(),
@@ -328,16 +328,6 @@ describe("ZellijPaneIO", () => {
     execFileMock.mockImplementation((_file, args, _options, callback) => {
       if (args.includes("dump-screen")) {
         callback?.(new Error("dump-screen should not be used in bridge mode"), "", "");
-        return;
-      }
-      if (args.includes("list-panes")) {
-        callback?.(null, JSON.stringify([
-          {
-            id: 7,
-            is_plugin: false,
-            cursor_coordinates_in_pane: [6, 2]
-          }
-        ]), "");
         return;
       }
       callback?.(null, "", "");
@@ -368,28 +358,20 @@ describe("ZellijPaneIO", () => {
       paneId: "terminal_7",
       viewport: ["\u001b[mhello", "\u001b[mworld"],
       scrollback: null,
-      isInitial: true
+      isInitial: true,
+      cursor: { row: 2, col: 6 }
     });
 
     await flushAsyncWork();
 
-    expect(execFileMock).toHaveBeenCalledTimes(1);
-    expect(execFileMock.mock.calls[0]?.[1]).toEqual([
-      "--session", "main",
-      "action", "list-panes",
-      "--json",
-      "--all"
-    ]);
+    expect(execFileMock).not.toHaveBeenCalled();
     // First frame: full clear + viewport (initial render, no previous viewport)
     expect(frames[0]).toBe(
       "\x1b[?25l\x1b[3J\x1b[H\x1b[2J"
       + "\x1b[1;1H\x1b[2K\u001b[mhello"
       + "\x1b[2;1H\x1b[2K\u001b[mworld"
-      + "\x1b[m"
+      + "\x1b[m\x1b[2;6H\x1b[?25h"
     );
-    // Last frame: diff render with cursor only (viewport unchanged)
-    expect(frames.at(-1)).toContain("\x1b[2;6H");
-    expect(frames.at(-1)).toContain("\x1b[?25h");
     expect(nativeBridgeStateStore.getPaneSnapshot("main", "terminal_7")).toEqual({
       session: "main",
       paneId: "terminal_7",
@@ -424,6 +406,35 @@ describe("ZellijPaneIO", () => {
 
     expect(exits).toEqual([0]);
     expect(fakeBridge.kill).toHaveBeenCalledTimes(1);
+  });
+
+  test("reports degraded runtime state when native bridge startup fails", async () => {
+    const { ZellijPaneIO } = await import("../../src/backend/zellij/pane-io.js");
+    const io = new ZellijPaneIO({
+      session: "main",
+      paneId: "terminal_4",
+      nativeBridgeFactory: async () => {
+        throw new Error("bridge unavailable");
+      }
+    });
+
+    const states: Array<{ streamMode: string; degradedReason?: string; scrollbackPrecision: string }> = [];
+    io.onRuntimeStateChange((state) => states.push(state));
+
+    await flushAsyncWork();
+
+    expect(io.getRuntimeState()).toEqual({
+      streamMode: "cli-polling",
+      degradedReason: "startup_failed",
+      scrollbackPrecision: "approximate"
+    });
+    expect(states.at(-1)).toEqual({
+      streamMode: "cli-polling",
+      degradedReason: "startup_failed",
+      scrollbackPrecision: "approximate"
+    });
+
+    io.kill();
   });
 
   test("prefers bridge commands for writes when the native bridge is active", async () => {
@@ -631,6 +642,9 @@ describe("ZellijPaneIO", () => {
     nodePtySpawnMock.mockReturnValue(hiddenClient);
 
     const fakeBridge = new FakeNativeBridge();
+    const recoveredBridge = new FakeNativeBridge();
+    const runtimeStates: Array<{ streamMode: string; degradedReason?: string; scrollbackPrecision: string }> = [];
+    let bridgeCreations = 0;
     execFileMock.mockImplementation((_file, args, _options, callback) => {
       if (args.includes("dump-screen")) {
         callback?.(null, "\u001b[mfallback", "");
@@ -653,8 +667,12 @@ describe("ZellijPaneIO", () => {
     const io = new ZellijPaneIO({
       session: "main",
       paneId: "terminal_3",
-      nativeBridgeFactory: async () => fakeBridge
+      nativeBridgeFactory: async () => {
+        bridgeCreations += 1;
+        return bridgeCreations === 1 ? fakeBridge : recoveredBridge;
+      }
     });
+    io.onRuntimeStateChange((state) => runtimeStates.push(state));
 
     await flushAsyncWork();
     execFileMock.mockClear();
@@ -663,6 +681,28 @@ describe("ZellijPaneIO", () => {
     await flushAsyncWork();
 
     expect(execFileMock.mock.calls.some(([, args]) => (args as string[]).includes("dump-screen"))).toBe(true);
+    expect(io.getRuntimeState()).toEqual({
+      streamMode: "cli-polling",
+      degradedReason: "bridge_crashed",
+      scrollbackPrecision: "approximate"
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushAsyncWork();
+
+    expect(io.getRuntimeState()).toEqual({
+      streamMode: "native-bridge",
+      scrollbackPrecision: "precise"
+    });
+    expect(runtimeStates).toContainEqual({
+      streamMode: "cli-polling",
+      degradedReason: "bridge_crashed",
+      scrollbackPrecision: "approximate"
+    });
+    expect(runtimeStates).toContainEqual({
+      streamMode: "native-bridge",
+      scrollbackPrecision: "precise"
+    });
 
     io.kill();
   });

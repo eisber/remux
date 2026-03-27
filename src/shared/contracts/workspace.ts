@@ -42,6 +42,23 @@ export interface WorkspaceSnapshot {
   capturedAt: string;
 }
 
+export type WorkspaceStreamMode = "pending" | "native-bridge" | "cli-polling" | "unsupported";
+
+export type WorkspaceDegradedReason =
+  | "bridge_disabled"
+  | "binary_missing"
+  | "unsupported_platform"
+  | "version_unsupported"
+  | "startup_failed"
+  | "bridge_crashed"
+  | "restart_exhausted";
+
+export interface WorkspaceRuntimeState {
+  streamMode: WorkspaceStreamMode;
+  degradedReason?: WorkspaceDegradedReason;
+  scrollbackPrecision: "precise" | "approximate";
+}
+
 // ── Backend capabilities ──
 
 export interface BackendCapabilities {

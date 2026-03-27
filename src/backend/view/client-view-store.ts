@@ -123,6 +123,15 @@ export class ClientViewStore {
     return this.views.get(clientId);
   }
 
+  hasFollowFocusClients(): boolean {
+    for (const view of this.views.values()) {
+      if (view.followBackendFocus) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   removeClient(clientId: string): void {
     this.views.delete(clientId);
     this.missingSessionCounts.delete(clientId);

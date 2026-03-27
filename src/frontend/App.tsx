@@ -54,6 +54,7 @@ import type {
   SessionState,
   ServerCapabilities,
   TabState,
+  WorkspaceRuntimeState,
 } from "../shared/protocol";
 import { AppShell } from "./screens/AppShell";
 import { SessionPickerScreen } from "./screens/SessionPickerScreen";
@@ -93,7 +94,7 @@ export const App = () => {
     scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
 
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
-  const [streamMode, setStreamMode] = useState<string | undefined>(undefined);
+  const [runtimeState, setRuntimeState] = useState<WorkspaceRuntimeState | null>(null);
   const viewModeRef = useRef(viewMode);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   const [inspectLineCount, setInspectLineCount] = useState(1000);
@@ -157,6 +158,7 @@ export const App = () => {
           terminalWriteBufferRef.current?.clear();
           resetTerminalBufferRef.current();
           attachedSessionRef.current = "";
+          setRuntimeState(null);
           workspace.onSessionPicker(message.sessions);
           return;
         }
@@ -169,9 +171,7 @@ export const App = () => {
             attachedSessionRef.current = inferredAttachedSession;
           }
           workspace.onWorkspaceState(message.workspace, message.clientView ?? null);
-          if (message.streamMode !== undefined) {
-            setStreamMode(message.streamMode);
-          }
+          setRuntimeState(message.runtimeState ?? null);
           if (inferredAttachedSession) {
             connectionActionsRef.current.setStatusMessage(`attached: ${inferredAttachedSession}`);
           }
@@ -1041,8 +1041,8 @@ export const App = () => {
         tabs={headerTabs}
         topStatus={topStatus}
         viewMode={viewMode}
-        supportsPreciseScrollback={capabilities?.supportsPreciseScrollback ?? true}
-        streamMode={streamMode}
+        inspectPrecision={inspectSnapshot?.precision}
+        runtimeState={runtimeState}
         formatBytes={formatBytes}
           />
         )}

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::env;
 use std::fs;
@@ -107,7 +107,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     spawn_stdin_command_loop(os_input.box_clone(), default_command_pane_id);
 
-    let cursor_querier = CursorQuerier::new(args.session.clone(), args.socket_dir.clone());
+    let cursor_querier = CursorQuerier::new(args.session.clone(), args.socket_dir.clone())?;
 
     let mut remaining_panes: HashSet<PaneId> = pane_ids.into_iter().collect();
     loop {
@@ -471,40 +471,61 @@ struct CursorPosition {
     col: usize,
 }
 
-/// Queries cursor position from `zellij list-panes --json --all` subprocess.
-/// Caches the last-known cursor per pane to reduce subprocess calls.
+/// Queries cursor position through a dedicated IPC client using Action::ListPanes.
+/// Caches the last-known cursor per pane to reduce round-trips on transient failures.
 struct CursorQuerier {
-    session: String,
-    socket_dir: Option<String>,
-    cache: Mutex<std::collections::HashMap<String, CursorPosition>>,
+    client: Mutex<Box<dyn ClientOsApi>>,
+    cache: Mutex<HashMap<String, CursorPosition>>,
 }
 
 impl CursorQuerier {
-    fn new(session: String, socket_dir: Option<String>) -> Self {
-        Self {
-            session,
-            socket_dir,
-            cache: Mutex::new(std::collections::HashMap::new()),
-        }
+    fn new(
+        session: String,
+        socket_dir: Option<String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let os_input = get_cli_client_os_input()?;
+        let mut sock_dir = resolve_socket_dir(socket_dir.as_deref());
+        fs::create_dir_all(&sock_dir)?;
+        set_permissions(&sock_dir, 0o700)?;
+        sock_dir.push(&session);
+        os_input.connect_to_server(&sock_dir);
+
+        Ok(Self {
+            client: Mutex::new(Box::new(os_input)),
+            cache: Mutex::new(HashMap::new()),
+        })
     }
 
     fn query(&self, pane_id: &str) -> Option<CursorPosition> {
-        let mut cmd = Command::new("zellij");
-        cmd.args(["--session", &self.session, "action", "list-panes", "--json", "--all"]);
-        if let Some(ref socket_dir) = self.socket_dir {
-            cmd.env("ZELLIJ_SOCKET_DIR", socket_dir);
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+        let client = self.client.lock().ok()?;
+        client.send_to_server(ClientToServerMsg::Action {
+            action: Action::ListPanes {
+                show_tab: false,
+                show_command: false,
+                show_state: false,
+                show_geometry: false,
+                show_all: true,
+                output_json: true,
+            },
+            terminal_id: None,
+            client_id: None,
+            is_cli_client: true,
+        });
 
-        let output = match cmd.output() {
-            Ok(output) if output.status.success() => output,
-            _ => {
-                // Fallback to cached cursor on failure
-                return self.cache.lock().ok()?.get(pane_id).cloned();
+        let lines = match loop {
+            match client.recv_from_server() {
+                Some((ServerToClientMsg::Log { lines }, _)) => break Some(lines),
+                Some((ServerToClientMsg::LogError { .. }, _))
+                | Some((ServerToClientMsg::Exit { .. }, _))
+                | None => break None,
+                _ => continue,
             }
+        } {
+            Some(lines) => lines,
+            None => return self.cache.lock().ok()?.get(pane_id).cloned(),
         };
 
-        let json_str = String::from_utf8_lossy(&output.stdout);
+        let json_str = lines.join("\n");
         let cursor = self.parse_cursor_from_list_panes(&json_str, pane_id);
 
         if let Some(ref cursor) = cursor {

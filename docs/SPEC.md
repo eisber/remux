@@ -143,13 +143,14 @@ Characteristics:
 
 ### zellij
 
-`zellij` support exists through a dedicated backend and PTY factory.
+`zellij` support exists through a dedicated backend, PTY factory, and native bridge.
 
-Important caveat:
+Current characteristics:
 
-- zellij semantics differ from tmux, so Remux cannot provide exact behavior or history fidelity parity
-- some UI logic contains zellij-specific handling
-- see `docs/ZELLIJ_MODE_AUDIT_2026-03-25.md` for current gaps and design pressure
+- live pane rendering prefers the native bridge and degrades explicitly to CLI fallback when needed
+- the UI exposes the current zellij runtime mode instead of hiding bridge failures behind static capability flags
+- Focus Sync can follow external zellij tab and pane changes when the user enables it
+- zellij semantics still differ from tmux, so Remux does not promise exact behavior or history fidelity parity
 
 ### conpty
 
