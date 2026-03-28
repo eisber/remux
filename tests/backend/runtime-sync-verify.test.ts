@@ -262,7 +262,7 @@ exit 7
 
     const log = await fs.promises.readFile(launchctlLogPath, "utf8");
     expect(log).toContain(`print gui/${process.getuid?.() ?? process.getuid()}/com.remux.runtime-v2-shared`);
-    expect(log).toContain(`bootout gui/${process.getuid?.() ?? process.getuid()}/com.remux.runtime-v2-shared`);
+    expect(log).toContain(`bootout gui/${process.getuid?.() ?? process.getuid()} ${sharedPlistPath}`);
     expect(log).toContain(`bootstrap gui/${process.getuid?.() ?? process.getuid()} ${sharedPlistPath}`);
   });
 

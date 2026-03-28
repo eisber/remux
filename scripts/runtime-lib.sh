@@ -476,7 +476,9 @@ load_launchd_service() {
     return 1
   fi
 
-  launchctl bootout "$(runtime_service_domain "$service")" 2>/dev/null || true
+  launchctl bootout "$LAUNCHD_GUI_DOMAIN" "$plist" 2>/dev/null \
+    || launchctl bootout "$(runtime_service_domain "$service")" 2>/dev/null \
+    || true
   launchctl bootstrap "$LAUNCHD_GUI_DOMAIN" "$plist"
 }
 

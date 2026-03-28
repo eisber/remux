@@ -250,7 +250,7 @@ exit 0
 
     const log = await fs.promises.readFile(logPath, "utf8");
     expect(log).toContain(`print gui/${process.getuid?.() ?? process.getuid()}/com.remux.dev`);
-    expect(log).toContain(`bootout gui/${process.getuid?.() ?? process.getuid()}/com.remux.dev`);
+    expect(log).toContain(`bootout gui/${process.getuid?.() ?? process.getuid()} ${plistPath}`);
     expect(log).toContain(`bootstrap gui/${process.getuid?.() ?? process.getuid()} ${plistPath}`);
     expect(log).toContain(`kickstart -k gui/${process.getuid?.() ?? process.getuid()}/com.remux.dev`);
   });
