@@ -49,7 +49,6 @@ import { attachWebSocketKeepAlive } from "./websocket-keepalive";
 import type {
   SessionState,
   ServerCapabilities,
-  TerminalGeometryState,
   TabState,
   WorkspaceRuntimeState,
 } from "../shared/protocol";
@@ -73,7 +72,6 @@ const LazyPasswordOverlay = lazy(() => import("./components/PasswordOverlay"));
 const LazyUploadToast = lazy(() => import("./components/UploadToast"));
 
 export const App = () => {
-  const runtimeGeometryRef = useRef<TerminalGeometryState | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
   const stopTerminalKeepAliveRef = useRef<(() => void) | null>(null);
   /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
@@ -85,11 +83,10 @@ export const App = () => {
   const attachedSessionRef = useRef("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [composeText, setComposeText] = useState("");
-  const [runtimeGeometryVersion, setRuntimeGeometryVersion] = useState(0);
 
   // ── Preferences hook ──
   const prefs = useClientPreferences();
-  const { theme, sidebarCollapsed, setSidebarCollapsed, stickyZoom, setStickyZoom,
+  const { theme, sidebarCollapsed, setSidebarCollapsed, stickyZoom,
     scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
 
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
@@ -163,7 +160,6 @@ export const App = () => {
           terminalInputBufferRef.current?.clear();
           terminalWriteBufferRef.current?.clear();
           resetTerminalBufferRef.current();
-          runtimeGeometryRef.current = null;
           workspace.onAttached(message.session);
           attachedSessionRef.current = message.session;
           launchContextRef.current = null;
@@ -189,7 +185,6 @@ export const App = () => {
           resetTerminalBufferRef.current();
           attachedSessionRef.current = "";
           setRuntimeState(null);
-          runtimeGeometryRef.current = null;
           workspace.onSessionPicker(message.sessions);
           return;
         }
@@ -205,21 +200,6 @@ export const App = () => {
           setRuntimeState(message.runtimeState ?? null);
           if (inferredAttachedSession) {
             connectionActionsRef.current.setStatusMessage(`attached: ${inferredAttachedSession}`);
-          }
-          return;
-        }
-        case "runtime_geometry": {
-          const previous = runtimeGeometryRef.current;
-          runtimeGeometryRef.current = message.geometry;
-          if (
-            !previous
-            || previous.status !== message.geometry.status
-            || previous.requested.cols !== message.geometry.requested.cols
-            || previous.requested.rows !== message.geometry.requested.rows
-            || previous.confirmed.cols !== message.geometry.confirmed.cols
-            || previous.confirmed.rows !== message.geometry.confirmed.rows
-          ) {
-            setRuntimeGeometryVersion((current) => current + 1);
           }
           return;
         }
@@ -260,7 +240,6 @@ export const App = () => {
       terminalWriteBufferRef.current?.clear();
       terminalSocketRef.current?.close();
       terminalSocketRef.current = null;
-      runtimeGeometryRef.current = null;
     },
     getAuthPayload: () => buildControlAuthHint(
       attachedSessionRef.current,
@@ -301,9 +280,6 @@ export const App = () => {
   } = useTerminalRuntime({
     onSendRaw: sendRawToSocket,
     mobileLayout,
-    runtimeGeometryRef,
-    runtimeGeometryVersion,
-    serverConfig,
     setStatusMessage: connection.setStatusMessage,
     terminalVisible: viewMode === "terminal",
     terminalSocketRef,
@@ -708,16 +684,6 @@ export const App = () => {
 
   // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
-  // Default sticky zoom OFF for the legacy zellij fallback when user has no stored preference.
-  useEffect(() => {
-    if (!serverConfig) return;
-    const stored = localStorage.getItem("remux-sticky-zoom");
-    if (stored !== null) return;
-    if (serverConfig.backendKind === "zellij") {
-      setStickyZoom(false);
-    }
-  }, [serverConfig, setStickyZoom]);
-
   useEffect(() => {
     if (!debugMode) {
       return;
@@ -741,7 +707,6 @@ export const App = () => {
       activePane: activePane?.id ?? null,
       activePaneZoomed: activePane?.zoomed ?? null,
       backendKind: serverConfig?.backendKind ?? null,
-      runtimeGeometry: runtimeGeometryRef.current,
       topStatus,
       snapshotCapturedAt: snapshot.capturedAt,
       sessions: sessionSummary
@@ -837,9 +802,6 @@ export const App = () => {
     const switchingTabs = tab.index !== activeTab?.index;
     workspace.selectWindowIndex(tab.index);
     sendControl({ type: "select_tab", session: activeSession.name, tabIndex: tab.index });
-    if (serverConfig?.backendKind === "zellij") {
-      return;
-    }
     if (stickyZoom && capabilities?.supportsFullscreenPane && switchingTabs) {
       const pane = tab.panes.find((p) => p.active) ?? tab.panes[0];
       if (pane && !pane.zoomed) {
@@ -1008,7 +970,7 @@ export const App = () => {
             onSetTheme={prefs.setTheme}
             onUpdateScrollFontSize={prefs.setScrollFontSize}
             scrollFontSize={scrollFontSize}
-            showFollowFocus={serverConfig?.backendKind === "zellij"}
+            showFollowFocus={serverConfig?.backendKind === "runtime-v2"}
             theme={theme}
           />
 

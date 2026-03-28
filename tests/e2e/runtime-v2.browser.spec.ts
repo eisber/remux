@@ -18,7 +18,7 @@ test.describe("runtime-v2 browser behavior", () => {
     }
   });
 
-  test("renders the runtime-v2 workspace without legacy backend switching or console errors", async ({ page }) => {
+  test("renders the runtime-v2 workspace without console errors", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("console", (message) => {
       if (message.type() === "error") {
