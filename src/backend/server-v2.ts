@@ -1006,6 +1006,7 @@ export const createRemuxV2GatewayServer = (
         sendComposeToRuntime({
           runtime: terminalClient.bridge,
           text: message.text,
+          submitMode: "delayed",
           paneCommand: resolvePaneCommandForView(
             buildLegacyWorkspaceSnapshot(runtimeControl.currentSummary()),
             buildLegacyClientView(runtimeControl.currentSummary(), context.followBackendFocus),

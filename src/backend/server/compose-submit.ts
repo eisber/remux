@@ -3,6 +3,8 @@ import type { ClientView, WorkspaceSnapshot } from "../../shared/protocol.js";
 
 export const CODEX_COMPOSE_SUBMIT_DELAY_MS = 150;
 
+export type ComposeSubmitMode = "auto" | "immediate" | "delayed";
+
 export interface ComposeRuntimeWriter {
   write(data: string): void;
 }
@@ -11,9 +13,12 @@ interface SendComposeToRuntimeOptions {
   runtime: ComposeRuntimeWriter;
   text: string;
   paneCommand?: string | null;
+  submitMode?: ComposeSubmitMode;
   scheduleDelayedWrite?: (callback: () => void, delayMs: number) => void;
   shouldSendDelayedEnter?: () => boolean;
 }
+
+const composeQueueByRuntime = new WeakMap<ComposeRuntimeWriter, Promise<void>>();
 
 const normalizeCommand = (command?: string | null): string => {
   const executable = command?.trim().split(/\s+/)[0];
@@ -25,6 +30,23 @@ const normalizeCommand = (command?: string | null): string => {
 
 const isCodexComposeRuntime = (paneCommand?: string | null): boolean =>
   normalizeCommand(paneCommand) === "codex";
+
+const resolveSubmitMode = (
+  submitMode: ComposeSubmitMode,
+  paneCommand?: string | null,
+): Exclude<ComposeSubmitMode, "auto"> => {
+  if (submitMode === "immediate" || submitMode === "delayed") {
+    return submitMode;
+  }
+  return isCodexComposeRuntime(paneCommand) ? "delayed" : "immediate";
+};
+
+const waitForDelayedWrite = (
+  scheduleDelayedWrite: (callback: () => void, delayMs: number) => void,
+): Promise<void> =>
+  new Promise((resolve) => {
+    scheduleDelayedWrite(resolve, CODEX_COMPOSE_SUBMIT_DELAY_MS);
+  });
 
 export const resolvePaneCommandForView = (
   snapshot: WorkspaceSnapshot | undefined,
@@ -46,6 +68,7 @@ export const sendComposeToRuntime = ({
   runtime,
   text,
   paneCommand,
+  submitMode = "auto",
   scheduleDelayedWrite = (callback, delayMs) => {
     setTimeout(callback, delayMs);
   },
@@ -55,17 +78,27 @@ export const sendComposeToRuntime = ({
     return;
   }
 
-  if (!isCodexComposeRuntime(paneCommand)) {
-    runtime.write(`${text}\r`);
-    return;
-  }
+  const run = async (): Promise<void> => {
+    if (resolveSubmitMode(submitMode, paneCommand) === "immediate") {
+      runtime.write(`${text}\r`);
+      return;
+    }
 
-  // Codex detects rapid text+Enter bursts as paste, which turns Enter into a newline.
-  runtime.write(text);
-  scheduleDelayedWrite(() => {
+    // Codex detects rapid text+Enter bursts as paste, which turns Enter into a newline.
+    runtime.write(text);
+    await waitForDelayedWrite(scheduleDelayedWrite);
     if (!shouldSendDelayedEnter()) {
       return;
     }
     runtime.write("\r");
-  }, CODEX_COMPOSE_SUBMIT_DELAY_MS);
+  };
+
+  const previous = composeQueueByRuntime.get(runtime) ?? Promise.resolve();
+  const next = previous.then(run, run).catch(() => undefined);
+  composeQueueByRuntime.set(runtime, next);
+  void next.finally(() => {
+    if (composeQueueByRuntime.get(runtime) === next) {
+      composeQueueByRuntime.delete(runtime);
+    }
+  });
 };

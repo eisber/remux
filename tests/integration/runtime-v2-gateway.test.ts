@@ -199,7 +199,7 @@ describe("runtime v2 gateway server", () => {
     }
   });
 
-  test("send_compose submits a command with Enter through the runtime terminal bridge", async () => {
+  test("send_compose uses safe delayed submit mode through the runtime terminal bridge", async () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     let terminal: WebSocket | null = null;
     try {
@@ -222,7 +222,43 @@ describe("runtime v2 gateway server", () => {
 
       control.send(JSON.stringify({ type: "send_compose", text: "echo hi" }));
 
-      await expect.poll(() => upstream.latestTerminal("pane-1")?.writes).toEqual(["echo hi\r"]);
+      await expect.poll(() => upstream.latestTerminal("pane-1")?.writes).toEqual(["echo hi", "\r"]);
+    } finally {
+      terminal?.close();
+      control.close();
+    }
+  });
+
+  test("send_compose serializes repeated submissions so commands stay separated", async () => {
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    let terminal: WebSocket | null = null;
+    try {
+      const authOkPromise = waitForMessage<{ type: "auth_ok"; clientId: string }>(
+        control,
+        (message) => message.type === "auth_ok",
+      );
+      control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+      const authOk = await authOkPromise;
+
+      terminal = await openSocket(`${baseWsUrl}/ws/terminal`);
+      terminal.send(JSON.stringify({
+        type: "auth",
+        token: "test-token",
+        clientId: authOk.clientId,
+        cols: 120,
+        rows: 40,
+      }));
+      await waitForRawMessage(terminal);
+
+      control.send(JSON.stringify({ type: "send_compose", text: "echo first" }));
+      control.send(JSON.stringify({ type: "send_compose", text: "echo second" }));
+
+      await expect.poll(() => upstream.latestTerminal("pane-1")?.writes).toEqual([
+        "echo first",
+        "\r",
+        "echo second",
+        "\r",
+      ]);
     } finally {
       terminal?.close();
       control.close();
