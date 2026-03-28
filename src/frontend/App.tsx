@@ -46,6 +46,7 @@ import {
   wsOrigin
 } from "./remux-runtime";
 import { createTerminalWriteBuffer } from "./terminal-write-buffer";
+import { attachWebSocketKeepAlive } from "./websocket-keepalive";
 import type {
   SessionState,
   ServerCapabilities,
@@ -75,6 +76,7 @@ const LazyUploadToast = lazy(() => import("./components/UploadToast"));
 export const App = () => {
   const runtimeGeometryRef = useRef<TerminalGeometryState | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
+  const stopTerminalKeepAliveRef = useRef<(() => void) | null>(null);
   /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
   const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
   const serverCapabilitiesRef = useRef<ServerCapabilities | null>(null);
@@ -332,6 +334,8 @@ export const App = () => {
     terminalInputBufferRef.current?.clear();
     pendingTerminalTransportRef.current = "";
     if (terminalSocketRef.current) {
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = null;
       terminalSocketRef.current.onclose = null;
       terminalSocketRef.current.close();
     }
@@ -347,6 +351,11 @@ export const App = () => {
         clientId,
         ...(terminalGeometry ?? {})
       }));
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = attachWebSocketKeepAlive(socket, {
+        intervalMs: 25_000,
+        createPayload: () => JSON.stringify({ type: "ping" }),
+      });
       flushPendingTerminalTransport();
       connectionActionsRef.current.setStatusMessage("terminal connected");
       requestTerminalFit({ notify: true, retryUntilVisible: true });
@@ -364,6 +373,8 @@ export const App = () => {
     };
     socket.onclose = (event) => {
       debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = null;
       terminalInputBufferRef.current?.clear();
       pendingTerminalTransportRef.current = "";
       if (event.code === 4001) {
@@ -375,6 +386,11 @@ export const App = () => {
     };
     terminalSocketRef.current = socket;
   }, [flushPendingTerminalTransport, readTerminalGeometry, requestTerminalFit]);
+
+  useEffect(() => () => {
+    stopTerminalKeepAliveRef.current?.();
+    stopTerminalKeepAliveRef.current = null;
+  }, []);
 
   const [snippets, setSnippets] = useState<Snippet[]>(() => {
     try {
