@@ -1,10 +1,11 @@
-import type { CSSProperties, RefObject } from "react";
+import { useEffect, useState, type CSSProperties, type RefObject } from "react";
 import { filterInspectSections, type TabInspectSnapshot } from "../inspect-state";
 
 interface InspectViewProps {
   lineCount: number;
   errorMessage: string;
   loading: boolean;
+  mobileLayout: boolean;
   onLoadMore: () => void;
   onPaneFilterChange: (paneId: string) => void;
   onRefresh: () => void;
@@ -31,6 +32,7 @@ export const InspectView = ({
   lineCount,
   errorMessage,
   loading,
+  mobileLayout,
   onLoadMore,
   onPaneFilterChange,
   onRefresh,
@@ -47,6 +49,15 @@ export const InspectView = ({
   const capturedLabel = snapshot
     ? new Date(snapshot.capturedAt).toLocaleString()
     : "";
+  const [mobileControlsOpen, setMobileControlsOpen] = useState(false);
+  const inspectControlsActive = searchQuery.trim().length > 0 || paneFilter !== "all";
+  const showControls = !mobileLayout || mobileControlsOpen || inspectControlsActive;
+
+  useEffect(() => {
+    if (!mobileLayout) {
+      setMobileControlsOpen(false);
+    }
+  }, [mobileLayout]);
 
   return (
     <div
@@ -76,43 +87,60 @@ export const InspectView = ({
         </div>
       </div>
 
-      <div className="inspect-toolbar">
-        <input
-          className="inspect-search"
-          type="search"
-          placeholder="Search current tab history"
-          value={searchQuery}
-          onChange={(event) => onSearchQueryChange(event.target.value)}
-          data-testid="inspect-search-input"
-        />
-        <button className="inspect-action-btn" onClick={onRefresh} data-testid="inspect-refresh-button">
-          Refresh
-        </button>
-        <button className="inspect-action-btn" onClick={onLoadMore} data-testid="inspect-load-more-button">
-          More
-        </button>
-      </div>
-
-      {snapshot && (
-        <div className="inspect-pane-filters">
+      {mobileLayout && (
+        <div className="inspect-mobile-actions">
           <button
-            className={`inspect-filter-chip${paneFilter === "all" ? " active" : ""}`}
-            onClick={() => onPaneFilterChange("all")}
-            data-testid="inspect-pane-filter-all"
+            type="button"
+            className={`inspect-controls-toggle${showControls ? " active" : ""}`}
+            data-testid="inspect-controls-toggle"
+            onClick={() => setMobileControlsOpen((current) => !current)}
           >
-            All panes
+            {showControls ? "Hide controls" : "Inspect controls"}
           </button>
-          {snapshot.sections.map((section) => (
-            <button
-              key={section.paneId}
-              className={`inspect-filter-chip${paneFilter === section.paneId ? " active" : ""}`}
-              onClick={() => onPaneFilterChange(section.paneId)}
-              data-testid={`inspect-pane-filter-${section.paneId}`}
-            >
-              {section.title.split(" · ")[0]}
-            </button>
-          ))}
         </div>
+      )}
+
+      {showControls && (
+        <>
+          <div className="inspect-toolbar">
+            <input
+              className="inspect-search"
+              type="search"
+              placeholder="Search current tab history"
+              value={searchQuery}
+              onChange={(event) => onSearchQueryChange(event.target.value)}
+              data-testid="inspect-search-input"
+            />
+            <button className="inspect-action-btn" onClick={onRefresh} data-testid="inspect-refresh-button">
+              Refresh
+            </button>
+            <button className="inspect-action-btn" onClick={onLoadMore} data-testid="inspect-load-more-button">
+              More
+            </button>
+          </div>
+
+          {snapshot && (
+            <div className="inspect-pane-filters">
+              <button
+                className={`inspect-filter-chip${paneFilter === "all" ? " active" : ""}`}
+                onClick={() => onPaneFilterChange("all")}
+                data-testid="inspect-pane-filter-all"
+              >
+                All panes
+              </button>
+              {snapshot.sections.map((section) => (
+                <button
+                  key={section.paneId}
+                  className={`inspect-filter-chip${paneFilter === section.paneId ? " active" : ""}`}
+                  onClick={() => onPaneFilterChange(section.paneId)}
+                  data-testid={`inspect-pane-filter-${section.paneId}`}
+                >
+                  {section.title.split(" · ")[0]}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
       {snapshot && (

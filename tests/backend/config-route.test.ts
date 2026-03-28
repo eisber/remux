@@ -15,6 +15,7 @@ describe("GET /api/config", () => {
 
   beforeEach(async () => {
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-config-route-test-"));
+    delete process.env.REMUX_RUNTIME_BRANCH;
   });
 
   afterEach(async () => {

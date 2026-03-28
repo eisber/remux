@@ -1283,6 +1283,11 @@ button, input {
   margin-bottom: 0.7rem;
 }
 
+.inspect-mobile-actions {
+  display: none;
+  margin-bottom: 0.7rem;
+}
+
 .inspect-search {
   flex: 1 1 14rem;
   min-width: 0;
@@ -1295,7 +1300,8 @@ button, input {
 }
 
 .inspect-action-btn,
-.inspect-filter-chip {
+.inspect-filter-chip,
+.inspect-controls-toggle {
   background: var(--btn-bg);
   color: var(--text-secondary);
   border: 1px solid var(--btn-border);
@@ -1307,7 +1313,9 @@ button, input {
 
 .inspect-action-btn:hover,
 .inspect-filter-chip:hover,
-.inspect-filter-chip.active {
+.inspect-filter-chip.active,
+.inspect-controls-toggle:hover,
+.inspect-controls-toggle.active {
   border-color: var(--border-active);
   color: var(--text-primary);
   background: var(--btn-hover);
@@ -1582,7 +1590,8 @@ button.danger {
 /* --- Compose bar --- */
 .compose-bar {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: 0.4rem;
   padding: 0.4rem;
   background: var(--bg-topbar);
@@ -1590,6 +1599,7 @@ button.danger {
 }
 
 .compose-bar input {
+  min-width: 0;
   background: var(--bg-input);
   color: var(--text-primary);
   border: 1px solid var(--btn-border);
@@ -2189,6 +2199,35 @@ button.danger {
 
 .app-shell.mobile-layout .toolbar button {
   min-height: 2.75rem;
+  font-size: 0.78rem;
+}
+
+.app-shell.mobile-layout .inspect-mobile-actions {
+  display: flex;
+}
+
+.app-shell.mobile-layout .inspect-controls-toggle {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-height: 2.6rem;
+  justify-content: center;
+  font-size: 0.78rem;
+}
+
+.app-shell.mobile-layout .inspect-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.app-shell.mobile-layout .inspect-search {
+  font-size: 16px;
+  padding: 0.65rem 0.75rem;
+}
+
+.app-shell.mobile-layout .inspect-action-btn,
+.app-shell.mobile-layout .inspect-filter-chip {
+  min-height: 2.5rem;
   font-size: 0.78rem;
 }
 
