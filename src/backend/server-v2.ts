@@ -680,10 +680,6 @@ export const createRemuxV2GatewayServer = (
     });
   });
 
-  app.post("/api/switch-backend", requireApiAuth, (_req, res) => {
-    res.status(501).json({ ok: false, error: "runtime-v2 backend switching is not supported" });
-  });
-
   app.get("/api/auth/github-token", requireApiAuth, (_req, res) => {
     try {
       const token = fs.readFileSync(tokenFile, "utf8").trim();

@@ -143,7 +143,7 @@ describe("runtime v2 gateway server", () => {
     }
   });
 
-  test("serves runtime-v2 config metadata without backend switching", async () => {
+  test("serves runtime-v2 config metadata", async () => {
     const response = await fetch(`${baseUrl}/api/config`);
     expect(response.status).toBe(200);
     const config = await response.json() as {
@@ -265,7 +265,7 @@ describe("runtime v2 gateway server", () => {
     }
   });
 
-  test("rejects invalid control auth and keeps backend switching disabled", async () => {
+  test("rejects invalid control auth", async () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     try {
       control.send(JSON.stringify({ type: "auth", token: "bad-token" }));
@@ -277,29 +277,6 @@ describe("runtime v2 gateway server", () => {
     } finally {
       control.close();
     }
-
-    const unauthorized = await fetch(`${baseUrl}/api/switch-backend`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ backend: "tmux" }),
-    });
-    expect(unauthorized.status).toBe(401);
-
-    const disabled = await fetch(`${baseUrl}/api/switch-backend`, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer test-token",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ backend: "tmux" }),
-    });
-    expect(disabled.status).toBe(501);
-    await expect(disabled.json()).resolves.toEqual({
-      ok: false,
-      error: "runtime-v2 backend switching is not supported",
-    });
   });
 
   test("replays persisted scrollback on attach and exposes it through inspect history", async () => {
