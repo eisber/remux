@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ControlServerMessage, BackendCapabilities, ServerCapabilities } from "../../shared/protocol";
 import type { BandwidthStats, ServerConfig } from "../app-types";
+import { attachWebSocketKeepAlive } from "../websocket-keepalive";
 import {
   debugLog,
   formatPasswordError,
@@ -66,6 +67,7 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
   cbRef.current = callbacks;
 
   const controlSocketRef = useRef<WebSocket | null>(null);
+  const stopControlKeepAliveRef = useRef<(() => void) | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const suppressReconnectRef = useRef(false);
@@ -125,6 +127,8 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
     debugLog("control_socket.open.begin", { hasPassword: Boolean(passwordValue) });
     cancelReconnect();
     if (controlSocketRef.current) {
+      stopControlKeepAliveRef.current?.();
+      stopControlKeepAliveRef.current = null;
       controlSocketRef.current.onclose = null;
       controlSocketRef.current.close();
     }
@@ -132,6 +136,11 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
     const socket = new WebSocket(`${wsOrigin}/ws/control`);
     socket.onopen = () => {
       debugLog("control_socket.onopen");
+      stopControlKeepAliveRef.current?.();
+      stopControlKeepAliveRef.current = attachWebSocketKeepAlive(socket, {
+        intervalMs: 25_000,
+        createPayload: () => JSON.stringify({ type: "ping", timestamp: performance.now() }),
+      });
       const sendAuth = (retriesRemaining = 8): void => {
         const authPayload = cbRef.current.getAuthPayload();
         const hasTerminalSize = typeof authPayload?.cols === "number" && typeof authPayload?.rows === "number";
@@ -212,6 +221,8 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
     };
     socket.onclose = () => {
       debugLog("control_socket.onclose");
+      stopControlKeepAliveRef.current?.();
+      stopControlKeepAliveRef.current = null;
       setAuthReady(false);
       setErrorMessage("");
       cbRef.current.onControlClose();
@@ -259,6 +270,8 @@ export const useRemuxConnection = (callbacks: ConnectionCallbacks): UseRemuxConn
 
   // Cleanup
   useEffect(() => () => {
+    stopControlKeepAliveRef.current?.();
+    stopControlKeepAliveRef.current = null;
     controlSocketRef.current?.close();
   }, []);
 

@@ -159,6 +159,44 @@ describe("runtime v2 gateway server", () => {
     expect(config.backendKind).toBe("runtime-v2");
   });
 
+  test("answers control ping messages and ignores terminal keepalive frames", async () => {
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    let terminal: WebSocket | null = null;
+    try {
+      const authOkPromise = waitForMessage<{ type: "auth_ok"; clientId: string }>(
+        control,
+        (message) => message.type === "auth_ok",
+      );
+      control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+      const authOk = await authOkPromise;
+
+      control.send(JSON.stringify({ type: "ping", timestamp: 123 }));
+      const pong = await waitForMessage<{ type: "pong"; timestamp: number }>(
+        control,
+        (message) => message.type === "pong",
+      );
+      expect(pong).toEqual({ type: "pong", timestamp: 123 });
+
+      terminal = await openSocket(`${baseWsUrl}/ws/terminal`);
+      terminal.send(JSON.stringify({
+        type: "auth",
+        token: "test-token",
+        clientId: authOk.clientId,
+        cols: 120,
+        rows: 40,
+      }));
+      await waitForRawMessage(terminal);
+
+      terminal.send(JSON.stringify({ type: "ping" }));
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
+      expect(upstream.latestTerminal("pane-1")?.writes).toEqual([]);
+    } finally {
+      terminal?.close();
+      control.close();
+    }
+  });
+
   test("rejects invalid control auth and keeps backend switching disabled", async () => {
     const control = await openSocket(`${baseWsUrl}/ws/control`);
     try {
