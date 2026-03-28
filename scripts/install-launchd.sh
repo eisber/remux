@@ -77,9 +77,11 @@ EOF
 
 write_shared_runtime_plist() {
   local plist
+  local runtime_cargo_bin
   local runtime_path
   local workdir
   plist="$(runtime_shared_plist_path)"
+  runtime_cargo_bin="$(resolve_runtime_cargo_bin)"
   runtime_path="$(runtime_shell_path)"
   workdir="$(runtime_shared_workdir)"
 
@@ -92,7 +94,7 @@ write_shared_runtime_plist() {
     <string>$(runtime_shared_service)</string>
     <key>ProgramArguments</key>
     <array>
-      <string>cargo</string>
+      <string>$runtime_cargo_bin</string>
       <string>run</string>
       <string>--manifest-path</string>
       <string>Cargo.toml</string>

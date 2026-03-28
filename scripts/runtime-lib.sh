@@ -53,6 +53,34 @@ runtime_node_dir() {
   dirname "$(resolve_runtime_node_bin)"
 }
 
+resolve_runtime_cargo_bin() {
+  local candidate
+
+  if [[ -n "${REMUX_RUNTIME_CARGO_BIN:-}" ]]; then
+    if [[ -x "$REMUX_RUNTIME_CARGO_BIN" ]]; then
+      printf '%s\n' "$REMUX_RUNTIME_CARGO_BIN"
+      return 0
+    fi
+    echo "[runtime] REMUX_RUNTIME_CARGO_BIN is not executable: $REMUX_RUNTIME_CARGO_BIN" >&2
+    return 1
+  fi
+
+  candidate="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+  if [[ -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$(command -v cargo 2>/dev/null || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "[runtime] unable to resolve cargo for the shared runtime toolchain" >&2
+  return 1
+}
+
 resolve_runtime_npm_bin() {
   local candidate
 
@@ -349,8 +377,10 @@ verify_runtime_plist() {
 verify_shared_runtime_plist() {
   local plist
   local expected_path
+  local expected_cargo_bin
   plist="$(runtime_shared_plist_path)"
   expected_path="$(runtime_shell_path)"
+  expected_cargo_bin="$(resolve_runtime_cargo_bin)"
 
   if [[ ! -f "$plist" ]]; then
     echo "[runtime] missing shared runtime plist: $plist" >&2
@@ -364,8 +394,8 @@ verify_shared_runtime_plist() {
     return 1
   fi
 
-  if ! grep -Fq "<string>cargo</string>" "$plist" || ! grep -Fq "<string>remuxd</string>" "$plist"; then
-    echo "[runtime] $plist does not launch the shared remuxd daemon" >&2
+  if ! grep -Fq "<string>$expected_cargo_bin</string>" "$plist" || ! grep -Fq "<string>remuxd</string>" "$plist"; then
+    echo "[runtime] $plist does not launch the shared remuxd daemon with the resolved cargo binary" >&2
     echo "[runtime] rerun: npm run runtime:install-launchd" >&2
     return 1
   fi

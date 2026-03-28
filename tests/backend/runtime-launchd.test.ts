@@ -40,9 +40,12 @@ describe("runtime launchd install", () => {
     const runtimeNodeBin = path.join(runtimeNodeDir, "node");
     const cargoHome = path.join(tempHome, ".cargo");
     const cargoBinDir = path.join(cargoHome, "bin");
+    const runtimeCargoBin = path.join(cargoBinDir, "cargo");
     const expectedPath = `${runtimeNodeDir}:${cargoBinDir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
     await fs.promises.mkdir(runtimeNodeDir, { recursive: true });
+    await fs.promises.mkdir(cargoBinDir, { recursive: true });
     await fs.promises.writeFile(runtimeNodeBin, "#!/bin/bash\nexit 0\n", { mode: 0o755 });
+    await fs.promises.writeFile(runtimeCargoBin, "#!/bin/bash\nexit 0\n", { mode: 0o755 });
 
     execFileSync("bash", ["scripts/install-launchd.sh"], {
       cwd: process.cwd(),
@@ -71,7 +74,7 @@ describe("runtime launchd install", () => {
     const sharedRuntimePlistPath = path.join(tempHome, "Library", "LaunchAgents", "com.remux.runtime-v2-shared.plist");
     const sharedRuntimePlist = await fs.promises.readFile(sharedRuntimePlistPath, "utf8");
     expect(sharedRuntimePlist).toContain(expectedPath);
-    expect(sharedRuntimePlist).toContain("<string>cargo</string>");
+    expect(sharedRuntimePlist).toContain(runtimeCargoBin);
     expect(sharedRuntimePlist).toContain("<string>run</string>");
     expect(sharedRuntimePlist).toContain("<string>-p</string>");
     expect(sharedRuntimePlist).toContain("<string>remuxd</string>");
@@ -103,12 +106,19 @@ describe("runtime launchd install", () => {
   test("writes a shared runtime-v2 launchd plist against the stable dev runtime worktree", async () => {
     const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-shared-plist-test-"));
     tempDirs.push(tempHome);
+    const cargoHome = path.join(tempHome, ".cargo");
+    const cargoBinDir = path.join(cargoHome, "bin");
+    const runtimeCargoBin = path.join(cargoBinDir, "cargo");
+
+    await fs.promises.mkdir(cargoBinDir, { recursive: true });
+    await fs.promises.writeFile(runtimeCargoBin, "#!/bin/bash\nexit 0\n", { mode: 0o755 });
 
     execFileSync("bash", ["scripts/install-launchd.sh"], {
       cwd: process.cwd(),
       env: {
         ...process.env,
-        HOME: tempHome
+        HOME: tempHome,
+        CARGO_HOME: cargoHome
       },
       stdio: "pipe"
     });
@@ -117,7 +127,7 @@ describe("runtime launchd install", () => {
     const plist = await fs.promises.readFile(plistPath, "utf8");
 
     expect(plist).toContain(path.join(tempHome, ".remux", "runtime-worktrees", "runtime-dev"));
-    expect(plist).toContain("<string>cargo</string>");
+    expect(plist).toContain(runtimeCargoBin);
     expect(plist).toContain("<string>run</string>");
     expect(plist).toContain("<string>--manifest-path</string>");
     expect(plist).toContain("<string>Cargo.toml</string>");
