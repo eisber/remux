@@ -20,15 +20,15 @@ export const ComposeBar = ({
       data-testid="compose-input"
       value={composeText}
       onChange={(event) => onChange(event.target.value)}
-    onKeyDown={onKeyDown}
-    onPaste={onFilePaste}
-    placeholder="Compose command"
-    title="Type a command here and press Enter to send it to the terminal"
-    autoCapitalize="off"
-    autoCorrect="off"
-    enterKeyHint="send"
-    spellCheck={false}
-  />
+      onKeyDown={onKeyDown}
+      onPaste={onFilePaste}
+      placeholder="Compose command"
+      title="Type a command here and press Enter to send it to the terminal"
+      autoCapitalize="off"
+      autoCorrect="off"
+      enterKeyHint="send"
+      spellCheck={false}
+    />
     <button
       data-testid="compose-send"
       onClick={onSend}

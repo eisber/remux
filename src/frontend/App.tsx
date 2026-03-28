@@ -936,6 +936,8 @@ export const App = () => {
     setInspectLineCount((current) => current + step);
   }, [serverConfig?.scrollbackLines]);
 
+  const mobileInspectMode = mobileLayout && viewMode === "inspect";
+
   return (
     <AppShell
       drawerOpen={drawerOpen}
@@ -1058,7 +1060,9 @@ export const App = () => {
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
         onToggleSidebarCollapsed={() => setSidebarCollapsed((value) => !value)}
         onToggleStats={() => setStatsVisible((value) => !value)}
-        onToggleViewMode={() => setViewMode((mode) => mode === "inspect" ? "terminal" : "inspect")}
+        onToggleViewMode={() => {
+          setViewMode((mode) => mode === "inspect" ? "terminal" : "inspect");
+        }}
         renameHandledByKeyRef={renameHandledByKeyRef}
         renameTabValue={renameWindowValue}
         sidebarCollapsed={sidebarCollapsed}
@@ -1082,6 +1086,7 @@ export const App = () => {
         inspectPaneFilter={inspectPaneFilter}
         inspectSearchQuery={inspectSearchQuery}
         inspectSnapshot={inspectSnapshot}
+        mobileLayout={mobileLayout}
         onInspectLoadMore={loadMoreInspect}
         onInspectPaneFilterChange={setInspectPaneFilter}
         onInspectRefresh={refreshInspect}
@@ -1132,7 +1137,7 @@ export const App = () => {
         hidden={viewMode !== "terminal"}
           />
         )}
-        pinnedSnippetsBar={(
+        pinnedSnippetsBar={mobileInspectMode ? null : (
           <PinnedSnippetsBar
         snippets={pinnedSnippets}
         onEditSnippet={setEditingSnippet}
@@ -1140,7 +1145,7 @@ export const App = () => {
         onOpenDrawer={() => setDrawerOpen(true)}
           />
         )}
-        snippetTemplatePanel={(
+        snippetTemplatePanel={mobileInspectMode ? null : (
           <SnippetTemplatePanel
         pendingExecution={pendingSnippetExecution}
         onCancel={() => setPendingSnippetExecution(null)}
@@ -1158,7 +1163,7 @@ export const App = () => {
         onRun={runPendingSnippet}
           />
         )}
-        composeBar={(
+        composeBar={mobileInspectMode ? null : (
           <ComposeBar
         composeText={composeText}
         onChange={setComposeText}
@@ -1167,7 +1172,7 @@ export const App = () => {
         onSend={sendCompose}
           />
         )}
-        snippetPicker={(
+        snippetPicker={mobileInspectMode ? null : (
           <SnippetPicker
         activeIndex={quickSnippetIndex}
         onExecuteSnippet={executeSnippet}

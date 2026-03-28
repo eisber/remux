@@ -80,4 +80,40 @@ test.describe("runtime-v2 browser behavior", () => {
     await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("history survives reconnect");
     await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("live tail line");
   });
+
+  test("mobile keeps compose available in live but removes it from inspect mode", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+    await expect(page.getByTestId("compose-input")).toBeVisible();
+    await page.getByTestId("compose-input").fill("echo mobile");
+    await page.getByTestId("compose-input").press("Enter");
+
+    await expect
+      .poll(() => server.upstream.latestTerminal()?.writes.join("") ?? "")
+      .toContain("echo mobile");
+
+    await expect(page.getByTestId("compose-input")).toBeVisible();
+
+    await page.getByRole("button", { name: "Inspect" }).click();
+    await expect(page.getByTestId("compose-input")).toHaveCount(0);
+  });
+
+  test("mobile inspect hides nonessential controls until expanded", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+    await page.getByRole("button", { name: "Inspect" }).click();
+    await expect(page.getByTestId("inspect-controls-toggle")).toBeVisible();
+    await expect(page.getByTestId("inspect-search-input")).toHaveCount(0);
+    await expect(page.getByTestId("inspect-refresh-button")).toHaveCount(0);
+    await expect(page.getByTestId("inspect-pane-filter-all")).toHaveCount(0);
+
+    await page.getByTestId("inspect-controls-toggle").click();
+    await expect(page.getByTestId("inspect-search-input")).toBeVisible();
+    await expect(page.getByTestId("inspect-refresh-button")).toBeVisible();
+    await expect(page.getByTestId("inspect-pane-filter-all")).toBeVisible();
+  });
 });

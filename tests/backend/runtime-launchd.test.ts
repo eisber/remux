@@ -38,7 +38,8 @@ describe("runtime launchd install", () => {
 
     const runtimeNodeDir = path.join(tempHome, "toolchains", "node-lts", "bin");
     const runtimeNodeBin = path.join(runtimeNodeDir, "node");
-    const cargoBinDir = path.join(tempHome, ".cargo", "bin");
+    const cargoHome = path.join(tempHome, ".cargo");
+    const cargoBinDir = path.join(cargoHome, "bin");
     const expectedPath = `${runtimeNodeDir}:${cargoBinDir}:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`;
     await fs.promises.mkdir(runtimeNodeDir, { recursive: true });
     await fs.promises.writeFile(runtimeNodeBin, "#!/bin/bash\nexit 0\n", { mode: 0o755 });
@@ -48,6 +49,7 @@ describe("runtime launchd install", () => {
       env: {
         ...process.env,
         HOME: tempHome,
+        CARGO_HOME: cargoHome,
         REMUX_RUNTIME_NODE_BIN: runtimeNodeBin
       },
       stdio: "pipe"
