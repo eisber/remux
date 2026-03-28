@@ -206,6 +206,7 @@ impl PaneRuntime {
             precision: inspect.precision,
             summary: inspect.summary,
             preview_text: inspect.preview_text,
+            scrollback_rows: inspect.scrollback_rows,
             visible_rows: inspect.visible_rows,
             byte_count: inspect.byte_count,
             size: inspect.size,
@@ -222,6 +223,7 @@ impl PaneRuntime {
             size: snapshot.size,
             sequence: self.sequence.load(Ordering::Relaxed),
             content_base64: BASE64.encode(snapshot.formatted_state),
+            replay_base64: Some(BASE64.encode(snapshot.replay_formatted)),
         }
     }
 

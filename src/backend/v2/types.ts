@@ -91,6 +91,7 @@ export interface RuntimeV2InspectSnapshot {
   precision: RuntimeV2InspectPrecision;
   summary: string;
   previewText: string;
+  scrollbackRows?: string[];
   visibleRows: string[];
   byteCount: number;
   size: RuntimeV2TerminalSize;
@@ -176,6 +177,7 @@ export type RuntimeV2TerminalServerMessage =
       size: RuntimeV2TerminalSize;
       sequence: number;
       contentBase64: string;
+      replayBase64?: string | null;
     }
   | {
       type: "stream";

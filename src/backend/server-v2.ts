@@ -559,7 +559,10 @@ class RuntimeV2TerminalBridge {
     }
 
     if (message.type === "snapshot") {
-      sendRaw(this.browserSocket, `\u001bc${decodeBase64(message.contentBase64)}`);
+      sendRaw(
+        this.browserSocket,
+        `\u001bc${decodeBase64(message.replayBase64 ?? message.contentBase64)}`,
+      );
       return;
     }
 

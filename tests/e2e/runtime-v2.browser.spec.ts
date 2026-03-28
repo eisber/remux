@@ -60,4 +60,24 @@ test.describe("runtime-v2 browser behavior", () => {
     await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("build running");
     await expect(page.getByTestId(`inspect-pane-${newPaneId}`)).toContainText("tests passed");
   });
+
+  test("inspect history survives a browser reconnect with server-backed scrollback", async ({ page }) => {
+    server.upstream.setPaneScrollback("pane-1", [
+      "compile started",
+      "test suite booting",
+      "history survives reconnect",
+    ]);
+    server.upstream.setPaneContent("pane-1", "live tail line");
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+    await page.reload();
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+
+    await page.getByRole("button", { name: "Inspect" }).click();
+    await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("compile started");
+    await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("history survives reconnect");
+    await expect(page.getByTestId("inspect-pane-pane-1")).toContainText("live tail line");
+  });
 });

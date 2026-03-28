@@ -16,13 +16,28 @@ import type {
 const mapLifecycle = (state: RuntimeV2SessionState): "live" | "exited" =>
   state === "stopped" ? "exited" : "live";
 
-const renderInspectText = (snapshot: RuntimeV2InspectSnapshot): string => {
-  const preview = snapshot.previewText.trimEnd();
-  if (preview) {
-    return preview;
+const splitPreviewRows = (snapshot: RuntimeV2InspectSnapshot): string[] =>
+  snapshot.previewText
+    .split(/\r?\n/)
+    .map((row) => row.trimEnd())
+    .filter((row, index, rows) => row.length > 0 || index < rows.length - 1);
+
+const collectInspectRows = (
+  snapshot: RuntimeV2InspectSnapshot,
+  lines: number,
+): string[] => {
+  const combinedRows = [...(snapshot.scrollbackRows ?? []), ...snapshot.visibleRows];
+  const rows = combinedRows.length > 0 ? combinedRows : splitPreviewRows(snapshot);
+  if (lines <= 0 || rows.length <= lines) {
+    return rows;
   }
-  return snapshot.visibleRows.join("\n").trimEnd();
+  return rows.slice(-lines);
 };
+
+const renderInspectText = (
+  snapshot: RuntimeV2InspectSnapshot,
+  lines: number,
+): string => collectInspectRows(snapshot, lines).join("\n").trimEnd();
 
 const findActiveSession = (summary: RuntimeV2WorkspaceSummary) =>
   summary.sessions.find((session) => session.isActive)
@@ -127,7 +142,7 @@ export const buildLegacyTabHistory = (
     capturedAt,
     panes: tab.panes.map((pane, paneIndex) => {
       const snapshot = snapshots[paneIndex];
-      const text = snapshot ? renderInspectText(snapshot) : "";
+      const text = snapshot ? renderInspectText(snapshot, lines) : "";
       return {
         paneId: pane.paneId,
         paneIndex,
@@ -153,7 +168,7 @@ export const buildLegacyScrollback = (
   type: "scrollback",
   paneId,
   lines,
-  text: renderInspectText(snapshot),
+  text: renderInspectText(snapshot, lines),
   paneWidth: snapshot.size.cols,
   isApproximate: snapshot.precision !== "precise",
 });

@@ -74,6 +74,7 @@ npm start
 - Session, tab, and pane management from the browser control drawer
 - Full terminal streaming through xterm.js for Live interaction
 - Inspect view for readable history and mobile-friendly text selection
+- Server-backed scrollback replay so Live and Inspect survive browser reconnects with meaningful history intact
 - Compose input for native mobile keyboard entry
 - Custom snippets stored in local browser storage
 - Drag-and-drop or picker-based file upload into the active pane working directory

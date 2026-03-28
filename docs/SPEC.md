@@ -198,6 +198,7 @@ It supports:
 - xterm rendering
 - resize propagation
 - reconnect recovery
+- server-backed scrollback replay on attach so reconnects keep meaningful terminal history
 - drag-and-drop upload
 
 ### Inspect View
@@ -245,6 +246,7 @@ Behavior:
 
 - the gateway subscribes to workspace summaries from the upstream runtime
 - runtime-v2 terminal and inspect state are translated into browser-facing payloads
+- terminal snapshots now carry scrollback replay bytes, while inspect snapshots carry structured scrollback rows for readable history
 - only meaningful workspace changes are rebroadcast
 - `clientView` remains separate so each frontend can preserve its local selection state
 

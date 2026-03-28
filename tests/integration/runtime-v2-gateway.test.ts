@@ -195,4 +195,59 @@ describe("runtime v2 gateway server", () => {
       error: "runtime-v2 backend switching is not supported",
     });
   });
+
+  test("replays persisted scrollback on attach and exposes it through inspect history", async () => {
+    upstream.setPaneScrollback("pane-1", [
+      "history line 1",
+      "history line 2",
+      "history line 3",
+    ]);
+    upstream.setPaneContent("pane-1", "live line 4\r\n");
+
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+    let terminal: WebSocket | null = null;
+    try {
+      const authOkPromise = waitForMessage<{ type: "auth_ok"; clientId: string }>(
+        control,
+        (message) => message.type === "auth_ok",
+      );
+      control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+      const authOk = await authOkPromise;
+
+      terminal = await openSocket(`${baseWsUrl}/ws/terminal`);
+      const initialSnapshotPromise = waitForRawMessage(terminal);
+      terminal.send(JSON.stringify({
+        type: "auth",
+        token: "test-token",
+        clientId: authOk.clientId,
+        cols: 120,
+        rows: 40,
+      }));
+
+      const initialSnapshot = await initialSnapshotPromise;
+      expect(initialSnapshot).toContain("history line 1");
+      expect(initialSnapshot).toContain("history line 3");
+      expect(initialSnapshot).toContain("live line 4");
+
+      control.send(JSON.stringify({
+        type: "capture_tab_history",
+        session: "main",
+        tabIndex: 0,
+        lines: 64,
+      }));
+
+      const tabHistory = await waitForMessage<{
+        type: "tab_history";
+        panes: Array<{ paneId: string; text: string }>;
+      }>(control, (message) => message.type === "tab_history");
+
+      expect(tabHistory.panes[0]).toMatchObject({
+        paneId: "pane-1",
+        text: "history line 1\nhistory line 2\nhistory line 3\nlive line 4",
+      });
+    } finally {
+      terminal?.close();
+      control.close();
+    }
+  });
 });
