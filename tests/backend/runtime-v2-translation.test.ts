@@ -129,6 +129,7 @@ const inspectSnapshots: RuntimeV2InspectSnapshot[] = [
     precision: "precise",
     summary: "pane one",
     previewText: "echo one",
+    scrollbackRows: ["build started", "step 1"],
     visibleRows: ["echo one", "done"],
     byteCount: 8,
     size: { cols: 120, rows: 40 },
@@ -138,6 +139,7 @@ const inspectSnapshots: RuntimeV2InspectSnapshot[] = [
     precision: "approximate",
     summary: "pane two",
     previewText: "tail -f",
+    scrollbackRows: ["tail -f logs", "warn: retrying"],
     visibleRows: ["tail -f logs"],
     byteCount: 12,
     size: { cols: 80, rows: 24 },
@@ -201,17 +203,24 @@ describe("runtime v2 translation", () => {
     expect(payload.panes[0]).toMatchObject({
       paneId: "pane-1",
       paneIndex: 0,
-      text: "echo one",
+      text: "build started\nstep 1\necho one\ndone",
       paneWidth: 120,
       isApproximate: false,
     });
     expect(payload.panes[1]).toMatchObject({
       paneId: "pane-2",
       paneIndex: 1,
-      text: "tail -f",
+      text: "tail -f logs\nwarn: retrying\ntail -f logs",
       paneWidth: 80,
       isApproximate: true,
     });
+  });
+
+  test("limits runtime v2 history payloads to the requested line count", () => {
+    const payload = buildLegacyTabHistory(workspaceSummary, "main", 0, 2, inspectSnapshots);
+
+    expect(payload.panes[0]?.text).toBe("echo one\ndone");
+    expect(payload.panes[1]?.text).toBe("warn: retrying\ntail -f logs");
   });
 
   test("builds a legacy scrollback payload from inspect output", () => {
@@ -219,7 +228,7 @@ describe("runtime v2 translation", () => {
       type: "scrollback",
       paneId: "pane-2",
       lines: 64,
-      text: "tail -f",
+      text: "tail -f logs\nwarn: retrying\ntail -f logs",
       paneWidth: 80,
       isApproximate: true,
     });

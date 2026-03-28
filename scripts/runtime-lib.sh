@@ -53,6 +53,34 @@ runtime_node_dir() {
   dirname "$(resolve_runtime_node_bin)"
 }
 
+resolve_runtime_cargo_bin() {
+  local candidate
+
+  if [[ -n "${REMUX_RUNTIME_CARGO_BIN:-}" ]]; then
+    if [[ -x "$REMUX_RUNTIME_CARGO_BIN" ]]; then
+      printf '%s\n' "$REMUX_RUNTIME_CARGO_BIN"
+      return 0
+    fi
+    echo "[runtime] REMUX_RUNTIME_CARGO_BIN is not executable: $REMUX_RUNTIME_CARGO_BIN" >&2
+    return 1
+  fi
+
+  candidate="${CARGO_HOME:-$HOME/.cargo}/bin/cargo"
+  if [[ -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  candidate="$(command -v cargo 2>/dev/null || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  echo "[runtime] unable to resolve cargo for the shared runtime toolchain" >&2
+  return 1
+}
+
 resolve_runtime_npm_bin() {
   local candidate
 
@@ -176,6 +204,39 @@ runtime_sync_service() {
   echo "com.remux.runtime-sync"
 }
 
+runtime_shared_service() {
+  echo "com.remux.runtime-v2-shared"
+}
+
+runtime_shared_port() {
+  echo "${REMUX_RUNTIME_V2_SHARED_PORT:-3737}"
+}
+
+runtime_shared_base_url() {
+  echo "http://127.0.0.1:$(runtime_shared_port)"
+}
+
+runtime_local_ws_origin() {
+  ensure_instance_name "$1"
+  echo "ws://127.0.0.1:$(runtime_port "$1")"
+}
+
+runtime_shared_stdout_log() {
+  echo "/tmp/remux-runtime-v2-shared-stdout.log"
+}
+
+runtime_shared_stderr_log() {
+  echo "/tmp/remux-runtime-v2-shared-stderr.log"
+}
+
+runtime_shared_plist_path() {
+  echo "$HOME/Library/LaunchAgents/$(runtime_shared_service).plist"
+}
+
+runtime_shared_workdir() {
+  echo "$(runtime_dir dev)"
+}
+
 runtime_service_domain() {
   echo "$LAUNCHD_GUI_DOMAIN/$1"
 }
@@ -188,6 +249,10 @@ runtime_local_config_url() {
 runtime_public_config_url() {
   ensure_instance_name "$1"
   echo "$(runtime_public_url "$1")/api/config"
+}
+
+runtime_shared_meta_url() {
+  echo "$(runtime_shared_base_url)/v2/meta"
 }
 
 json_field_or_empty() {
@@ -263,9 +328,11 @@ verify_runtime_plist() {
   local plist
   local expected_node_bin
   local expected_path
+  local expected_runtime_base_url
   plist="$(runtime_plist_path "$name")"
   expected_node_bin="$(resolve_runtime_node_bin)"
   expected_path="$(runtime_shell_path)"
+  expected_runtime_base_url="$(runtime_shared_base_url)"
 
   if [[ ! -f "$plist" ]]; then
     echo "[runtime] missing launchd plist for $name: $plist" >&2
@@ -297,12 +364,97 @@ verify_runtime_plist() {
     return 1
   fi
 
+  if ! grep -Fq "<key>REMUXD_BASE_URL</key>" "$plist" || ! grep -Fq "<string>$expected_runtime_base_url</string>" "$plist"; then
+    echo "[runtime] $plist does not point to the shared runtime-v2 daemon at $expected_runtime_base_url" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "<key>REMUX_RUNTIME_V2_REQUIRED</key>" "$plist" || ! grep -Fq "<string>1</string>" "$plist"; then
+    echo "[runtime] $plist does not pin public services to runtime-v2" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "<key>REMUX_LOCAL_WS_ORIGIN</key>" "$plist" || ! grep -Fq "<string>$(runtime_local_ws_origin "$name")</string>" "$plist"; then
+    echo "[runtime] $plist does not advertise the local websocket fast path for $name" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  return 0
+}
+
+verify_shared_runtime_plist() {
+  local plist
+  local expected_path
+  local expected_cargo_bin
+  plist="$(runtime_shared_plist_path)"
+  expected_path="$(runtime_shell_path)"
+  expected_cargo_bin="$(resolve_runtime_cargo_bin)"
+
+  if [[ ! -f "$plist" ]]; then
+    echo "[runtime] missing shared runtime plist: $plist" >&2
+    echo "[runtime] run: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "$(runtime_shared_workdir)" "$plist"; then
+    echo "[runtime] $plist does not point to $(runtime_shared_workdir)" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "<string>$expected_cargo_bin</string>" "$plist" || ! grep -Fq "<string>remuxd</string>" "$plist"; then
+    echo "[runtime] $plist does not launch the shared remuxd daemon with the resolved cargo binary" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "<string>$(runtime_shared_port)</string>" "$plist"; then
+    echo "[runtime] $plist does not expose the shared runtime on port $(runtime_shared_port)" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
+  if ! grep -Fq "$expected_path" "$plist"; then
+    echo "[runtime] $plist does not prefix PATH with the resolved runtime toolchain" >&2
+    echo "[runtime] rerun: npm run runtime:install-launchd" >&2
+    return 1
+  fi
+
   return 0
 }
 
 loaded_service_working_dir() {
   local service="$1"
-  launchctl print "$(runtime_service_domain "$service")" 2>/dev/null | awk -F' = ' '/working directory = / { print $2; exit }'
+  local service_output=""
+
+  service_output="$(launchctl print "$(runtime_service_domain "$service")" 2>/dev/null || true)"
+  awk -F' = ' '/working directory = / { print $2; exit }' <<<"$service_output"
+}
+
+loaded_service_description() {
+  local service="$1"
+  launchctl print "$(runtime_service_domain "$service")" 2>/dev/null || true
+}
+
+loaded_runtime_service_matches_expected() {
+  ensure_instance_name "$1"
+  local name="$1"
+  local service_description=""
+  local expected_working_dir
+  expected_working_dir="$(runtime_dir "$name")"
+  service_description="$(loaded_service_description "$(runtime_service "$name")")"
+
+  [[ -n "$service_description" ]] || return 1
+  grep -Fq "working directory = $expected_working_dir" <<<"$service_description" || return 1
+  grep -Fq "REMUX_RUNTIME_BRANCH => $(runtime_branch "$name")" <<<"$service_description" || return 1
+  grep -Fq "REMUXD_BASE_URL => $(runtime_shared_base_url)" <<<"$service_description" || return 1
+  grep -Fq "REMUX_RUNTIME_V2_REQUIRED => 1" <<<"$service_description" || return 1
+  grep -Fq "REMUX_LOCAL_WS_ORIGIN => $(runtime_local_ws_origin "$name")" <<<"$service_description" || return 1
+
+  return 0
 }
 
 restart_runtime_service() {
@@ -310,19 +462,15 @@ restart_runtime_service() {
   local name="$1"
   local service
   local plist
-  local expected_working_dir
-  local loaded_working_dir
   service="$(runtime_service "$name")"
   plist="$(runtime_plist_path "$name")"
-  expected_working_dir="$(runtime_dir "$name")"
 
   if [[ ! -f "$plist" ]]; then
     echo "[runtime] launchd plist not installed for $name: $plist" >&2
     return 1
   fi
 
-  loaded_working_dir="$(loaded_service_working_dir "$service")"
-  if [[ "$loaded_working_dir" == "$expected_working_dir" ]]; then
+  if loaded_runtime_service_matches_expected "$name"; then
     launchctl kickstart -k "$(runtime_service_domain "$service")"
     return 0
   fi
@@ -340,7 +488,9 @@ load_launchd_service() {
     return 1
   fi
 
-  launchctl bootout "$(runtime_service_domain "$service")" 2>/dev/null || true
+  launchctl bootout "$LAUNCHD_GUI_DOMAIN" "$plist" 2>/dev/null \
+    || launchctl bootout "$(runtime_service_domain "$service")" 2>/dev/null \
+    || true
   launchctl bootstrap "$LAUNCHD_GUI_DOMAIN" "$plist"
 }
 
@@ -349,8 +499,36 @@ load_runtime_launchd() {
   load_launchd_service "$(runtime_service "$1")" "$(runtime_plist_path "$1")"
 }
 
+load_shared_runtime_launchd() {
+  local loaded_working_dir
+  loaded_working_dir="$(loaded_service_working_dir "$(runtime_shared_service)")"
+  if [[ "$loaded_working_dir" == "$(runtime_shared_workdir)" ]] && fetch_json "$(runtime_shared_meta_url)" >/dev/null 2>&1; then
+    return 0
+  fi
+  load_launchd_service "$(runtime_shared_service)" "$(runtime_shared_plist_path)"
+}
+
 load_sync_launchd() {
   load_launchd_service "$(runtime_sync_service)" "$(runtime_sync_plist_path)"
+}
+
+ensure_shared_runtime_running() {
+  if fetch_json "$(runtime_shared_meta_url)" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  load_shared_runtime_launchd
+
+  local deadline=$((SECONDS + 60))
+  while (( SECONDS < deadline )); do
+    if fetch_json "$(runtime_shared_meta_url)" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "[runtime] shared runtime-v2 daemon failed to become healthy at $(runtime_shared_base_url)" >&2
+  return 1
 }
 
 wait_for_runtime_api() {

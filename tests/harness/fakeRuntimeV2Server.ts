@@ -60,6 +60,7 @@ export class FakeRuntimeV2Server {
   private readonly sockets = new Set<WebSocket>();
   private readonly terminalObservations = new Map<string, TerminalObservation>();
   private readonly paneContent = new Map<string, string>();
+  private readonly paneScrollback = new Map<string, string[]>();
   private terminalClientSequence = 0;
   private paneSequence = 1;
   private workspace: RuntimeV2WorkspaceSummary;
@@ -182,8 +183,16 @@ export class FakeRuntimeV2Server {
     this.paneContent.set(paneId, text);
   }
 
+  setPaneScrollback(paneId: string, rows: string[]): void {
+    this.paneScrollback.set(paneId, [...rows]);
+  }
+
   getPaneContent(paneId: string): string {
     return this.paneContent.get(paneId) ?? "";
+  }
+
+  getPaneScrollback(paneId: string): string[] {
+    return [...(this.paneScrollback.get(paneId) ?? [])];
   }
 
   activePaneId(): string {
@@ -241,6 +250,7 @@ export class FakeRuntimeV2Server {
     };
 
     this.paneContent.set(newPaneId, newPaneId === "pane-2" ? "PANE_TWO_READY\r\n" : `READY_${newPaneId}\r\n`);
+    this.paneScrollback.set(newPaneId, []);
     this.broadcastWorkspace();
     return newPaneId;
   }
@@ -308,6 +318,7 @@ export class FakeRuntimeV2Server {
             precision: paneId === this.activePaneId() ? "precise" : "approximate",
             summary: paneId,
             previewText: this.getPaneContent(paneId).trim(),
+            scrollbackRows: this.getPaneScrollback(paneId),
             visibleRows: this.getPaneContent(paneId).trim().split("\n").filter(Boolean),
             byteCount: this.getPaneContent(paneId).length,
             size: this.latestTerminal(paneId)?.sizes.at(-1) ?? { cols: 120, rows: 40 },
@@ -345,6 +356,7 @@ export class FakeRuntimeV2Server {
             size: message.size,
             sequence: observation.attachCount,
             content_base64: encodeBase64(this.getPaneContent(attachedPaneId)),
+            replay_base64: encodeBase64(this.buildPaneReplay(attachedPaneId)),
           }));
           socket.send(JSON.stringify({
             type: "lease_state",
@@ -377,6 +389,7 @@ export class FakeRuntimeV2Server {
             size: this.latestTerminal(attachedPaneId)?.sizes.at(-1) ?? { cols: 120, rows: 40 },
             sequence: (this.latestTerminal(attachedPaneId)?.attachCount ?? 0) + 10,
             content_base64: encodeBase64(this.getPaneContent(attachedPaneId)),
+            replay_base64: encodeBase64(this.buildPaneReplay(attachedPaneId)),
           }));
       }
     });
@@ -403,5 +416,14 @@ export class FakeRuntimeV2Server {
       this.terminalObservations.set(paneId, observation);
     }
     return observation;
+  }
+
+  private buildPaneReplay(paneId: string): string {
+    const scrollback = this.getPaneScrollback(paneId);
+    const live = this.getPaneContent(paneId);
+    if (scrollback.length === 0) {
+      return live;
+    }
+    return `${scrollback.join("\r\n")}\r\n${live}`;
   }
 }

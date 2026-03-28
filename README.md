@@ -74,6 +74,7 @@ npm start
 - Session, tab, and pane management from the browser control drawer
 - Full terminal streaming through xterm.js for Live interaction
 - Inspect view for readable history and mobile-friendly text selection
+- Server-backed scrollback replay so Live and Inspect survive browser reconnects with meaningful history intact
 - Compose input for native mobile keyboard entry
 - Custom snippets stored in local browser storage
 - Drag-and-drop or picker-based file upload into the active pane working directory
@@ -144,6 +145,8 @@ npm run runtime:install-launchd
 npm run runtime:sync
 npm run runtime:status
 ```
+
+Those public `main` / `dev` gateways are intended to share one machine-level `runtime-v2` daemon, so deploys do not create a fresh private workspace per version.
 
 See [docs/RUNTIME_SYNC.md](./docs/RUNTIME_SYNC.md) for the detached runtime worktree layout and launchd setup.
 

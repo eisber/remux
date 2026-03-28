@@ -157,6 +157,7 @@ pub mod control {
         pub precision: InspectPrecision,
         pub summary: String,
         pub preview_text: String,
+        pub scrollback_rows: Vec<String>,
         pub visible_rows: Vec<String>,
         pub byte_count: usize,
         pub size: TerminalSize,
@@ -222,6 +223,7 @@ pub mod terminal {
             size: TerminalSize,
             sequence: u64,
             content_base64: String,
+            replay_base64: Option<String>,
         },
         Stream {
             sequence: u64,

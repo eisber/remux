@@ -48,6 +48,17 @@ trap cleanup EXIT
 
 acquire_sync_lock || exit 0
 git -C "$PROJECT_DIR" fetch origin --prune
+ensure_runtime_worktree dev
+verify_shared_runtime_plist
+
+if [[ "$DRY_RUN" == true ]]; then
+  echo "[sync] dry-run shared runtime-v2 daemon"
+  echo "  workdir:      $(runtime_shared_workdir)"
+  echo "  base url:     $(runtime_shared_base_url)"
+else
+  echo "[sync] ensuring shared runtime-v2 daemon"
+  ensure_shared_runtime_running
+fi
 
 sync_instance() {
   local name="$1"
@@ -87,6 +98,10 @@ sync_instance() {
       needs_restart=true
     fi
   else
+    needs_restart=true
+  fi
+
+  if ! loaded_runtime_service_matches_expected "$name"; then
     needs_restart=true
   fi
 

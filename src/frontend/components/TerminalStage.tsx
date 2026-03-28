@@ -10,6 +10,7 @@ interface TerminalStageProps {
   inspectPaneFilter: string;
   inspectSearchQuery: string;
   inspectSnapshot: TabInspectSnapshot | null;
+  mobileLayout: boolean;
   onInspectLoadMore: () => void;
   onInspectPaneFilterChange: (paneId: string) => void;
   onInspectRefresh: () => void;
@@ -33,6 +34,7 @@ export const TerminalStage = ({
   inspectPaneFilter,
   inspectSearchQuery,
   inspectSnapshot,
+  mobileLayout,
   onInspectLoadMore,
   onInspectPaneFilterChange,
   onInspectRefresh,
@@ -70,6 +72,7 @@ export const TerminalStage = ({
         errorMessage={inspectErrorMessage}
         lineCount={inspectLineCount}
         loading={inspectLoading}
+        mobileLayout={mobileLayout}
         onLoadMore={onInspectLoadMore}
         onPaneFilterChange={onInspectPaneFilterChange}
         onRefresh={onInspectRefresh}

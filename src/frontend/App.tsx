@@ -42,10 +42,10 @@ import {
   debugLog,
   debugMode,
   initialLaunchContext,
-  token,
-  wsOrigin
+  token
 } from "./remux-runtime";
 import { createTerminalWriteBuffer } from "./terminal-write-buffer";
+import { attachWebSocketKeepAlive } from "./websocket-keepalive";
 import type {
   SessionState,
   ServerCapabilities,
@@ -75,6 +75,7 @@ const LazyUploadToast = lazy(() => import("./components/UploadToast"));
 export const App = () => {
   const runtimeGeometryRef = useRef<TerminalGeometryState | null>(null);
   const terminalSocketRef = useRef<WebSocket | null>(null);
+  const stopTerminalKeepAliveRef = useRef<(() => void) | null>(null);
   /** Deferred terminal auth credentials — stored on auth_ok, consumed on attached. */
   const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
   const serverCapabilitiesRef = useRef<ServerCapabilities | null>(null);
@@ -270,6 +271,7 @@ export const App = () => {
 
   const { authReady, serverConfig, capabilities, serverCapabilities, errorMessage, statusMessage, password,
     needsPasswordInput, passwordErrorMessage, bandwidthStats, sendControl } = connection;
+  const { resolvedSocketOrigin } = connection;
 
   useEffect(() => {
     serverCapabilitiesRef.current = serverCapabilities;
@@ -332,11 +334,13 @@ export const App = () => {
     terminalInputBufferRef.current?.clear();
     pendingTerminalTransportRef.current = "";
     if (terminalSocketRef.current) {
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = null;
       terminalSocketRef.current.onclose = null;
       terminalSocketRef.current.close();
     }
 
-    const socket = new WebSocket(`${wsOrigin}/ws/terminal`);
+    const socket = new WebSocket(`${resolvedSocketOrigin}/ws/terminal`);
     socket.onopen = () => {
       debugLog("terminal_socket.onopen");
       const terminalGeometry = readTerminalGeometry();
@@ -347,6 +351,11 @@ export const App = () => {
         clientId,
         ...(terminalGeometry ?? {})
       }));
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = attachWebSocketKeepAlive(socket, {
+        intervalMs: 25_000,
+        createPayload: () => JSON.stringify({ type: "ping" }),
+      });
       flushPendingTerminalTransport();
       connectionActionsRef.current.setStatusMessage("terminal connected");
       requestTerminalFit({ notify: true, retryUntilVisible: true });
@@ -364,6 +373,8 @@ export const App = () => {
     };
     socket.onclose = (event) => {
       debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
+      stopTerminalKeepAliveRef.current?.();
+      stopTerminalKeepAliveRef.current = null;
       terminalInputBufferRef.current?.clear();
       pendingTerminalTransportRef.current = "";
       if (event.code === 4001) {
@@ -374,7 +385,12 @@ export const App = () => {
       debugLog("terminal_socket.onerror");
     };
     terminalSocketRef.current = socket;
-  }, [flushPendingTerminalTransport, readTerminalGeometry, requestTerminalFit]);
+  }, [flushPendingTerminalTransport, readTerminalGeometry, requestTerminalFit, resolvedSocketOrigin]);
+
+  useEffect(() => () => {
+    stopTerminalKeepAliveRef.current?.();
+    stopTerminalKeepAliveRef.current = null;
+  }, []);
 
   const [snippets, setSnippets] = useState<Snippet[]>(() => {
     try {
@@ -936,6 +952,8 @@ export const App = () => {
     setInspectLineCount((current) => current + step);
   }, [serverConfig?.scrollbackLines]);
 
+  const mobileInspectMode = mobileLayout && viewMode === "inspect";
+
   return (
     <AppShell
       drawerOpen={drawerOpen}
@@ -1058,7 +1076,9 @@ export const App = () => {
         onToggleDrawer={() => setDrawerOpen((value) => !value)}
         onToggleSidebarCollapsed={() => setSidebarCollapsed((value) => !value)}
         onToggleStats={() => setStatsVisible((value) => !value)}
-        onToggleViewMode={() => setViewMode((mode) => mode === "inspect" ? "terminal" : "inspect")}
+        onToggleViewMode={() => {
+          setViewMode((mode) => mode === "inspect" ? "terminal" : "inspect");
+        }}
         renameHandledByKeyRef={renameHandledByKeyRef}
         renameTabValue={renameWindowValue}
         sidebarCollapsed={sidebarCollapsed}
@@ -1082,6 +1102,7 @@ export const App = () => {
         inspectPaneFilter={inspectPaneFilter}
         inspectSearchQuery={inspectSearchQuery}
         inspectSnapshot={inspectSnapshot}
+        mobileLayout={mobileLayout}
         onInspectLoadMore={loadMoreInspect}
         onInspectPaneFilterChange={setInspectPaneFilter}
         onInspectRefresh={refreshInspect}
@@ -1132,7 +1153,7 @@ export const App = () => {
         hidden={viewMode !== "terminal"}
           />
         )}
-        pinnedSnippetsBar={(
+        pinnedSnippetsBar={mobileInspectMode ? null : (
           <PinnedSnippetsBar
         snippets={pinnedSnippets}
         onEditSnippet={setEditingSnippet}
@@ -1140,7 +1161,7 @@ export const App = () => {
         onOpenDrawer={() => setDrawerOpen(true)}
           />
         )}
-        snippetTemplatePanel={(
+        snippetTemplatePanel={mobileInspectMode ? null : (
           <SnippetTemplatePanel
         pendingExecution={pendingSnippetExecution}
         onCancel={() => setPendingSnippetExecution(null)}
@@ -1158,7 +1179,7 @@ export const App = () => {
         onRun={runPendingSnippet}
           />
         )}
-        composeBar={(
+        composeBar={mobileInspectMode ? null : (
           <ComposeBar
         composeText={composeText}
         onChange={setComposeText}
@@ -1167,7 +1188,7 @@ export const App = () => {
         onSend={sendCompose}
           />
         )}
-        snippetPicker={(
+        snippetPicker={mobileInspectMode ? null : (
           <SnippetPicker
         activeIndex={quickSnippetIndex}
         onExecuteSnippet={executeSnippet}

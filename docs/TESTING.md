@@ -28,7 +28,7 @@ What each command covers:
 - `npm run typecheck`: TypeScript compile safety for backend and frontend
 - `npm test`: runtime-v2 and product-core Vitest coverage only; compatibility suites are excluded by design
 - `npm run build`: produces the frontend bundle used by Playwright harnesses
-- `npm run test:e2e:functional`: narrow runtime-v2 browser contract checks against the fake runtime-v2 upstream
+- `npm run test:e2e:functional`: narrow runtime-v2 browser contract checks against the fake runtime-v2 upstream, including reconnect history recovery
 
 If you have not changed the frontend bundle since the last successful build, you can usually skip rerunning `npm run build` and execute the targeted Playwright command directly.
 
@@ -42,7 +42,7 @@ npm run test:e2e:width
 npm run test:e2e:screenshots
 ```
 
-- `test:e2e:functional`: runtime-v2 browser contract tests only
+- `test:e2e:functional`: runtime-v2 browser contract tests only, including server-backed scrollback replay and inspect recovery after reconnect
 - `test:e2e:width`: explicit terminal width invariant checks; this is the required width gate before merging to `dev`
 - `test:e2e:screenshots`: PR-only screenshot capture for visual review
 

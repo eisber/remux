@@ -9,6 +9,7 @@ pub struct PaneInspectView {
     pub precision: InspectPrecision,
     pub summary: String,
     pub preview_text: String,
+    pub scrollback_rows: Vec<String>,
     pub visible_rows: Vec<String>,
     pub byte_count: usize,
     pub size: TerminalSize,
@@ -24,6 +25,7 @@ pub fn build_pane_inspect_view(terminal: &TerminalState) -> PaneInspectView {
             snapshot.byte_count, snapshot.size.cols, snapshot.size.rows
         ),
         preview_text: snapshot.visible_text,
+        scrollback_rows: snapshot.scrollback_rows,
         visible_rows: snapshot.visible_rows,
         byte_count: snapshot.byte_count,
         size: snapshot.size,
@@ -40,12 +42,13 @@ mod tests {
     #[test]
     fn inspect_view_exposes_preview_rows_and_precision() {
         let mut terminal = TerminalState::new(TerminalSize::new(12, 3), 100);
-        terminal.ingest(b"build ok\r\nnext line");
+        terminal.ingest(b"line 1\r\nbuild ok\r\nnext line\r\nlast line");
         terminal.set_precision(InspectPrecision::Partial);
 
         let inspect = build_pane_inspect_view(&terminal);
         assert_eq!(inspect.precision, InspectPrecision::Partial);
         assert!(inspect.preview_text.contains("build ok"));
+        assert_eq!(inspect.scrollback_rows, vec!["line 1".to_owned()]);
         assert!(inspect
             .visible_rows
             .iter()

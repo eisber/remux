@@ -559,7 +559,10 @@ class RuntimeV2TerminalBridge {
     }
 
     if (message.type === "snapshot") {
-      sendRaw(this.browserSocket, `\u001bc${decodeBase64(message.contentBase64)}`);
+      sendRaw(
+        this.browserSocket,
+        `\u001bc${decodeBase64(message.replayBase64 ?? message.contentBase64)}`,
+      );
       return;
     }
 
@@ -643,6 +646,7 @@ export const createRemuxV2GatewayServer = (
   const tokenFile = path.join(os.homedir(), ".remux", "github-token");
 
   app.get("/api/config", (_req, res) => {
+    const localWebSocketOrigin = process.env.REMUX_LOCAL_WS_ORIGIN?.trim() || undefined;
     res.json({
       version: runtimeMetadata.version,
       gitBranch: runtimeMetadata.gitBranch,
@@ -652,6 +656,7 @@ export const createRemuxV2GatewayServer = (
       scrollbackLines: config.scrollbackLines,
       pollIntervalMs: config.pollIntervalMs,
       uploadMaxSize: UPLOAD_MAX_BYTES,
+      localWebSocketOrigin,
       backendKind: RUNTIME_V2_BACKEND_KIND,
       runtimeMode: RUNTIME_V2_BACKEND_KIND,
     });
@@ -1052,6 +1057,20 @@ export const createRemuxV2GatewayServer = (
 
     socket.on("message", (rawData) => {
       const raw = rawData.toString("utf8");
+      try {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (parsed.type === "ping") {
+          if (socket.readyState === socket.OPEN) {
+            socket.send(JSON.stringify({
+              type: "pong",
+              ...(typeof parsed.timestamp === "number" ? { timestamp: parsed.timestamp } : {}),
+            }));
+          }
+          return;
+        }
+      } catch {
+        // Continue to normal parsing.
+      }
       const message = parseClientMessage(raw);
       if (!message) {
         sendJson(socket, { type: "error", message: "invalid message format" });
@@ -1184,6 +1203,12 @@ export const createRemuxV2GatewayServer = (
       if (text.startsWith("{")) {
         try {
           const payload = JSON.parse(text) as unknown;
+          if (
+            isObject(payload)
+            && payload.type === "ping"
+          ) {
+            return;
+          }
           if (
             isObject(payload)
             && payload.type === "resize"
