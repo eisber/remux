@@ -601,7 +601,7 @@ load_sync_launchd() {
 }
 
 ensure_shared_runtime_running() {
-  if shared_runtime_meta_json >/dev/null 2>&1; then
+  if shared_runtime_meta_json >/dev/null 2>&1 && loaded_shared_runtime_service_matches_expected; then
     return 0
   fi
 
