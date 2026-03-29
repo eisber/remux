@@ -572,6 +572,173 @@ test.describe("runtime-v2 browser behavior", () => {
     });
   });
 
+  test("switching tabs revives a paused live terminal instead of leaving the stale pane frozen", async ({ page }) => {
+    await page.addInitScript(() => {
+      type SocketSabotageApi = {
+        closeLatestTerminal: () => void;
+        disable: () => void;
+        enable: (count: number) => void;
+        stats: () => { opened: number; remaining: number };
+      };
+
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => (
+        nativeSetTimeout(handler, Math.min(typeof timeout === "number" ? timeout : 0, 20), ...args)
+      )) as typeof window.setTimeout;
+
+      const NativeWebSocket = window.WebSocket;
+      const terminalSockets: WebSocket[] = [];
+      const sabotage = {
+        enabled: false,
+        opened: 0,
+        remaining: 0,
+      };
+
+      class InterceptedWebSocket extends NativeWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          if (protocols === undefined) {
+            super(url);
+          } else {
+            super(url, protocols);
+          }
+          const href = typeof url === "string" ? url : url.toString();
+          if (!href.includes("/ws/terminal")) {
+            return;
+          }
+
+          sabotage.opened += 1;
+          terminalSockets.push(this);
+
+          this.addEventListener("open", () => {
+            if (!sabotage.enabled || sabotage.remaining <= 0) {
+              return;
+            }
+            sabotage.remaining -= 1;
+            nativeSetTimeout(() => {
+              try {
+                this.close(4000, "forced retry exhaustion");
+              } catch {
+                // ignore test-induced socket close failures
+              }
+            }, 0);
+          }, { once: true });
+
+          this.addEventListener("close", () => {
+            const index = terminalSockets.indexOf(this);
+            if (index >= 0) {
+              terminalSockets.splice(index, 1);
+            }
+          });
+        }
+      }
+
+      Object.setPrototypeOf(InterceptedWebSocket, NativeWebSocket);
+      Object.defineProperty(window, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: InterceptedWebSocket,
+      });
+
+      (window as Window & { __remuxSocketSabotage?: SocketSabotageApi }).__remuxSocketSabotage = {
+        closeLatestTerminal: () => {
+          const socket = terminalSockets.at(-1);
+          socket?.close(4000, "forced retry exhaustion");
+        },
+        disable: () => {
+          sabotage.enabled = false;
+          sabotage.remaining = 0;
+        },
+        enable: (count: number) => {
+          sabotage.enabled = true;
+          sabotage.remaining = Math.max(0, count);
+        },
+        stats: () => ({
+          opened: sabotage.opened,
+          remaining: sabotage.remaining,
+        }),
+      };
+    });
+
+    const firstPaneId = server.upstream.activePaneId();
+    server.upstream.setPaneContent(firstPaneId, buildRepaintHeavyTranscript("PAUSE-0"));
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+    await expectTerminalUiIntegrity(page, "first tab before pause", {
+      required: ["FINAL-PAUSE-0", "PROMPT-PAUSE-0", "STATUS-PAUSE-0"],
+      forbidden: ["FINAL-PAUSE-1", "PROMPT-PAUSE-1", "STATUS-PAUSE-1"],
+      unique: ["PROMPT-PAUSE-0", "STATUS-PAUSE-0"],
+    });
+
+    await page.getByRole("button", { name: "New tab" }).click();
+    await expect(page.getByRole("button", { name: "1: Shell" })).toBeVisible();
+
+    let secondPaneId = firstPaneId;
+    await expect.poll(() => {
+      secondPaneId = server.upstream.activePaneId();
+      return secondPaneId !== firstPaneId;
+    }).toBe(true);
+
+    server.upstream.pushTerminalOutput(secondPaneId, buildRepaintHeavyTranscript("PAUSE-1"));
+    await expectTerminalUiIntegrity(page, "second tab before pause", {
+      required: ["FINAL-PAUSE-1", "PROMPT-PAUSE-1", "STATUS-PAUSE-1"],
+      forbidden: ["FINAL-PAUSE-0", "PROMPT-PAUSE-0", "STATUS-PAUSE-0"],
+      unique: ["PROMPT-PAUSE-1", "STATUS-PAUSE-1"],
+    });
+
+    await page.evaluate(() => {
+      const sabotage = (window as Window & {
+        __remuxSocketSabotage?: {
+          closeLatestTerminal: () => void;
+          enable: (count: number) => void;
+        };
+      }).__remuxSocketSabotage;
+      sabotage?.enable(12);
+      sabotage?.closeLatestTerminal();
+    });
+
+    await expect.poll(() => page.getByTestId("top-status-indicator").getAttribute("aria-label")).toContain(
+      "terminal reconnect failed"
+    );
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/warn/);
+    await expect.poll(() => readTerminalText(page)).toContain("FINAL-PAUSE-1");
+
+    const socketsBeforeRevive = await page.evaluate(() => (
+      (window as Window & {
+        __remuxSocketSabotage?: {
+          stats: () => { opened: number };
+        };
+      }).__remuxSocketSabotage?.stats().opened ?? 0
+    ));
+
+    await page.evaluate(() => {
+      (window as Window & {
+        __remuxSocketSabotage?: {
+          disable: () => void;
+        };
+      }).__remuxSocketSabotage?.disable();
+    });
+
+    await page.getByRole("button", { name: "0: Shell" }).click();
+
+    await expect
+      .poll(() => page.evaluate(() => (
+        (window as Window & {
+          __remuxSocketSabotage?: {
+            stats: () => { opened: number };
+          };
+        }).__remuxSocketSabotage?.stats().opened ?? 0
+      )))
+      .toBeGreaterThan(socketsBeforeRevive);
+
+    await expectTerminalUiIntegrity(page, "revived first tab", {
+      required: ["FINAL-PAUSE-0", "PROMPT-PAUSE-0", "STATUS-PAUSE-0"],
+      forbidden: ["FINAL-PAUSE-1", "PROMPT-PAUSE-1", "STATUS-PAUSE-1"],
+      unique: ["PROMPT-PAUSE-0", "STATUS-PAUSE-0"],
+    });
+    await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+  });
+
   test("refresh restores the active tab's repaint-heavy terminal UI without duplicate prompt lines", async ({ page }) => {
     const firstPaneId = server.upstream.activePaneId();
     server.upstream.setPaneContent(firstPaneId, buildRepaintHeavyTranscript("TAB-0"));
