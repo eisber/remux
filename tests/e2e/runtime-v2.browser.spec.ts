@@ -521,6 +521,69 @@ test.describe("runtime-v2 browser behavior", () => {
     await expect(page.getByTestId("inspect-pane-filter-all")).toBeVisible();
   });
 
+  test("switching tabs reopens the live terminal socket for the next view revision", async ({ page }) => {
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      let terminalSocketOpens = 0;
+
+      class CountedWebSocket extends NativeWebSocket {
+        constructor(url: string | URL, protocols?: string | string[]) {
+          if (protocols === undefined) {
+            super(url);
+          } else {
+            super(url, protocols);
+          }
+
+          const href = typeof url === "string" ? url : url.toString();
+          if (href.includes("/ws/terminal")) {
+            this.addEventListener("open", () => {
+              terminalSocketOpens += 1;
+            }, { once: true });
+          }
+        }
+      }
+
+      Object.setPrototypeOf(CountedWebSocket, NativeWebSocket);
+      Object.defineProperty(window, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: CountedWebSocket,
+      });
+
+      (window as Window & {
+        __remuxTerminalSocketStats?: { opens: () => number };
+      }).__remuxTerminalSocketStats = {
+        opens: () => terminalSocketOpens,
+      };
+    });
+
+    const firstPaneId = server.upstream.activePaneId();
+    server.upstream.setPaneContent(firstPaneId, buildRepaintHeavyTranscript("SOCKET-0"));
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+
+    await expect
+      .poll(() => page.evaluate(() => (
+        (window as Window & {
+          __remuxTerminalSocketStats?: { opens: () => number };
+        }).__remuxTerminalSocketStats?.opens() ?? 0
+      )))
+      .toBe(1);
+
+    server.upstream.delayNextTerminalSnapshot(1_000);
+    await page.getByRole("button", { name: "New tab" }).click();
+    await expect(page.getByRole("button", { name: "1: Shell" })).toBeVisible();
+
+    await expect
+      .poll(() => page.evaluate(() => (
+        (window as Window & {
+          __remuxTerminalSocketStats?: { opens: () => number };
+        }).__remuxTerminalSocketStats?.opens() ?? 0
+      )))
+      .toBeGreaterThan(1);
+  });
+
   test("switching tabs clears repaint-heavy stale terminal UI instead of leaking the previous tab", async ({ page }) => {
     const firstPaneId = server.upstream.activePaneId();
     server.upstream.setPaneContent(firstPaneId, buildRepaintHeavyTranscript("TAB-0"));

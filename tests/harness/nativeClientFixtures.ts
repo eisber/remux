@@ -64,6 +64,7 @@ export const nativeSessionPickerFixture: Extract<ControlServerMessage, { type: "
 
 export const nativeWorkspaceStateFixture: Extract<ControlServerMessage, { type: "workspace_state" }> = {
   type: "workspace_state",
+  viewRevision: 1,
   workspace: {
     capturedAt: "2026-03-26T13:00:00.000Z",
     sessions: [

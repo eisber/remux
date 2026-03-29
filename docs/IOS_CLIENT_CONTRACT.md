@@ -191,6 +191,7 @@ Server → { "type": "auth_error", "reason": "invalid password" }
 ```json
 {
   "type": "workspace_state",
+  "viewRevision": 1,
   "workspace": {
     "capturedAt": "2026-03-26T13:00:00.000Z",
     "sessions": [

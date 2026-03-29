@@ -92,6 +92,8 @@ export const App = () => {
   const terminalReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const terminalReconnectAttemptRef = useRef(0);
   const terminalReviveContextKeyRef = useRef<string | null>(null);
+  const terminalViewRevisionRef = useRef<number | null>(null);
+  const lastOpenedTerminalViewRevisionRef = useRef<number | null>(null);
   const launchContextRef = useRef(initialLaunchContext);
   const readTerminalGeometryRef = useRef<() => { cols: number; rows: number } | null>(() => null);
   const suppressHistoryGapRef = useRef((_: string) => {});
@@ -190,6 +192,7 @@ export const App = () => {
         case "attached": {
           workspace.onAttached(message.session);
           attachedSessionRef.current = message.session;
+          terminalViewRevisionRef.current = message.viewRevision;
           recordDiagnosticActionRef.current("runtime.attached", `Attached session ${message.session}`);
           launchContextRef.current = null;
           setDrawerOpen(false);
@@ -200,8 +203,10 @@ export const App = () => {
             const auth = pendingTerminalAuthRef.current;
             pendingTerminalAuthRef.current = null;
             if (attachedSessionRef.current === message.session) {
-              openTerminalSocket(auth.password, auth.clientId);
+              openTerminalSocket(auth.password, auth.clientId, message.viewRevision);
             }
+          } else {
+            syncTerminalSocketToViewRevision(message.viewRevision, "attached");
           }
           notifyTerminalResizeRef.current({ notify: true, retryUntilVisible: true });
           return;
@@ -213,6 +218,8 @@ export const App = () => {
           attachedSessionRef.current = "";
           awaitingTerminalReplayRef.current = false;
           terminalHasReplayRef.current = false;
+          terminalViewRevisionRef.current = null;
+          lastOpenedTerminalViewRevisionRef.current = null;
           setTerminalViewState("idle");
           setRuntimeState(null);
           recordDiagnosticActionRef.current("runtime.session_picker", "Session picker shown");
@@ -227,11 +234,13 @@ export const App = () => {
           if (inferredAttachedSession) {
             attachedSessionRef.current = inferredAttachedSession;
           }
+          terminalViewRevisionRef.current = message.viewRevision;
           workspace.onWorkspaceState(message.workspace, message.clientView ?? null);
           setRuntimeState(message.runtimeState ?? null);
           if (inferredAttachedSession && terminalViewStateRef.current === "live") {
             connectionActionsRef.current.setStatusMessage(`attached: ${inferredAttachedSession}`);
           }
+          syncTerminalSocketToViewRevision(message.viewRevision, "workspace_state");
           return;
         }
         case "error":
@@ -351,13 +360,14 @@ export const App = () => {
   }, [readTerminalGeometry]);
 
   // ── Terminal socket management ──
-  const openTerminalSocket = useCallback((passwordValue: string, clientId: string): void => {
-    debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
+  const openTerminalSocket = useCallback((passwordValue: string, clientId: string, viewRevision = terminalViewRevisionRef.current): void => {
+    debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue), viewRevision });
     recordDiagnosticActionRef.current("terminal.connect.begin", "Open live terminal socket");
     if (terminalReconnectTimerRef.current) {
       clearTimeout(terminalReconnectTimerRef.current);
       terminalReconnectTimerRef.current = null;
     }
+    lastOpenedTerminalViewRevisionRef.current = viewRevision ?? null;
     terminalInputBatcherRef.current.clear();
     awaitingTerminalReplayRef.current = true;
     setTerminalViewState(terminalHasReplayRef.current ? "restoring" : "connecting");
@@ -388,6 +398,7 @@ export const App = () => {
         token,
         password: passwordValue || undefined,
         clientId,
+        ...(typeof viewRevision === "number" ? { viewRevision } : {}),
         ...(terminalGeometry ?? {})
       }));
       stopTerminalKeepAliveRef.current?.();
@@ -471,7 +482,7 @@ export const App = () => {
         const stillAlive = connection.controlSocketRef.current?.readyState === WebSocket.OPEN;
         const currentAuth = terminalAuthRef.current;
         if (stillAlive && currentAuth) {
-          openTerminalSocket(currentAuth.password, currentAuth.clientId);
+          openTerminalSocket(currentAuth.password, currentAuth.clientId, terminalViewRevisionRef.current);
         }
       }, delay);
     };
@@ -480,6 +491,33 @@ export const App = () => {
     };
     terminalSocketRef.current = socket;
   }, [flushPendingTerminalTransport, readTerminalGeometry, requestTerminalFit, resolvedSocketOrigin, writeToTerminal]);
+
+  const syncTerminalSocketToViewRevision = useCallback((viewRevision: number | undefined, reason: string): void => {
+    if (typeof viewRevision !== "number" || !Number.isFinite(viewRevision)) {
+      return;
+    }
+    terminalViewRevisionRef.current = viewRevision;
+    const auth = terminalAuthRef.current;
+    if (!auth) {
+      return;
+    }
+    if (lastOpenedTerminalViewRevisionRef.current === null || lastOpenedTerminalViewRevisionRef.current === viewRevision) {
+      return;
+    }
+
+    suppressHistoryGapRef.current(`terminal view revision ${viewRevision}`);
+    localEchoRef.current?.reset();
+    resetTerminalBufferRef.current();
+    terminalHasReplayRef.current = false;
+    awaitingTerminalReplayRef.current = false;
+    terminalReconnectAttemptRef.current = 0;
+    recordDiagnosticActionRef.current(
+      "terminal.view_revision",
+      `Reopen live terminal for revision ${viewRevision}`,
+      reason,
+    );
+    openTerminalSocket(auth.password, auth.clientId, viewRevision);
+  }, [openTerminalSocket, resetTerminalBuffer]);
 
   useEffect(() => () => {
     stopTerminalKeepAliveRef.current?.();
