@@ -4,6 +4,7 @@ import { AppHeader } from "./components/AppHeader";
 import { TerminalStage } from "./components/TerminalStage";
 import { ComposeBar } from "./components/ComposeBar";
 import { PinnedSnippetsBar, SnippetPicker, SnippetTemplatePanel } from "./components/SnippetPanels";
+import { AiQuickActionsBar } from "./components/AiQuickActionsBar";
 import { openRemuxFeedbackDialog } from "./feedback/trigger";
 import { SessionSection } from "./components/sidebar/SessionSection";
 import { AppearanceSection } from "./components/sidebar/AppearanceSection";
@@ -35,6 +36,7 @@ import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import { useRemuxConnection } from "./hooks/useRemuxConnection";
 import { useClientPreferences } from "./hooks/useClientPreferences";
 import { useWorkspaceState } from "./hooks/useWorkspaceState";
+import { detectAiToolContext } from "./ai-tool-profile";
 import {
   buildInspectSnapshotFromServerHistory,
   type TabInspectSnapshot
@@ -921,6 +923,10 @@ export const App = () => {
   }, [serverConfig?.scrollbackLines]);
 
   const mobileInspectMode = mobileLayout && viewMode === "inspect";
+  const activeAiTool = useMemo(
+    () => detectAiToolContext(activePane),
+    [activePane?.currentCommand, activePane?.currentPath, activePane?.id]
+  );
   const terminalStatusMessage = useMemo(() => {
     if (viewMode !== "terminal") {
       return undefined;
@@ -1130,6 +1136,12 @@ export const App = () => {
                 }
                 event.target.value = "";
               }}
+            />
+            <AiQuickActionsBar
+              hidden={viewMode !== "terminal"}
+              onFocusTerminal={focusTerminal}
+              onSendRaw={sendRawToSocket}
+              tool={activeAiTool}
             />
             <Toolbar
               ref={toolbarRef}
