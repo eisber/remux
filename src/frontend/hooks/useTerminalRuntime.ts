@@ -11,6 +11,13 @@ import {
   type TerminalWriteChunk
 } from "../terminal-write-buffer";
 
+/**
+ * Regex to match CPR (Cursor Position Report) responses: \x1b[{row};{col}R.
+ * The server intercepts DSR queries and responds server-side, so CPR
+ * responses from the browser xterm.js should not be sent upstream.
+ */
+const CPR_RESPONSE_RE = /\x1b\[\d+;\d+R/g;
+
 declare global {
   interface Window {
     __remuxTestTerminal?: {
@@ -343,7 +350,11 @@ export const useTerminalRuntime = ({
 
     const disposable = terminal.onData((data) => {
       const output = toolbarRef.current?.applyModifiersAndClear(data) ?? data;
-      sendRawToSocketRef.current(output);
+      // Filter out CPR responses — the server handles DSR queries directly.
+      const filtered = output.replace(CPR_RESPONSE_RE, "");
+      if (filtered) {
+        sendRawToSocketRef.current(filtered);
+      }
     });
 
     terminalRef.current = terminal;

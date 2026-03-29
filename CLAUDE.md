@@ -77,6 +77,13 @@ npm run typecheck && npm test && npm run test:e2e && npm run build
 
 非平凡的代码变更必须采用 TDD：先写测试（红）→ 实现（绿）→ 重构。
 
+### 评估验收原则
+
+- 实现前先定义可衡量的成功标准，覆盖四维度：结果、过程、风格、效率
+- 先写确定性检查（文件存在、命令执行、输出匹配），再加定性评估
+- 用实际失败驱动测试覆盖扩展，不靠猜测穷举
+- 完整方法论参见 skill `eval-driven-development`
+
 ### 安全要点
 
 - 两个 WebSocket 端点独立认证，修改 `server.ts` 或 `auth-service.ts` 时必须保持此特性
