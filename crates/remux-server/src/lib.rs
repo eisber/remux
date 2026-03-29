@@ -262,7 +262,11 @@ impl PaneRuntime {
 
 impl WorkspaceRuntime {
     fn spawn_default() -> Result<Arc<Self>, PtyError> {
-        Self::spawn_with_command(PtyCommand::default_shell().env("TERM", "xterm-256color"))
+        Self::spawn_with_command(
+            PtyCommand::default_shell()
+                .env("TERM", "xterm-256color")
+                .env("COLORTERM", "truecolor"),
+        )
     }
 
     fn spawn_with_command(default_command: PtyCommand) -> Result<Arc<Self>, PtyError> {
@@ -2207,6 +2211,8 @@ mod tests {
     }
 
     fn test_runtime_command() -> PtyCommand {
-        PtyCommand::default_shell().env("TERM", "xterm-256color")
+        PtyCommand::default_shell()
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
     }
 }
