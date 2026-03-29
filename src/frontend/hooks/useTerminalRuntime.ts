@@ -45,6 +45,7 @@ interface UseTerminalRuntimeResult {
   focusTerminal: () => void;
   readTerminalGeometry: () => { cols: number; rows: number } | null;
   readTerminalBuffer: () => string;
+  readTerminalViewport: () => string;
   requestTerminalFit: (options?: TerminalFitOptions) => void;
   resetTerminalBuffer: () => void;
   scrollbackContentRef: RefObject<HTMLDivElement | null>;
@@ -435,6 +436,7 @@ export const useTerminalRuntime = ({
     focusTerminal,
     readTerminalGeometry,
     readTerminalBuffer,
+    readTerminalViewport,
     requestTerminalFit,
     resetTerminalBuffer,
     scrollbackContentRef,

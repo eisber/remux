@@ -17,6 +17,7 @@ export interface AiToolProfile {
 
 export interface AiToolContext {
   command: string;
+  detectionSource: "pane-command" | "viewport";
   normalizedCommand: string;
   paneId: string;
   pathLabel: string;
@@ -143,6 +144,42 @@ const resolveProfile = (command: string): AiToolProfile | null => {
   return null;
 };
 
+const buildAiToolContext = (
+  pane: PaneState,
+  profile: AiToolProfile,
+  normalizedCommand: string,
+  detectionSource: AiToolContext["detectionSource"],
+): AiToolContext => ({
+  command: pane.currentCommand,
+  detectionSource,
+  normalizedCommand,
+  paneId: pane.id,
+  pathLabel: derivePathLabel(pane.currentPath),
+  profile,
+  projectLabel: deriveProjectLabel(pane.currentPath),
+  signature: `${profile.id}:${pane.id}:${pane.currentCommand}:${detectionSource}`,
+});
+
+export const detectAiToolProfileFromTerminalText = (text: string): AiToolProfile | null => {
+  const normalizedText = text.toLowerCase();
+
+  const matchesCodexTrustPrompt = normalizedText.includes("do you trust the contents of this directory?")
+    && normalizedText.includes("higher risk of prompt injection");
+  if (matchesCodexTrustPrompt || normalizedText.includes("openai codex")) {
+    return codexProfile;
+  }
+
+  const matchesClaudeBanner = normalizedText.includes("claude code");
+  const matchesClaudePrompt = normalizedText.includes("/permissions")
+    && normalizedText.includes("/model")
+    && normalizedText.includes("esc to interrupt");
+  if (matchesClaudeBanner || matchesClaudePrompt) {
+    return claudeCodeProfile;
+  }
+
+  return null;
+};
+
 export const detectAiToolContext = (pane: PaneState | null | undefined): AiToolContext | null => {
   if (!pane) {
     return null;
@@ -154,13 +191,27 @@ export const detectAiToolContext = (pane: PaneState | null | undefined): AiToolC
     return null;
   }
 
-  return {
-    command: pane.currentCommand,
-    normalizedCommand,
-    paneId: pane.id,
-    pathLabel: derivePathLabel(pane.currentPath),
+  return buildAiToolContext(pane, profile, normalizedCommand, "pane-command");
+};
+
+export const detectAiToolContextFromViewport = (
+  pane: PaneState | null | undefined,
+  text: string,
+): AiToolContext | null => {
+  if (!pane) {
+    return null;
+  }
+
+  const normalizedCommand = normalizeCommand(pane.currentCommand);
+  const profile = resolveProfile(normalizedCommand) ?? detectAiToolProfileFromTerminalText(text);
+  if (!profile) {
+    return null;
+  }
+
+  return buildAiToolContext(
+    pane,
     profile,
-    projectLabel: deriveProjectLabel(pane.currentPath),
-    signature: `${profile.id}:${pane.id}:${pane.currentCommand}`,
-  };
+    normalizedCommand || "shell",
+    resolveProfile(normalizedCommand) ? "pane-command" : "viewport",
+  );
 };

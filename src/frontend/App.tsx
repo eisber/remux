@@ -36,7 +36,7 @@ import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import { useRemuxConnection } from "./hooks/useRemuxConnection";
 import { useClientPreferences } from "./hooks/useClientPreferences";
 import { useWorkspaceState } from "./hooks/useWorkspaceState";
-import { detectAiToolContext } from "./ai-tool-profile";
+import { detectAiToolContext, detectAiToolContextFromViewport } from "./ai-tool-profile";
 import {
   buildInspectSnapshotFromServerHistory,
   type TabInspectSnapshot
@@ -276,6 +276,7 @@ export const App = () => {
     readTerminalGeometry,
     requestTerminalFit,
     resetTerminalBuffer,
+    readTerminalViewport,
     scrollbackContentRef,
     terminalContainerRef,
     writeToTerminal
@@ -412,6 +413,7 @@ export const App = () => {
   const [pendingSnippetExecution, setPendingSnippetExecution] = useState<PendingSnippetExecution | null>(null);
 
   const [statsVisible, setStatsVisible] = useState(false);
+  const [activeAiViewportTool, setActiveAiViewportTool] = useState<ReturnType<typeof detectAiToolContextFromViewport>>(null);
   const inspectRequestRef = useRef<{
     requestKey: string;
     sessionName: string;
@@ -695,6 +697,44 @@ export const App = () => {
     }
   }, [requestTerminalFit, viewMode]);
 
+  const activeAiCommandTool = useMemo(
+    () => detectAiToolContext(activePane),
+    [activePane?.currentCommand, activePane?.currentPath, activePane?.id]
+  );
+
+  useEffect(() => {
+    if (viewMode !== "terminal" || !activePane || activeAiCommandTool) {
+      setActiveAiViewportTool(null);
+      return;
+    }
+
+    let cancelled = false;
+    const runDetection = () => {
+      const detected = detectAiToolContextFromViewport(activePane, readTerminalViewport());
+      if (!cancelled) {
+        setActiveAiViewportTool((current) => (
+          current?.signature === detected?.signature
+            ? current
+            : detected
+        ));
+      }
+    };
+
+    runDetection();
+    const timer = window.setInterval(runDetection, 900);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    activeAiCommandTool,
+    activePane?.currentCommand,
+    activePane?.currentPath,
+    activePane?.id,
+    readTerminalViewport,
+    viewMode,
+  ]);
+
   // No dynamic font-size calculation — CSS handles responsive sizing via clamp()
 
   useEffect(() => {
@@ -929,10 +969,12 @@ export const App = () => {
   }, [serverConfig?.scrollbackLines]);
 
   const mobileInspectMode = mobileLayout && viewMode === "inspect";
-  const activeAiTool = useMemo(
-    () => detectAiToolContext(activePane),
-    [activePane?.currentCommand, activePane?.currentPath, activePane?.id]
-  );
+  const activeAiTool = useMemo(() => (
+    activeAiCommandTool ?? activeAiViewportTool
+  ), [
+    activeAiCommandTool,
+    activeAiViewportTool,
+  ]);
   const terminalStatusMessage = useMemo(() => {
     if (viewMode !== "terminal") {
       return undefined;
