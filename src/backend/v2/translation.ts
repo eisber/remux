@@ -34,7 +34,7 @@ const collectInspectRows = (
   return rows.slice(-lines);
 };
 
-const renderInspectText = (
+export const renderInspectText = (
   snapshot: RuntimeV2InspectSnapshot,
   lines: number,
 ): string => collectInspectRows(snapshot, lines).join("\n").trimEnd();

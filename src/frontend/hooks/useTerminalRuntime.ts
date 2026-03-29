@@ -34,6 +34,8 @@ declare global {
 interface UseTerminalRuntimeOptions {
   mobileLayout: boolean;
   onSendRaw: (data: string) => void;
+  onBeforeReset?: (reason: string) => void;
+  onResizeSent?: (payload: { cols: number; rows: number; source: string }) => void;
   setStatusMessage: Dispatch<SetStateAction<string>>;
   terminalVisible: boolean;
   terminalSocketRef: MutableRefObject<WebSocket | null>;
@@ -69,6 +71,8 @@ const TERMINAL_RESIZE_DEBOUNCE_MS = 80;
 export const useTerminalRuntime = ({
   mobileLayout,
   onSendRaw,
+  onBeforeReset,
+  onResizeSent,
   setStatusMessage,
   terminalVisible,
   terminalSocketRef,
@@ -133,9 +137,14 @@ export const useTerminalRuntime = ({
       cols: terminal.cols,
       rows: terminal.rows
     }));
+    onResizeSent?.({
+      cols: terminal.cols,
+      rows: terminal.rows,
+      source: "fit",
+    });
     lastResizeSocketRef.current = socket;
     lastResizeSignatureRef.current = signature;
-  }, [terminalSocketRef]);
+  }, [onResizeSent, terminalSocketRef]);
 
   const scheduleTerminalResize = useCallback((): void => {
     clearPendingResize();
@@ -259,13 +268,14 @@ export const useTerminalRuntime = ({
     if (!terminal) {
       return;
     }
+    onBeforeReset?.("terminal buffer reset");
     terminalWriteBufferRef.current?.clear();
     terminal.reset();
     const themeConfig = themes[theme];
     if (themeConfig) {
       terminal.options.theme = themeConfig.xterm;
     }
-  }, [theme]);
+  }, [onBeforeReset, theme]);
 
   const writeToTerminal = useCallback((chunk: TerminalWriteChunk): void => {
     const echo = localEchoRef.current;

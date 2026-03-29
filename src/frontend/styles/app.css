@@ -1223,6 +1223,36 @@ button, input {
   min-height: 0;
 }
 
+.terminal-redline-banner {
+  grid-area: 1 / 1;
+  z-index: 6;
+  align-self: start;
+  justify-self: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.35rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 65%, #ffffff 10%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 14%, var(--bg-app) 86%);
+  color: var(--text-primary);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+
+.terminal-redline-banner strong {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--danger);
+}
+
+.terminal-redline-banner span {
+  color: var(--text-secondary);
+}
+
 .terminal-layer,
 .inspect-layer {
   grid-area: 1 / 1;
@@ -1447,6 +1477,11 @@ button, input {
   padding: 0.18rem 0;
 }
 
+.inspect-event-body {
+  display: grid;
+  gap: 0.4rem;
+}
+
 .inspect-event-time {
   color: var(--text-muted);
   font-size: 0.72rem;
@@ -1455,6 +1490,20 @@ button, input {
 
 .inspect-event-text {
   color: var(--text-secondary);
+}
+
+.inspect-diagnostic-card {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-card) 92%);
+}
+
+.inspect-diagnostic-actions {
+  color: var(--text-muted);
+  font-size: 0.74rem;
 }
 
 .inspect-note,

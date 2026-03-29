@@ -3,6 +3,8 @@ import { InspectView } from "./InspectView";
 import type { TabInspectSnapshot } from "../inspect-state";
 
 interface TerminalStageProps {
+  activeRedlineCount: number;
+  activeRedlineSummary: string;
   dragOver: boolean;
   inspectErrorMessage: string;
   inspectLineCount: number;
@@ -28,6 +30,8 @@ interface TerminalStageProps {
 }
 
 export const TerminalStage = ({
+  activeRedlineCount,
+  activeRedlineSummary,
   dragOver,
   inspectErrorMessage,
   inspectLineCount,
@@ -53,6 +57,12 @@ export const TerminalStage = ({
 }: TerminalStageProps) => (
   <main className="terminal-wrap">
     <div className={`terminal-stage${viewMode === "inspect" ? " inspect-active" : " live-active"}`}>
+      {activeRedlineCount > 0 && (
+        <div className="terminal-redline-banner" data-testid="terminal-redline-banner">
+          <strong>{activeRedlineCount} redlines</strong>
+          <span>{activeRedlineSummary}</span>
+        </div>
+      )}
       <div className={`terminal-layer${viewMode !== "terminal" ? " is-hidden" : ""}`}>
         <div
           className="terminal-host"

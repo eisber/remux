@@ -125,4 +125,60 @@ describe("TabHistoryStore", () => {
     expect(archivedPane?.archived).toBe(true);
     expect(archivedPane?.text).toContain("old left output");
   });
+
+  test("records client diagnostic incidents with recent actions and evidence", () => {
+    const store = new TabHistoryStore();
+    const snapshot = buildSnapshot(["%1"]);
+
+    store.recordSnapshot(snapshot);
+    store.recordDiagnostic({
+      sessionName: "main",
+      tabIndex: 0,
+      tabName: "shell",
+      paneId: "%1",
+      issue: "width_mismatch",
+      severity: "error",
+      status: "open",
+      summary: "Terminal width drifted away from the container",
+      sample: {
+        frontendCols: 58,
+        backendCols: 118,
+        hostWidth: 1180,
+        contrastRatio: 11.8,
+        bufferLineCount: 120,
+      },
+      recentActions: [
+        {
+          at: "2026-03-30T00:00:01.000Z",
+          type: "ui.click",
+          label: "Collapse sidebar"
+        }
+      ]
+    });
+
+    const history = store.buildTabHistory({
+      sessionName: "main",
+      tab: snapshot.sessions[0]!.tabs[0]!,
+      lines: 1000,
+      paneCaptures: []
+    });
+
+    const diagnosticEvent = history.events.find((event) => event.kind === "diagnostic");
+    expect(diagnosticEvent).toMatchObject({
+      kind: "diagnostic",
+      paneId: "%1",
+      text: expect.stringContaining("width"),
+      diagnostic: {
+        issue: "width_mismatch",
+        severity: "error",
+        status: "open",
+        summary: "Terminal width drifted away from the container",
+        recentActions: [
+          expect.objectContaining({
+            label: "Collapse sidebar"
+          })
+        ]
+      }
+    });
+  });
 });
