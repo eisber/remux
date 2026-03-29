@@ -91,6 +91,7 @@ export const App = () => {
   const terminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
   const terminalReconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const terminalReconnectAttemptRef = useRef(0);
+  const terminalReviveContextKeyRef = useRef<string | null>(null);
   const launchContextRef = useRef(initialLaunchContext);
   const readTerminalGeometryRef = useRef<() => { cols: number; rows: number } | null>(() => null);
   const suppressHistoryGapRef = useRef((_: string) => {});
@@ -733,6 +734,51 @@ export const App = () => {
       attachedSessionRef.current = attachedSession;
     }
   }, [attachedSession]);
+
+  useEffect(() => {
+    const sessionName = (clientView?.sessionName ?? attachedSession) || attachedSessionRef.current;
+    const tabIndex = clientView?.tabIndex ?? activeTab?.index ?? null;
+    const paneId = clientView?.paneId ?? activePane?.id ?? null;
+    const contextKey = `${sessionName || "none"}:${tabIndex ?? "none"}:${paneId ?? "none"}`;
+    const previousContextKey = terminalReviveContextKeyRef.current;
+    terminalReviveContextKeyRef.current = contextKey;
+
+    if (!previousContextKey || previousContextKey === contextKey) {
+      return;
+    }
+    if (viewMode !== "terminal") {
+      return;
+    }
+
+    const auth = terminalAuthRef.current;
+    const controlAlive = connection.controlSocketRef.current?.readyState === WebSocket.OPEN;
+    const terminalSocketAlive = terminalSocketRef.current?.readyState === WebSocket.OPEN;
+    if (!auth || !controlAlive || terminalSocketAlive || terminalViewStateRef.current === "live") {
+      return;
+    }
+
+    suppressHistoryGapRef.current(`terminal revive ${contextKey}`);
+    resetTerminalBufferRef.current();
+    awaitingTerminalReplayRef.current = false;
+    terminalHasReplayRef.current = false;
+    terminalReconnectAttemptRef.current = 0;
+    recordDiagnosticActionRef.current(
+      "terminal.revive.context",
+      `Reopen live terminal for ${contextKey}`,
+      `previous=${previousContextKey}`
+    );
+    openTerminalSocket(auth.password, auth.clientId);
+  }, [
+    activePane?.id,
+    activeTab?.index,
+    attachedSession,
+    clientView?.paneId,
+    clientView?.sessionName,
+    clientView?.tabIndex,
+    connection.controlSocketRef,
+    openTerminalSocket,
+    viewMode,
+  ]);
 
   useEffect(() => {
     const activeBellSession = attachedSession || activeSession?.name;
