@@ -255,6 +255,30 @@ test.describe("runtime-v2 browser behavior", () => {
       .toContain("/model\r");
   });
 
+  test("falls back to viewport-based Codex detection when pane metadata still reports shell", async ({ page }) => {
+    server.upstream.setPaneMetadata(server.upstream.activePaneId(), {
+      command: "zsh",
+      currentPath: "/Users/wangyaoshen",
+    });
+    server.upstream.setPaneContent(server.upstream.activePaneId(), [
+      "> You are in /Users/wangyaoshen",
+      "Do you trust the contents of this directory?",
+      "Working with untrusted contents comes with higher risk of prompt injection.",
+      "› 1. Yes, continue",
+      "Press enter to continue",
+    ].join("\r\n"));
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+
+    await expect(page.getByTestId("ai-quick-actions")).toContainText("Codex");
+    await page.getByRole("button", { name: "Approvals" }).click();
+
+    await expect
+      .poll(() => server.upstream.allTerminalWrites().join(""))
+      .toContain("/approvals\r");
+  });
+
   test("keeps large live output scrollable and intact across the terminal buffer", async ({ page }) => {
     const paneId = server.upstream.activePaneId();
     const lines = Array.from(
