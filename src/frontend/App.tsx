@@ -1041,6 +1041,11 @@ export const App = () => {
       return;
     }
     const switchingTabs = tab.index !== activeTab?.index;
+    if (switchingTabs) {
+      // Reset local echo predictions to prevent stale predictions from the
+      // previous tab interfering with the new tab's data stream.
+      localEchoRef.current?.reset();
+    }
     workspace.selectWindowIndex(tab.index);
     sendControl({ type: "select_tab", session: activeSession.name, tabIndex: tab.index });
     if (stickyZoom && capabilities?.supportsFullscreenPane && switchingTabs) {

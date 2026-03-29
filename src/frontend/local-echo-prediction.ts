@@ -149,6 +149,47 @@ export class LocalEchoPrediction {
     }
   }
 
+  /**
+   * Detect alternate screen enter/leave sequences directly in binary data.
+   * Only scans for ASCII escape byte patterns — no TextDecoder needed.
+   */
+  detectAlternateScreenBinary(chunk: Uint8Array): void {
+    const len = chunk.length;
+    for (let i = 0; i < len; i++) {
+      if (chunk[i] !== 0x1b) continue;               // ESC
+      if (i + 1 >= len || chunk[i + 1] !== 0x5b) continue; // [
+      if (i + 2 >= len || chunk[i + 2] !== 0x3f) continue; // ?
+
+      // Check for ?1049h / ?1049l
+      if (
+        i + 7 < len &&
+        chunk[i + 3] === 0x31 && // 1
+        chunk[i + 4] === 0x30 && // 0
+        chunk[i + 5] === 0x34 && // 4
+        chunk[i + 6] === 0x39    // 9
+      ) {
+        if (chunk[i + 7] === 0x68) {        // h — enter
+          this.setAlternateScreen(true);
+        } else if (chunk[i + 7] === 0x6c) { // l — leave
+          this.setAlternateScreen(false);
+        }
+      }
+
+      // Check for ?47h / ?47l
+      if (
+        i + 5 < len &&
+        chunk[i + 3] === 0x34 && // 4
+        chunk[i + 4] === 0x37    // 7
+      ) {
+        if (chunk[i + 5] === 0x68) {        // h — enter
+          this.setAlternateScreen(true);
+        } else if (chunk[i + 5] === 0x6c) { // l — leave
+          this.setAlternateScreen(false);
+        }
+      }
+    }
+  }
+
   // ── lifecycle ─────────────────────────────────────────────────────
 
   reset(): void {

@@ -289,6 +289,16 @@ export const useTerminalRuntime = ({
       return;
     }
     if (echo && chunk instanceof Uint8Array) {
+      // Fast path: no predictions pending — pass binary directly to xterm
+      // which has its own streaming UTF-8 decoder (handles multi-byte
+      // boundaries correctly across write() calls).
+      if (echo.pending.length === 0) {
+        echo.detectAlternateScreenBinary(chunk);
+        terminalWriteBufferRef.current?.enqueue(chunk);
+        return;
+      }
+      // Slow path: predictions pending — must decode to string for
+      // reconciliation against predicted characters.
       const text = new TextDecoder().decode(chunk);
       echo.detectAlternateScreen(text);
       const reconciled = echo.reconcileServerOutput(text);
