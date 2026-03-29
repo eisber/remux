@@ -10,6 +10,7 @@ import {
   type TerminalWriteBuffer,
   type TerminalWriteChunk
 } from "../terminal-write-buffer";
+import { LocalEchoPrediction } from "../local-echo-prediction";
 
 declare global {
   interface Window {
@@ -86,6 +87,7 @@ export const useTerminalRuntime = ({
   const terminalVisibleRef = useRef(terminalVisible);
   const rendererAddonRef = useRef<{ dispose(): void } | null>(null);
   const terminalWriteBufferRef = useRef<TerminalWriteBuffer | null>(null);
+  const localEchoRef = useRef<LocalEchoPrediction | null>(null);
 
   sendRawToSocketRef.current = onSendRaw;
   setStatusMessageRef.current = setStatusMessage;
@@ -259,6 +261,24 @@ export const useTerminalRuntime = ({
   }, [theme]);
 
   const writeToTerminal = useCallback((chunk: TerminalWriteChunk): void => {
+    const echo = localEchoRef.current;
+    if (echo && typeof chunk === "string") {
+      echo.detectAlternateScreen(chunk);
+      const reconciled = echo.reconcileServerOutput(chunk);
+      if (reconciled) {
+        terminalWriteBufferRef.current?.enqueue(reconciled);
+      }
+      return;
+    }
+    if (echo && chunk instanceof Uint8Array) {
+      const text = new TextDecoder().decode(chunk);
+      echo.detectAlternateScreen(text);
+      const reconciled = echo.reconcileServerOutput(text);
+      if (reconciled) {
+        terminalWriteBufferRef.current?.enqueue(reconciled);
+      }
+      return;
+    }
     terminalWriteBufferRef.current?.enqueue(chunk);
   }, []);
 
@@ -336,6 +356,9 @@ export const useTerminalRuntime = ({
     terminalWriteBufferRef.current = createTerminalWriteBuffer((chunk) => {
       terminal.write(chunk);
     });
+    localEchoRef.current = new LocalEchoPrediction({
+      writeToTerminal: (data) => terminal.write(data),
+    });
     requestAnimationFrame(() => {
       terminal.focus();
       requestTerminalFitRef.current({ notify: false, retryUntilVisible: true });
@@ -343,6 +366,7 @@ export const useTerminalRuntime = ({
 
     const disposable = terminal.onData((data) => {
       const output = toolbarRef.current?.applyModifiersAndClear(data) ?? data;
+      localEchoRef.current?.predictInput(output);
       sendRawToSocketRef.current(output);
     });
 
@@ -377,6 +401,8 @@ export const useTerminalRuntime = ({
       rendererAddonRef.current = null;
       terminalWriteBufferRef.current?.clear();
       terminalWriteBufferRef.current = null;
+      localEchoRef.current?.reset();
+      localEchoRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
