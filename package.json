@@ -1,6 +1,6 @@
 {
   "name": "remux",
-  "version": "0.2.50",
+  "version": "0.2.51",
   "description": "Remote workspace cockpit for terminal-first work, powered by the unified runtime-v2 backend",
   "license": "MIT",
   "repository": {
@@ -53,6 +53,11 @@
     "runner:install": "scripts/install-github-runner.sh",
     "runner:remove": "scripts/remove-github-runner.sh",
     "runner:status": "scripts/github-runner-status.sh",
+    "zellij:web:install-launchd": "scripts/install-zellij-web-launchd.sh",
+    "zellij:web:load-launchd": "scripts/load-zellij-web-launchd.sh",
+    "zellij:web:start": "scripts/zellij-web-start.sh",
+    "zellij:web:status": "scripts/zellij-web-status.sh",
+    "zellij:web:create-token": "scripts/zellij-web-create-token.sh",
     "test:gate": "npm run typecheck && npm test && npm run native:v2:check && npm run build && npm run test:e2e",
     "test:e2e": "npm run build && npm run test:e2e:functional && npm run test:e2e:width",
     "test:e2e:functional": "playwright test tests/e2e/runtime-v2.browser.spec.ts",

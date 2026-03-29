@@ -121,6 +121,7 @@ Read the full model in [docs/SECURITY.md](./docs/SECURITY.md).
 ## Documentation
 
 - [docs/TESTING.md](./docs/TESTING.md): current runtime-v2-first test flow and release gate
+- [docs/ZELLIJ_BOOTSTRAP.md](./docs/ZELLIJ_BOOTSTRAP.md): short-term Zellij bootstrap path, stable URLs, and launchd commands
 - [docs/PRODUCT_ARCHITECTURE.md](./docs/PRODUCT_ARCHITECTURE.md): product definition, interaction model, inspect/history strategy, backend posture, and roadmap
 - [docs/SPEC.md](./docs/SPEC.md): current architecture and protocol model
 - [docs/SECURITY.md](./docs/SECURITY.md): security assumptions, risks, and operating guidance
