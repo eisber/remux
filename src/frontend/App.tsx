@@ -109,7 +109,7 @@ export const App = () => {
   // ── Preferences hook ──
   const prefs = useClientPreferences();
   const { theme, sidebarCollapsed, setSidebarCollapsed, stickyZoom,
-    scrollFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
+    inspectFontSize, workspaceOrder, setWorkspaceOrder } = prefs;
 
   const [viewMode, setViewMode] = useState<"inspect" | "terminal">("terminal");
   const [terminalViewState, setTerminalViewState] = useState<"idle" | "connecting" | "restoring" | "live" | "stale">("idle");
@@ -243,7 +243,7 @@ export const App = () => {
         case "info":
           connectionActionsRef.current.setStatusMessage(message.message);
           return;
-        case "scrollback":
+        case "scrollback": // Legacy wire protocol message type — kept for backward compat
           return;
         case "bell": {
           setBellSessions((current) => new Set(current).add(message.session));
@@ -318,7 +318,7 @@ export const App = () => {
     requestTerminalFit,
     resetTerminalBuffer,
     readTerminalViewport,
-    scrollbackContentRef,
+    inspectContentRef,
     terminalContainerRef,
     terminalRef,
     writeToTerminal
@@ -514,7 +514,7 @@ export const App = () => {
   const lastInspectRequestKeyRef = useRef<string | null>(null);
   const inspectLineCountInitializedRef = useRef(false);
   const inspectAutoScrollPendingRef = useRef(false);
-  const nextInspectScrollModeRef = useRef<"latest" | "preserve">("latest");
+  const nextInspectAutoScrollRef = useRef<"latest" | "preserve">("latest");
 
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameSessionValue, setRenameSessionValue] = useState("");
@@ -707,22 +707,22 @@ export const App = () => {
   }, [authReady, inspectLineCount, sendControl]);
 
   const scrollInspectToLatest = useCallback((): void => {
-    const container = scrollbackContentRef.current;
+    const container = inspectContentRef.current;
     if (!container) {
       return;
     }
     container.scrollTop = container.scrollHeight;
-  }, [scrollbackContentRef]);
+  }, [inspectContentRef]);
 
   // Theme and sidebar persistence now handled by useClientPreferences
 
   useEffect(() => {
-    if (!serverConfig?.scrollbackLines || inspectLineCountInitializedRef.current) {
+    if (!serverConfig?.inspectLines || inspectLineCountInitializedRef.current) {
       return;
     }
-    setInspectLineCount(serverConfig.scrollbackLines);
+    setInspectLineCount(serverConfig.inspectLines);
     inspectLineCountInitializedRef.current = true;
-  }, [serverConfig?.scrollbackLines]);
+  }, [serverConfig?.inspectLines]);
 
   useEffect(() => {
     if (!mobileLayout) {
@@ -868,8 +868,8 @@ export const App = () => {
       return;
     }
 
-    const scrollToLatest = nextInspectScrollModeRef.current !== "preserve";
-    nextInspectScrollModeRef.current = "latest";
+    const scrollToLatest = nextInspectAutoScrollRef.current !== "preserve";
+    nextInspectAutoScrollRef.current = "latest";
     requestTabInspect(activeSession, activeTab, { scrollToLatest });
   }, [activeSession, activeTab, authReady, inspectLineCount, requestTabInspect, viewMode]);
 
@@ -1150,10 +1150,10 @@ export const App = () => {
   }, [activeSession, activeTab, requestTabInspect]);
 
   const loadMoreInspect = useCallback((): void => {
-    const step = serverConfig?.scrollbackLines ?? 1000;
-    nextInspectScrollModeRef.current = "preserve";
+    const step = serverConfig?.inspectLines ?? 1000;
+    nextInspectAutoScrollRef.current = "preserve";
     setInspectLineCount((current) => current + step);
-  }, [serverConfig?.scrollbackLines]);
+  }, [serverConfig?.inspectLines]);
 
   const mobileInspectMode = mobileLayout && viewMode === "inspect";
   const activeAiTool = useMemo(() => (
@@ -1231,10 +1231,10 @@ export const App = () => {
               type: "set_follow_focus",
               follow: !(clientView?.followBackendFocus ?? false)
             })}
-            onResetScrollFontSize={prefs.resetScrollFontSize}
+            onResetInspectFontSize={prefs.resetInspectFontSize}
             onSetTheme={prefs.setTheme}
-            onUpdateScrollFontSize={prefs.setScrollFontSize}
-            scrollFontSize={scrollFontSize}
+            onUpdateInspectFontSize={prefs.setInspectFontSize}
+            inspectFontSize={inspectFontSize}
             showFollowFocus={serverConfig?.backendKind === "runtime-v2"}
             theme={theme}
           />
@@ -1355,8 +1355,8 @@ export const App = () => {
             uploadFile(file);
           }
         }}
-        scrollFontSize={scrollFontSize}
-        scrollbackContentRef={scrollbackContentRef}
+        inspectFontSize={inspectFontSize}
+        inspectContentRef={inspectContentRef}
         terminalStatusMessage={terminalStatusMessage}
         terminalContainerRef={terminalContainerRef}
         viewMode={viewMode}
@@ -1460,7 +1460,7 @@ export const App = () => {
         />
       </Suspense>
 
-      {/* Legacy overlay scrollback removed — now inline in scroll viewMode */}
+      {/* Legacy overlay scrollback removed — now inline in inspect viewMode */}
 
       <Suspense fallback={null}>
         {statsVisible && <LazyBandwidthStatsModal onClose={() => setStatsVisible(false)} stats={bandwidthStats} />}
