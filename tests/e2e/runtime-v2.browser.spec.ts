@@ -155,6 +155,16 @@ test.describe("runtime-v2 browser behavior", () => {
     await expect.poll(() => readTerminalText(page)).toContain("echo direct-terminal-input");
   });
 
+  test("restores xterm focus after interacting with other controls", async ({ page }) => {
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+
+    await page.getByTestId("compose-input").click();
+    await expect(page.getByTestId("compose-input")).toBeFocused();
+
+    await focusLiveTerminal(page);
+  });
+
   test("keeps large live output scrollable and intact across the terminal buffer", async ({ page }) => {
     const paneId = server.upstream.activePaneId();
     const lines = Array.from(
