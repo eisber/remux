@@ -2,6 +2,7 @@ import http from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import { SharedRuntimeV2PaneBridge, parseSequencedBinaryFrame } from "../../src/backend/server-v2.js";
+import { BandwidthTracker } from "../../src/backend/stats/index.js";
 
 const silentLogger = {
   log: () => undefined,
@@ -983,5 +984,62 @@ describe("SharedRuntimeV2PaneBridge", () => {
       reset: true,
     });
     expect(Buffer.from(lastSlowFrame.dataBase64, "base64").toString("utf8")).toContain("SLOW-VIEWER-LIVE-OUTPUT");
+  });
+
+  test("records terminal bandwidth and queue pressure stats for patch viewers", async () => {
+    process.env.REMUX_TERMINAL_VIEWER_QUEUE_HIGH_WATERMARK_BYTES = "200";
+    process.env.REMUX_TERMINAL_VIEWER_QUEUE_LOW_WATERMARK_BYTES = "80";
+    const bandwidthTracker = new BandwidthTracker();
+    bridge = new SharedRuntimeV2PaneBridge(
+      "pane-1",
+      wsUrl,
+      silentLogger,
+      "largest",
+      () => undefined,
+      undefined,
+      bandwidthTracker,
+    );
+
+    const fastBrowser = createBrowserSocket();
+    await bridge.subscribe(
+      "fast-viewer",
+      fastBrowser.socket,
+      { cols: 120, rows: 40 },
+      {
+        transportMode: "patch",
+        getViewRevision: () => 1,
+      },
+    );
+    await expect.poll(() => attachCount).toBe(1);
+
+    const slowBrowser = createBrowserSocket({ autoDrain: false });
+    await bridge.subscribe(
+      "slow-viewer",
+      slowBrowser.socket,
+      { cols: 120, rows: 40 },
+      {
+        transportMode: "patch",
+        getViewRevision: () => 1,
+      },
+    );
+    slowBrowser.flushAll();
+
+    const liveChunk = "BANDWIDTH-STATS-LIVE-OUTPUT ".repeat(6) + "\r\n";
+    for (let index = 0; index < 4; index += 1) {
+      runtimeSocket?.send(JSON.stringify({
+        type: "stream",
+        sequence: 2 + index,
+        chunk_base64: encodeBase64(liveChunk),
+      }));
+    }
+
+    await expect.poll(() => bandwidthTracker.getStats().viewerQueueHighWatermarkHits).toBeGreaterThan(0);
+    expect(bandwidthTracker.getStats().droppedBacklogFrames).toBeGreaterThan(0);
+
+    slowBrowser.flushAll();
+    await expect.poll(() => bandwidthTracker.getStats().fullSnapshotsSent).toBeGreaterThan(0);
+    await expect.poll(() => bandwidthTracker.getStats().diffUpdatesSent).toBeGreaterThan(0);
+    expect(bandwidthTracker.getStats().rawBytesPerSec).toBeGreaterThan(0);
+    expect(bandwidthTracker.getStats().compressedBytesPerSec).toBeGreaterThan(0);
   });
 });

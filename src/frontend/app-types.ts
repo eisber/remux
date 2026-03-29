@@ -36,6 +36,9 @@ export interface BandwidthStats {
   fullSnapshotsSent: number;
   diffUpdatesSent: number;
   avgChangedRowsPerDiff: number;
+  avgDiffBytesPerUpdate: number;
+  viewerQueueHighWatermarkHits: number;
+  droppedBacklogFrames: number;
   totalRawBytes: number;
   totalCompressedBytes: number;
   totalSavedBytes: number;

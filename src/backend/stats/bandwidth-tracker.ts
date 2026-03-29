@@ -16,6 +16,9 @@ export interface BandwidthStats {
   fullSnapshotsSent: number;
   diffUpdatesSent: number;
   avgChangedRowsPerDiff: number;
+  avgDiffBytesPerUpdate: number;
+  viewerQueueHighWatermarkHits: number;
+  droppedBacklogFrames: number;
 
   // Cumulative totals
   totalRawBytes: number;
@@ -46,7 +49,9 @@ export class BandwidthTracker {
   // Diff stats
   private _fullSnapshotsSent = 0;
   private _diffUpdatesSent = 0;
-  private totalChangedRows = 0;
+  private totalDiffBytes = 0;
+  private viewerQueueHighWatermarkHits = 0;
+  private droppedBacklogFrames = 0;
 
   // RTT
   private _rttMs: number | null = null;
@@ -78,11 +83,19 @@ export class BandwidthTracker {
   }
 
   /**
-   * Record a diff update with the number of changed rows.
+   * Record a diff update with the number of raw terminal bytes in the update.
    */
-  recordDiffUpdate(changedRows: number): void {
+  recordDiffUpdate(diffBytes: number): void {
     this._diffUpdatesSent++;
-    this.totalChangedRows += changedRows;
+    this.totalDiffBytes += diffBytes;
+  }
+
+  recordQueueHighWatermarkHit(): void {
+    this.viewerQueueHighWatermarkHits++;
+  }
+
+  recordDroppedBacklogFrames(frames: number): void {
+    this.droppedBacklogFrames += Math.max(0, Math.floor(frames));
   }
 
   /**
@@ -113,8 +126,8 @@ export class BandwidthTracker {
       ? Math.round((1 - compressedPerSec / rawPerSec) * 100)
       : 0;
 
-    const avgChangedRows = this._diffUpdatesSent > 0
-      ? Math.round((this.totalChangedRows / this._diffUpdatesSent) * 10) / 10
+    const avgDiffBytesPerUpdate = this._diffUpdatesSent > 0
+      ? Math.round((this.totalDiffBytes / this._diffUpdatesSent) * 10) / 10
       : 0;
 
     return {
@@ -123,7 +136,10 @@ export class BandwidthTracker {
       savedPercent: Math.max(0, savedPercent),
       fullSnapshotsSent: this._fullSnapshotsSent,
       diffUpdatesSent: this._diffUpdatesSent,
-      avgChangedRowsPerDiff: avgChangedRows,
+      avgChangedRowsPerDiff: avgDiffBytesPerUpdate,
+      avgDiffBytesPerUpdate,
+      viewerQueueHighWatermarkHits: this.viewerQueueHighWatermarkHits,
+      droppedBacklogFrames: this.droppedBacklogFrames,
       totalRawBytes: this.totalRaw,
       totalCompressedBytes: this.totalCompressed,
       totalSavedBytes: Math.max(0, this.totalRaw - this.totalCompressed),
