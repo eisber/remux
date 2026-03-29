@@ -349,40 +349,34 @@ describe("SharedRuntimeV2PaneBridge", () => {
 
   test("intercepts DSR in stream messages and writes CPR back to runtime", async () => {
     const runtimeReceived: Buffer[] = [];
-    const idlePaneIds: string[] = [];
     bridge = new SharedRuntimeV2PaneBridge(
       "pane-1",
       wsUrl,
       silentLogger,
       "largest",
-      (paneId) => { idlePaneIds.push(paneId); },
+      () => undefined,
     );
 
     const browser = createBrowserSocket();
     await bridge.subscribe("viewer-1", browser.socket, { cols: 80, rows: 24 });
     await expect.poll(() => attachCount).toBe(1);
 
-    // Capture what the bridge writes back to the runtime socket.
     runtimeSocket!.on("message", (raw, isBinary) => {
       if (isBinary) {
         runtimeReceived.push(Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer));
       }
     });
 
-    // Runtime sends a stream chunk containing DSR query.
     runtimeSocket!.send(JSON.stringify({
       type: "stream",
       sequence: 2,
       chunk_base64: encodeBase64("hello\x1b[6nworld"),
     }));
 
-    // The bridge should write a CPR response back to the runtime.
     await expect.poll(() => runtimeReceived.length).toBeGreaterThan(0);
     const cprResponse = Buffer.concat(runtimeReceived).toString("utf8");
-    // CPR format: \x1b[{row};{col}R  (1-based)
     expect(cprResponse).toMatch(/\x1b\[\d+;\d+R/);
 
-    // The DSR sequence should be stripped from data forwarded to the browser.
     const browserOutput = Buffer.concat(browser.sent).toString("utf8");
     expect(browserOutput).toContain("helloworld");
     expect(browserOutput).not.toContain("\x1b[6n");
@@ -390,13 +384,12 @@ describe("SharedRuntimeV2PaneBridge", () => {
 
   test("intercepts DSR in binary messages and writes CPR back to runtime", async () => {
     const runtimeReceived: Buffer[] = [];
-    const idlePaneIds: string[] = [];
     bridge = new SharedRuntimeV2PaneBridge(
       "pane-1",
       wsUrl,
       silentLogger,
       "largest",
-      (paneId) => { idlePaneIds.push(paneId); },
+      () => undefined,
     );
 
     const browser = createBrowserSocket();
@@ -409,17 +402,76 @@ describe("SharedRuntimeV2PaneBridge", () => {
       }
     });
 
-    // Runtime sends binary data containing DSR query.
     const binaryData = Buffer.from("prompt$ \x1b[6n", "utf8");
     runtimeSocket!.send(binaryData);
 
-    // Wait for CPR response.
     await expect.poll(() => runtimeReceived.length).toBeGreaterThan(0);
     const cprResponse = Buffer.concat(runtimeReceived).toString("utf8");
     expect(cprResponse).toMatch(/\x1b\[\d+;\d+R/);
 
-    // The DSR should be stripped from browser output.
     const browserOutput = Buffer.concat(browser.sent).toString("utf8");
     expect(browserOutput).not.toContain("\x1b[6n");
+  });
+
+  test("fires onBell callback when terminal data contains the bell character", async () => {
+    const bellPaneIds: string[] = [];
+    bridge = new SharedRuntimeV2PaneBridge(
+      "pane-bell",
+      wsUrl,
+      silentLogger,
+      "largest",
+      () => undefined,
+      (paneId) => {
+        bellPaneIds.push(paneId);
+      },
+    );
+
+    const browser = createBrowserSocket();
+    await bridge.subscribe("viewer-1", browser.socket, { cols: 80, rows: 24 });
+    await expect.poll(() => attachCount).toBe(1);
+
+    runtimeSocket?.send(JSON.stringify({
+      type: "stream",
+      sequence: 2,
+      chunk_base64: encodeBase64("hello\x07world"),
+    }));
+
+    await expect.poll(() => bellPaneIds).toEqual(["pane-bell"]);
+
+    runtimeSocket?.send(JSON.stringify({
+      type: "stream",
+      sequence: 3,
+      chunk_base64: encodeBase64("again\x07"),
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bellPaneIds).toEqual(["pane-bell"]);
+  });
+
+  test("does not fire onBell for data without bell character", async () => {
+    const bellPaneIds: string[] = [];
+    bridge = new SharedRuntimeV2PaneBridge(
+      "pane-no-bell",
+      wsUrl,
+      silentLogger,
+      "largest",
+      () => undefined,
+      (paneId) => {
+        bellPaneIds.push(paneId);
+      },
+    );
+
+    const browser = createBrowserSocket();
+    await bridge.subscribe("viewer-1", browser.socket, { cols: 80, rows: 24 });
+    await expect.poll(() => attachCount).toBe(1);
+
+    runtimeSocket?.send(JSON.stringify({
+      type: "stream",
+      sequence: 2,
+      chunk_base64: encodeBase64("normal output without bell"),
+    }));
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(bellPaneIds).toEqual([]);
   });
 });
