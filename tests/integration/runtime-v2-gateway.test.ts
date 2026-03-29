@@ -398,6 +398,61 @@ describe("runtime v2 gateway server", () => {
     }
   });
 
+  test("publishes a stable view revision and bumps it when the client retargets to a new pane", async () => {
+    const control = await openSocket(`${baseWsUrl}/ws/control`);
+
+    try {
+      const authOkPromise = waitForMessage<{ type: "auth_ok"; clientId: string }>(
+        control,
+        (message) => message.type === "auth_ok",
+      );
+      const attachedPromise = waitForMessage<{ type: "attached"; session: string; viewRevision: number }>(
+        control,
+        (message) => message.type === "attached",
+      );
+      const workspaceStatePromise = waitForMessage<{
+        type: "workspace_state";
+        viewRevision: number;
+        clientView: { paneId: string };
+      }>(
+        control,
+        (message) => message.type === "workspace_state",
+      );
+
+      control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+
+      await authOkPromise;
+      const attached = await attachedPromise;
+      const workspaceState = await workspaceStatePromise;
+
+      expect(attached.viewRevision).toBe(1);
+      expect(workspaceState.viewRevision).toBe(1);
+      expect(workspaceState.clientView.paneId).toBe("pane-1");
+
+      const nextWorkspaceStatePromise = waitForMessage<{
+        type: "workspace_state";
+        viewRevision: number;
+        clientView: { paneId: string };
+      }>(
+        control,
+        (message) => message.type === "workspace_state" && message.viewRevision > 1,
+      );
+
+      control.send(JSON.stringify({
+        type: "split_pane",
+        paneId: "pane-1",
+        direction: "right",
+      }));
+
+      const nextWorkspaceState = await nextWorkspaceStatePromise;
+
+      expect(nextWorkspaceState.viewRevision).toBe(2);
+      expect(nextWorkspaceState.clientView.paneId).toBe("pane-2");
+    } finally {
+      control.close();
+    }
+  });
+
   test("bridges terminal live data as binary frames and writes raw binary upstream", async () => {
     upstream.setTerminalStreamTransport("binary");
 

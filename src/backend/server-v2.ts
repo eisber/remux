@@ -92,6 +92,8 @@ interface ControlContext {
   socket: WebSocket;
   authed: boolean;
   clientId: string;
+  viewRevision: number;
+  viewKey: string | null;
   followBackendFocus: boolean;
   targetView: {
     sessionName: string | null;
@@ -1177,10 +1179,12 @@ const syncContextTargetToSummary = (
 const buildWorkspaceStateMessage = (
   summary: RuntimeV2WorkspaceSummary,
   clientView: ClientView,
+  viewRevision: number,
 ): Extract<ControlServerMessage, { type: "workspace_state" }> => ({
   type: "workspace_state",
   workspace: buildRuntimeSnapshot(summary),
   clientView,
+  viewRevision,
   runtimeState: {
     streamMode: "native-bridge",
     inspectPrecision: "precise",
@@ -1394,6 +1398,39 @@ export const createRemuxV2GatewayServer = (
   // Push notification routes (require auth except for vapid-key).
   app.use("/api/push", requireApiAuth, notificationManager.createRoutes());
 
+  const resolveViewStateForContext = (
+    summary: RuntimeV2WorkspaceSummary,
+    context: ControlContext,
+  ): { clientView: ClientView; viewRevision: number } => {
+    const clientView = resolveClientViewForContext(summary, context);
+    const viewKey = `${clientView.sessionName}:${clientView.tabIndex}:${clientView.paneId ?? "none"}`;
+
+    if (context.viewKey === null) {
+      context.viewKey = viewKey;
+      context.viewRevision = Math.max(1, context.viewRevision);
+      logger.log("[runtime-v2] terminal view revision initialized", {
+        clientId: context.clientId,
+        viewRevision: context.viewRevision,
+        viewKey,
+      });
+    } else if (context.viewKey !== viewKey) {
+      const previousKey = context.viewKey;
+      context.viewKey = viewKey;
+      context.viewRevision += 1;
+      logger.log("[runtime-v2] terminal view revision bumped", {
+        clientId: context.clientId,
+        viewRevision: context.viewRevision,
+        previousKey,
+        viewKey,
+      });
+    }
+
+    return {
+      clientView,
+      viewRevision: context.viewRevision,
+    };
+  };
+
   const broadcastWorkspaceState = (): void => {
     if (!runtimeControl) {
       return;
@@ -1404,7 +1441,8 @@ export const createRemuxV2GatewayServer = (
       if (!client.authed) {
         continue;
       }
-      sendJson(client.socket, buildWorkspaceStateMessage(summary, resolveClientViewForContext(summary, client)));
+      const resolved = resolveViewStateForContext(summary, client);
+      sendJson(client.socket, buildWorkspaceStateMessage(summary, resolved.clientView, resolved.viewRevision));
     }
   };
 
@@ -1494,10 +1532,11 @@ export const createRemuxV2GatewayServer = (
       return;
     }
     const summary = runtimeControl.currentSummary();
-    const clientView = resolveClientViewForContext(summary, context);
+    const resolved = resolveViewStateForContext(summary, context);
     sendJson(context.socket, {
       type: "attached",
-      session: clientView.sessionName,
+      session: resolved.clientView.sessionName,
+      viewRevision: resolved.viewRevision,
     });
   };
 
@@ -1507,7 +1546,8 @@ export const createRemuxV2GatewayServer = (
     }
     const summary = runtimeControl.currentSummary();
     tabHistoryStore.recordSnapshot(buildRuntimeSnapshot(summary));
-    sendJson(context.socket, buildWorkspaceStateMessage(summary, resolveClientViewForContext(summary, context)));
+    const resolved = resolveViewStateForContext(summary, context);
+    sendJson(context.socket, buildWorkspaceStateMessage(summary, resolved.clientView, resolved.viewRevision));
   };
 
   const syncContextTerminalClients = async (context: ControlContext): Promise<void> => {
@@ -1846,6 +1886,8 @@ export const createRemuxV2GatewayServer = (
       socket,
       authed: false,
       clientId: randomToken(12),
+      viewRevision: 1,
+      viewKey: null,
       followBackendFocus: false,
       targetView: {
         sessionName: null,
@@ -1973,6 +2015,16 @@ export const createRemuxV2GatewayServer = (
         context.authed = true;
         context.controlContext = controlContext;
         context.terminalSize = toRuntimeTerminalSize(extractTerminalDimensions(authMessage));
+        if (
+          typeof authMessage.viewRevision === "number"
+          && authMessage.viewRevision !== controlContext.viewRevision
+        ) {
+          logger.log("[runtime-v2] browser terminal auth revision lagged behind control view", {
+            clientId: controlContext.clientId,
+            requestedViewRevision: authMessage.viewRevision,
+            currentViewRevision: controlContext.viewRevision,
+          });
+        }
         controlContext.terminalClients.add(context);
         await attachTerminalClientToPane(
           context,

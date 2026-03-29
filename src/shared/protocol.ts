@@ -78,6 +78,7 @@ export type ControlClientMessage =
       token?: string;
       password?: string;
       clientId?: string;
+      viewRevision?: number;
       session?: string;
       tabIndex?: number;
       paneId?: string;
@@ -122,9 +123,9 @@ export type ControlServerMessage =
       backendKind?: string;
     }
   | { type: "auth_error"; reason: string }
-  | { type: "attached"; session: string }
+  | { type: "attached"; session: string; viewRevision: number }
   | { type: "session_picker"; sessions: SessionSummary[] }
-  | { type: "workspace_state"; workspace: RuntimeSnapshot; clientView: ClientView; streamMode?: string; runtimeState?: WorkspaceRuntimeState }
+  | { type: "workspace_state"; workspace: RuntimeSnapshot; clientView: ClientView; viewRevision: number; streamMode?: string; runtimeState?: WorkspaceRuntimeState }
   | { type: "scrollback"; paneId: string; text: string; lines: number; paneWidth: number; isApproximate?: boolean }
   | {
       type: "tab_history";
