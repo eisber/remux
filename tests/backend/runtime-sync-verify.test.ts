@@ -201,6 +201,75 @@ printf '%s' '{"service":"remuxd","version":"0.2.18","protocolVersion":"2026-03-2
     expect(log).not.toContain("bootstrap");
   });
 
+  test("reloads the shared runtime daemon when launchd still points at the old worktree", async () => {
+    const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-shared-migrate-test-"));
+    tempDirs.push(tempHome);
+
+    const fakeBinDir = path.join(tempHome, "bin");
+    const launchAgentsDir = path.join(tempHome, "Library", "LaunchAgents");
+    const runtimeRoot = path.join(tempHome, ".remux", "runtime-worktrees");
+    const staleWorkdir = path.join(runtimeRoot, "runtime-dev");
+    const sharedWorkdir = path.join(runtimeRoot, "runtime-shared");
+    const launchctlLogPath = path.join(tempHome, "launchctl.log");
+
+    await fs.promises.mkdir(fakeBinDir, { recursive: true });
+    await fs.promises.mkdir(launchAgentsDir, { recursive: true });
+    await fs.promises.mkdir(staleWorkdir, { recursive: true });
+    await fs.promises.mkdir(sharedWorkdir, { recursive: true });
+    await fs.promises.writeFile(
+      path.join(launchAgentsDir, "com.remux.runtime-v2-shared.plist"),
+      "<plist />\n"
+    );
+    await fs.promises.writeFile(
+      path.join(fakeBinDir, "launchctl"),
+      `#!/bin/bash
+set -euo pipefail
+printf '%s\\n' "$*" >> "${launchctlLogPath}"
+if [[ "$1" == "print" ]]; then
+  cat <<'EOF'
+working directory = ${staleWorkdir}
+environment = {
+  REMUX_RUNTIME_BRANCH => dev
+}
+EOF
+  exit 0
+fi
+exit 0
+`,
+      { mode: 0o755 }
+    );
+    await fs.promises.writeFile(
+      path.join(fakeBinDir, "curl"),
+      `#!/bin/bash
+set -euo pipefail
+printf '%s' '{"service":"remuxd","version":"0.2.18","protocolVersion":"2026-03-27-draft","controlWebsocketPath":"/v2/control","terminalWebsocketPath":"/v2/terminal","gitBranch":"dev","gitCommitSha":"abc123","gitDirty":false}'
+`,
+      { mode: 0o755 }
+    );
+
+    expect(() =>
+      execFileSync(
+        "bash",
+        ["-c", "source scripts/runtime-lib.sh && ensure_shared_runtime_running"],
+        {
+          cwd: process.cwd(),
+          env: {
+            ...process.env,
+            HOME: tempHome,
+            PATH: `${fakeBinDir}:${process.env.PATH ?? ""}`,
+            REMUX_RUNTIME_WORKTREE_ROOT: runtimeRoot
+          },
+          stdio: "pipe"
+        }
+      )
+    ).not.toThrow();
+
+    const log = await fs.promises.readFile(launchctlLogPath, "utf8");
+    expect(log).toContain(`print gui/${process.getuid?.() ?? process.getuid()}/com.remux.runtime-v2-shared`);
+    expect(log).toContain(`bootout gui/${process.getuid?.() ?? process.getuid()} ${path.join(launchAgentsDir, "com.remux.runtime-v2-shared.plist")}`);
+    expect(log).toContain(`bootstrap gui/${process.getuid?.() ?? process.getuid()} ${path.join(launchAgentsDir, "com.remux.runtime-v2-shared.plist")}`);
+  });
+
   test("restarts a healthy shared runtime daemon when its reported sha is stale", async () => {
     const tempHome = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-runtime-shared-restart-test-"));
     tempDirs.push(tempHome);
