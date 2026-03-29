@@ -145,15 +145,12 @@ fn collect_scrollback_rows(screen: &vt100::Screen, width: u16) -> Vec<String> {
     rows
 }
 
-fn build_replay_formatted(
-    screen: &vt100::Screen,
-    width: u16,
-) -> Vec<u8> {
+fn build_replay_formatted(screen: &vt100::Screen, width: u16) -> Vec<u8> {
     let replay_rows = collect_replay_rows(screen, width);
     let mut replay = Vec::new();
 
     for (index, row) in replay_rows.iter().enumerate() {
-        replay.extend_from_slice(row.text.as_bytes());
+        replay.extend_from_slice(&row.formatted);
         if !row.wrapped && index + 1 < replay_rows.len() {
             replay.extend_from_slice(b"\r\n");
         }
@@ -169,7 +166,7 @@ fn build_replay_formatted(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ReplayRow {
-    text: String,
+    formatted: Vec<u8>,
     wrapped: bool,
 }
 
@@ -182,7 +179,7 @@ fn collect_replay_rows(screen: &vt100::Screen, width: u16) -> Vec<ReplayRow> {
     for offset in (1..=total_scrollback).rev() {
         history.set_scrollback(offset);
         rows.push(ReplayRow {
-            text: history.rows(0, width).next().unwrap_or_default(),
+            formatted: build_formatted_replay_row(&history, width),
             wrapped: history.row_wrapped(0),
         });
     }
@@ -190,11 +187,181 @@ fn collect_replay_rows(screen: &vt100::Screen, width: u16) -> Vec<ReplayRow> {
     rows
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ReplayIntensity {
+    #[default]
+    Normal,
+    Bold,
+    Dim,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ReplayCellStyle {
+    fgcolor: vt100::Color,
+    bgcolor: vt100::Color,
+    intensity: ReplayIntensity,
+    italic: bool,
+    underline: bool,
+    inverse: bool,
+}
+
+impl ReplayCellStyle {
+    fn from_cell(cell: &vt100::Cell) -> Self {
+        Self {
+            fgcolor: cell.fgcolor(),
+            bgcolor: cell.bgcolor(),
+            intensity: if cell.bold() {
+                ReplayIntensity::Bold
+            } else if cell.dim() {
+                ReplayIntensity::Dim
+            } else {
+                ReplayIntensity::Normal
+            },
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        }
+    }
+
+    fn write_escape_code(self, contents: &mut Vec<u8>) {
+        contents.extend_from_slice(b"\x1b[m");
+        if self == Self::default() {
+            return;
+        }
+
+        contents.extend_from_slice(b"\x1b[");
+        let mut first = true;
+
+        let mut write_param = |value: u16| {
+            if first {
+                first = false;
+            } else {
+                contents.push(b';');
+            }
+            contents.extend_from_slice(value.to_string().as_bytes());
+        };
+
+        write_replay_color_param(self.fgcolor, true, &mut write_param);
+        write_replay_color_param(self.bgcolor, false, &mut write_param);
+
+        match self.intensity {
+            ReplayIntensity::Normal => {}
+            ReplayIntensity::Bold => write_param(1),
+            ReplayIntensity::Dim => write_param(2),
+        }
+
+        if self.italic {
+            write_param(3);
+        }
+        if self.underline {
+            write_param(4);
+        }
+        if self.inverse {
+            write_param(7);
+        }
+
+        contents.push(b'm');
+    }
+}
+
+fn write_replay_color_param(
+    color: vt100::Color,
+    foreground: bool,
+    write_param: &mut impl FnMut(u16),
+) {
+    match color {
+        vt100::Color::Default => {}
+        vt100::Color::Idx(index) if index < 8 => {
+            write_param(u16::from(index) + if foreground { 30 } else { 40 });
+        }
+        vt100::Color::Idx(index) if index < 16 => {
+            write_param(u16::from(index) + if foreground { 82 } else { 92 });
+        }
+        vt100::Color::Idx(index) => {
+            write_param(if foreground { 38 } else { 48 });
+            write_param(5);
+            write_param(u16::from(index));
+        }
+        vt100::Color::Rgb(red, green, blue) => {
+            write_param(if foreground { 38 } else { 48 });
+            write_param(2);
+            write_param(u16::from(red));
+            write_param(u16::from(green));
+            write_param(u16::from(blue));
+        }
+    }
+}
+
+fn build_formatted_replay_row(screen: &vt100::Screen, width: u16) -> Vec<u8> {
+    let mut last_significant_col = None;
+    for col in 0..width {
+        let Some(cell) = screen.cell(0, col) else {
+            break;
+        };
+        if cell.is_wide_continuation() {
+            continue;
+        }
+
+        if cell.has_contents() || ReplayCellStyle::from_cell(cell) != ReplayCellStyle::default() {
+            last_significant_col = Some(col);
+        }
+    }
+
+    let Some(last_significant_col) = last_significant_col else {
+        return Vec::new();
+    };
+
+    let mut formatted = Vec::new();
+    let mut active_style = ReplayCellStyle::default();
+    let mut col = 0;
+    while col <= last_significant_col {
+        let Some(cell) = screen.cell(0, col) else {
+            break;
+        };
+
+        if cell.is_wide_continuation() {
+            col += 1;
+            continue;
+        }
+
+        let style = ReplayCellStyle::from_cell(cell);
+        if style != active_style {
+            style.write_escape_code(&mut formatted);
+            active_style = style;
+        }
+
+        if cell.has_contents() {
+            formatted.extend_from_slice(cell.contents().as_bytes());
+        } else {
+            formatted.push(b' ');
+        }
+
+        col += 1 + u16::from(cell.is_wide());
+    }
+
+    if active_style != ReplayCellStyle::default() {
+        ReplayCellStyle::default().write_escape_code(&mut formatted);
+    }
+
+    formatted
+}
+
 #[cfg(test)]
 mod tests {
     use remux_core::{InspectPrecision, TerminalSize};
 
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct CellStyle {
+        fgcolor: vt100::Color,
+        bgcolor: vt100::Color,
+        bold: bool,
+        dim: bool,
+        italic: bool,
+        underline: bool,
+        inverse: bool,
+    }
 
     fn collect_all_rows(snapshot: &TerminalSnapshot) -> Vec<String> {
         snapshot
@@ -210,6 +377,24 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn cell_style(screen: &vt100::Screen, row: u16, col: u16) -> Option<CellStyle> {
+        screen.cell(row, col).map(|cell| CellStyle {
+            fgcolor: cell.fgcolor(),
+            bgcolor: cell.bgcolor(),
+            bold: cell.bold(),
+            dim: cell.dim(),
+            italic: cell.italic(),
+            underline: cell.underline(),
+            inverse: cell.inverse(),
+        })
+    }
+
+    fn oldest_scrollback_view(screen: &vt100::Screen) -> vt100::Screen {
+        let mut history = screen.clone();
+        history.set_scrollback(usize::MAX);
+        history
     }
 
     #[test]
@@ -252,9 +437,18 @@ mod tests {
         let snapshot = terminal.snapshot();
         let replay = String::from_utf8_lossy(&snapshot.replay_formatted);
 
-        assert_eq!(snapshot.scrollback_rows, vec!["line 1".to_owned(), "line 2".to_owned()]);
-        assert!(snapshot.visible_rows.iter().any(|row| row.contains("line 3")));
-        assert!(snapshot.visible_rows.iter().any(|row| row.contains("line 4")));
+        assert_eq!(
+            snapshot.scrollback_rows,
+            vec!["line 1".to_owned(), "line 2".to_owned()]
+        );
+        assert!(snapshot
+            .visible_rows
+            .iter()
+            .any(|row| row.contains("line 3")));
+        assert!(snapshot
+            .visible_rows
+            .iter()
+            .any(|row| row.contains("line 4")));
         assert!(replay.contains("line 1"));
         assert!(replay.contains("line 2"));
         assert!(replay.contains("line 3"));
@@ -320,9 +514,9 @@ mod tests {
         let rows = collect_all_rows(&snapshot);
 
         for expected in ["LF-110", "LF-111", "LF-119", "LF-120", "prompt %"] {
-          assert!(
-              rows.iter().any(|row| row.contains(expected)),
-              "expected snapshot rows to contain {expected}, got {rows:?}",
+            assert!(
+                rows.iter().any(|row| row.contains(expected)),
+                "expected snapshot rows to contain {expected}, got {rows:?}",
             );
         }
     }
@@ -356,6 +550,77 @@ mod tests {
             replayed_screen.cell(1, 0).map(vt100::Cell::fgcolor),
             Some(vt100::Color::Idx(2)),
         );
+    }
+
+    #[test]
+    fn replay_formatted_preserves_scrollback_cell_styles_across_snapshot_restore() {
+        let size = TerminalSize::new(12, 2);
+        let mut terminal = TerminalState::new(size, 100);
+        terminal.ingest(
+            b"\x1b[30;47mAB  CD\x1b[0m\r\n\x1b[37;44mEF  GH\x1b[0m\r\nvisible\r\nprompt % ",
+        );
+
+        let snapshot = terminal.snapshot();
+        let original_history = oldest_scrollback_view(terminal.parser.screen());
+
+        assert_eq!(
+            cell_style(&original_history, 0, 0),
+            Some(CellStyle {
+                fgcolor: vt100::Color::Idx(0),
+                bgcolor: vt100::Color::Idx(7),
+                bold: false,
+                dim: false,
+                italic: false,
+                underline: false,
+                inverse: false,
+            }),
+        );
+        assert_eq!(
+            cell_style(&original_history, 1, 0),
+            Some(CellStyle {
+                fgcolor: vt100::Color::Idx(7),
+                bgcolor: vt100::Color::Idx(4),
+                bold: false,
+                dim: false,
+                italic: false,
+                underline: false,
+                inverse: false,
+            }),
+        );
+
+        let mut replayed = TerminalState::new(size, 100);
+        replayed.ingest(&snapshot.replay_formatted);
+        let replayed_history = oldest_scrollback_view(replayed.parser.screen());
+
+        for (row, col) in [(0, 0), (0, 2), (1, 0), (1, 2)] {
+            assert_eq!(
+                cell_style(&replayed_history, row, col),
+                cell_style(&original_history, row, col),
+                "expected replayed scrollback cell ({row}, {col}) to preserve styles",
+            );
+        }
+    }
+
+    #[test]
+    fn replay_formatted_preserves_wrapped_scrollback_styles_across_snapshot_restore() {
+        let size = TerminalSize::new(6, 3);
+        let mut terminal = TerminalState::new(size, 100);
+        terminal.ingest(b"\x1b[30;47mAB  CD12\x1b[0m\r\nrow-2\r\nrow-3\r\nprompt");
+
+        let snapshot = terminal.snapshot();
+        let original_history = oldest_scrollback_view(terminal.parser.screen());
+
+        let mut replayed = TerminalState::new(size, 100);
+        replayed.ingest(&snapshot.replay_formatted);
+        let replayed_history = oldest_scrollback_view(replayed.parser.screen());
+
+        for (row, col) in [(0, 0), (0, 2), (0, 5), (1, 0), (1, 1)] {
+            assert_eq!(
+                cell_style(&replayed_history, row, col),
+                cell_style(&original_history, row, col),
+                "expected wrapped replayed scrollback cell ({row}, {col}) to preserve styles",
+            );
+        }
     }
 
     #[test]
