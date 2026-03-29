@@ -752,8 +752,14 @@ export const App = () => {
 
     const auth = terminalAuthRef.current;
     const controlAlive = connection.controlSocketRef.current?.readyState === WebSocket.OPEN;
-    const terminalSocketAlive = terminalSocketRef.current?.readyState === WebSocket.OPEN;
-    if (!auth || !controlAlive || terminalSocketAlive || terminalViewStateRef.current === "live") {
+    const terminalSocketReadyState = terminalSocketRef.current?.readyState ?? WebSocket.CLOSED;
+    if (
+      !auth
+      || !controlAlive
+      || terminalViewStateRef.current !== "stale"
+      || terminalSocketReadyState === WebSocket.OPEN
+      || terminalSocketReadyState === WebSocket.CONNECTING
+    ) {
       return;
     }
 
