@@ -438,6 +438,7 @@ export const App = () => {
     };
     socket.onclose = (event) => {
       debugLog("terminal_socket.onclose", { code: event.code, reason: event.reason });
+      localEchoPredictionRef.current?.reset();
       stopTerminalKeepAliveRef.current?.();
       stopTerminalKeepAliveRef.current = null;
       terminalInputBatcherRef.current.clear();

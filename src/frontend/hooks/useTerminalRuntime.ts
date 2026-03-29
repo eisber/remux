@@ -53,6 +53,7 @@ interface UseTerminalRuntimeResult {
   fileInputRef: RefObject<HTMLInputElement | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
   focusTerminal: () => void;
+  localEchoPredictionRef: MutableRefObject<LocalEchoPrediction | null>;
   readTerminalGeometry: () => { cols: number; rows: number } | null;
   readTerminalBuffer: () => string;
   readTerminalViewport: () => string;
@@ -418,6 +419,8 @@ export const useTerminalRuntime = ({
       resizeObserver.disconnect();
       fontSet?.removeEventListener?.("loadingdone", handleFontsChanged);
       disposable.dispose();
+      localEchoPredictionRef.current?.reset();
+      localEchoPredictionRef.current = null;
       rendererAddonRef.current?.dispose();
       rendererAddonRef.current = null;
       terminalWriteBufferRef.current?.clear();
@@ -481,6 +484,7 @@ export const useTerminalRuntime = ({
     fileInputRef,
     fitAddonRef,
     focusTerminal,
+    localEchoPredictionRef,
     readTerminalGeometry,
     readTerminalBuffer,
     readTerminalViewport,
