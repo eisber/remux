@@ -162,7 +162,24 @@ export const InspectView = ({
           {snapshot.events.map((event) => (
             <div key={event.id} className="inspect-event-row" data-testid={`inspect-event-${event.id}`}>
               <span className="inspect-event-time">{new Date(event.at).toLocaleTimeString()}</span>
-              <span className="inspect-event-text">{event.text}</span>
+              <div className="inspect-event-body">
+                <span className="inspect-event-text">{event.text}</span>
+                {event.kind === "diagnostic" && event.diagnostic && (
+                  <div className="inspect-diagnostic-card" data-testid={`inspect-diagnostic-${event.id}`}>
+                    <span className="inspect-badge">
+                      {event.diagnostic.issue.replace(/_/g, " ")}
+                    </span>
+                    <span className="inspect-badge">
+                      {event.diagnostic.status}
+                    </span>
+                    {event.diagnostic.recentActions.length > 0 && (
+                      <div className="inspect-diagnostic-actions">
+                        Recent actions: {event.diagnostic.recentActions.map((action) => action.label).join(" -> ")}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </section>

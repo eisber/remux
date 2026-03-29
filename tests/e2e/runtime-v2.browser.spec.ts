@@ -121,6 +121,9 @@ const readTerminalBufferLines = async (page: Page, prefix?: string): Promise<str
       ))
   ), prefix ?? null);
 
+const readDiagnosticsKinds = async (page: Page): Promise<string[]> =>
+  await page.evaluate(() => window.__remuxDiagnostics?.readState().activeIssues.map((issue) => issue.kind) ?? []);
+
 test.describe("runtime-v2 browser behavior", () => {
   let server: StartedRuntimeV2E2EServer;
 
@@ -600,5 +603,25 @@ test.describe("runtime-v2 browser behavior", () => {
       forbidden: ["TRANSIENT-TAB-1", "FINAL-TAB-0", "PROMPT-TAB-0", "STATUS-TAB-0"],
       unique: ["PROMPT-TAB-1", "STATUS-TAB-1"],
     });
+  });
+
+  test("raises a runtime redline and records the incident in inspect history when layout drift appears", async ({ page }) => {
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+
+    await page.getByTitle("Collapse sidebar").click();
+    await page.evaluate(() => {
+      const screen = document.querySelector(".terminal-host .xterm-screen") as HTMLElement | null;
+      if (screen) {
+        screen.style.marginLeft = "48px";
+        screen.style.width = "50%";
+      }
+    });
+
+    await expect(page.getByTestId("terminal-redline-banner")).toContainText("redline");
+    await expect.poll(() => readDiagnosticsKinds(page)).toContain("layout_misalignment");
+
+    await page.getByRole("button", { name: "Inspect" }).click();
+    await expect(page.getByTestId("inspect-events")).toContainText("layout");
   });
 });

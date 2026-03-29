@@ -33,6 +33,7 @@ import { useFileUpload } from "./hooks/useFileUpload";
 import { useViewportLayout } from "./mobile-layout";
 import { buildControlAuthHint } from "./launch-context";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
+import { useTerminalDiagnostics } from "./hooks/useTerminalDiagnostics";
 import { useRemuxConnection } from "./hooks/useRemuxConnection";
 import { useClientPreferences } from "./hooks/useClientPreferences";
 import { useWorkspaceState } from "./hooks/useWorkspaceState";
@@ -49,6 +50,7 @@ import {
 } from "./remux-runtime";
 import { attachWebSocketKeepAlive } from "./websocket-keepalive";
 import type {
+  ClientDiagnosticDetails,
   SessionState,
   TabState,
   WorkspaceRuntimeState,
@@ -86,10 +88,17 @@ export const App = () => {
   const pendingTerminalAuthRef = useRef<{ password: string; clientId: string } | null>(null);
   const launchContextRef = useRef(initialLaunchContext);
   const readTerminalGeometryRef = useRef<() => { cols: number; rows: number } | null>(() => null);
+  const suppressHistoryGapRef = useRef((_: string) => {});
+  const recordDiagnosticActionRef = useRef((_: string, __: string, ___?: string) => {});
 
   const attachedSessionRef = useRef("");
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [composeText, setComposeText] = useState("");
+  const [lastReportedTerminalGeometry, setLastReportedTerminalGeometry] = useState<{
+    cols: number;
+    rows: number;
+    source: string;
+  } | null>(null);
 
   // ── Preferences hook ──
   const prefs = useClientPreferences();
@@ -169,6 +178,7 @@ export const App = () => {
         case "attached": {
           workspace.onAttached(message.session);
           attachedSessionRef.current = message.session;
+          recordDiagnosticActionRef.current("runtime.attached", `Attached session ${message.session}`);
           launchContextRef.current = null;
           setDrawerOpen(false);
           connectionActionsRef.current.setStatusMessage(
@@ -186,12 +196,14 @@ export const App = () => {
         }
         case "session_picker": {
           launchContextRef.current = null;
+          suppressHistoryGapRef.current("session picker");
           resetTerminalBufferRef.current();
           attachedSessionRef.current = "";
           awaitingTerminalReplayRef.current = false;
           terminalHasReplayRef.current = false;
           setTerminalViewState("idle");
           setRuntimeState(null);
+          recordDiagnosticActionRef.current("runtime.session_picker", "Session picker shown");
           workspace.onSessionPicker(message.sessions);
           return;
         }
@@ -243,6 +255,7 @@ export const App = () => {
       if (viewModeRef.current === "inspect") {
         setInspectErrorMessage("Inspect disconnected. Reconnecting…");
       }
+      recordDiagnosticActionRef.current("control.close", "Control websocket closed");
       terminalSocketRef.current?.close();
       terminalSocketRef.current = null;
       setTerminalViewState(terminalHasReplayRef.current ? "stale" : "connecting");
@@ -273,15 +286,23 @@ export const App = () => {
   const {
     fileInputRef,
     focusTerminal,
+    readTerminalBuffer,
     readTerminalGeometry,
     requestTerminalFit,
     resetTerminalBuffer,
     readTerminalViewport,
     scrollbackContentRef,
     terminalContainerRef,
+    terminalRef,
     writeToTerminal
   } = useTerminalRuntime({
     onSendRaw: sendRawToSocket,
+    onBeforeReset: (reason) => {
+      suppressHistoryGapRef.current(reason);
+    },
+    onResizeSent: ({ cols, rows, source }) => {
+      setLastReportedTerminalGeometry({ cols, rows, source });
+    },
     mobileLayout,
     setStatusMessage: connection.setStatusMessage,
     terminalVisible: viewMode === "terminal",
@@ -304,6 +325,7 @@ export const App = () => {
   // ── Terminal socket management ──
   const openTerminalSocket = useCallback((passwordValue: string, clientId: string): void => {
     debugLog("terminal_socket.open.begin", { hasPassword: Boolean(passwordValue) });
+    recordDiagnosticActionRef.current("terminal.connect.begin", "Open live terminal socket");
     terminalInputBatcherRef.current.clear();
     awaitingTerminalReplayRef.current = true;
     setTerminalViewState(terminalHasReplayRef.current ? "restoring" : "connecting");
@@ -322,6 +344,13 @@ export const App = () => {
     socket.onopen = () => {
       debugLog("terminal_socket.onopen");
       const terminalGeometry = readTerminalGeometry();
+      if (terminalGeometry) {
+        setLastReportedTerminalGeometry({
+          cols: terminalGeometry.cols,
+          rows: terminalGeometry.rows,
+          source: "auth"
+        });
+      }
       socket.send(JSON.stringify({
         type: "auth",
         token,
@@ -334,6 +363,7 @@ export const App = () => {
         intervalMs: 25_000,
         createPayload: () => JSON.stringify({ type: "ping" }),
       });
+      recordDiagnosticActionRef.current("terminal.connect.open", "Live terminal socket opened");
       flushPendingTerminalTransport();
       requestTerminalFit({ notify: true, retryUntilVisible: true });
     };
@@ -381,6 +411,7 @@ export const App = () => {
       terminalInputBatcherRef.current.clear();
       awaitingTerminalReplayRef.current = false;
       setTerminalViewState(terminalHasReplayRef.current ? "stale" : "connecting");
+      recordDiagnosticActionRef.current("terminal.connect.close", `Live terminal socket closed (${event.code})`);
       if (event.code !== 4001) {
         connectionActionsRef.current.setStatusMessage("reconnecting live view…");
       }
@@ -458,6 +489,52 @@ export const App = () => {
     orderedSessions,
     orderedActiveTabs,
   } = workspace;
+
+  const reportDiagnostic = useCallback((payload: {
+    session?: string;
+    tabIndex?: number;
+    paneId?: string;
+    diagnostic: ClientDiagnosticDetails;
+  }): void => {
+    const socket = connection.controlSocketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify({
+      type: "report_client_diagnostic",
+      ...payload,
+    }));
+  }, [connection.controlSocketRef]);
+
+  const {
+    activeRedlineCount,
+    activeRedlineSummary,
+    recordAction: recordDiagnosticAction,
+    suppressHistoryGap,
+  } = useTerminalDiagnostics({
+    activePaneId: activePane?.id ?? null,
+    activeTabIndex: activeTab?.index ?? null,
+    activeTabName: activeTab?.name ?? "unknown",
+    attachedSession: attachedSession || attachedSessionRef.current,
+    lastReportedGeometry: lastReportedTerminalGeometry,
+    readTerminalBuffer,
+    readTerminalGeometry,
+    reportDiagnostic,
+    terminalContainerRef,
+    terminalRef,
+    terminalViewState,
+    theme,
+    viewMode,
+  });
+
+  useEffect(() => {
+    suppressHistoryGapRef.current = suppressHistoryGap;
+  }, [suppressHistoryGap]);
+
+  useEffect(() => {
+    recordDiagnosticActionRef.current = recordDiagnosticAction;
+  }, [recordDiagnosticAction]);
+
   const uploadFile = useFileUpload({
     activePane,
     password,
@@ -1140,6 +1217,8 @@ export const App = () => {
         )}
         terminalStage={(
           <TerminalStage
+        activeRedlineCount={activeRedlineCount}
+        activeRedlineSummary={activeRedlineSummary}
         dragOver={dragOver}
         inspectErrorMessage={inspectErrorMessage}
         inspectLineCount={inspectLineCount}

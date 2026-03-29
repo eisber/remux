@@ -1,4 +1,5 @@
 import type {
+  ClientDiagnosticDetails,
   TabHistoryEvent,
   TabHistoryPane,
   TabState,
@@ -12,6 +13,8 @@ interface RecordEventOptions {
   text: string;
   paneId?: string;
   at?: string;
+  kind?: TabHistoryEvent["kind"];
+  diagnostic?: ClientDiagnosticDetails;
 }
 
 interface RecordPaneCaptureOptions extends Omit<TabHistoryPane, "capturedAt"> {
@@ -19,6 +22,21 @@ interface RecordPaneCaptureOptions extends Omit<TabHistoryPane, "capturedAt"> {
   tabIndex: number;
   tabName: string;
   capturedAt?: string;
+}
+
+interface RecordDiagnosticOptions {
+  sessionName: string;
+  tabIndex: number;
+  tabName: string;
+  paneId?: string;
+  issue: ClientDiagnosticDetails["issue"];
+  severity: ClientDiagnosticDetails["severity"];
+  status: ClientDiagnosticDetails["status"];
+  summary: string;
+  sample: ClientDiagnosticDetails["sample"];
+  recentActions: ClientDiagnosticDetails["recentActions"];
+  recentSamples?: ClientDiagnosticDetails["recentSamples"];
+  at?: string;
 }
 
 interface BuildTabHistoryOptions {
@@ -128,12 +146,36 @@ export class TabHistoryStore {
       id: `evt-${this.nextEventId++}`,
       at: options.at ?? new Date().toISOString(),
       text: options.text,
-      kind: "event",
-      paneId: options.paneId
+      kind: options.kind ?? "event",
+      paneId: options.paneId,
+      diagnostic: options.diagnostic,
     });
     if (entry.events.length > MAX_TAB_EVENTS) {
       entry.events.splice(0, entry.events.length - MAX_TAB_EVENTS);
     }
+  }
+
+  recordDiagnostic(options: RecordDiagnosticOptions): void {
+    const issueLabel = options.issue.replace(/_/g, " ");
+    const prefix = options.status === "resolved" ? "Redline resolved" : "Redline opened";
+    this.recordEvent({
+      sessionName: options.sessionName,
+      tabIndex: options.tabIndex,
+      tabName: options.tabName,
+      paneId: options.paneId,
+      at: options.at,
+      kind: "diagnostic",
+      text: `${prefix}: ${issueLabel} - ${options.summary}`,
+      diagnostic: {
+        issue: options.issue,
+        severity: options.severity,
+        status: options.status,
+        summary: options.summary,
+        sample: options.sample,
+        recentActions: options.recentActions,
+        recentSamples: options.recentSamples,
+      }
+    });
   }
 
   recordPaneCapture(options: RecordPaneCaptureOptions): void {

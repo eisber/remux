@@ -34,6 +34,8 @@ describe("TerminalStage", () => {
     act(() => {
       root?.render(
         <TerminalStage
+          activeRedlineCount={0}
+          activeRedlineSummary=""
           dragOver={false}
           inspectErrorMessage=""
           inspectLineCount={1000}
@@ -84,5 +86,47 @@ describe("TerminalStage", () => {
     root = null;
     container.remove();
     container = null;
+  });
+
+  it("renders a runtime redline banner when active diagnostics are present", () => {
+    const terminalContainerRef = { current: null as HTMLDivElement | null };
+    const scrollbackContentRef = { current: null as HTMLDivElement | null };
+
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <TerminalStage
+          activeRedlineCount={2}
+          activeRedlineSummary="Width drift and history gap detected"
+          dragOver={false}
+          inspectErrorMessage=""
+          inspectLineCount={1000}
+          inspectLoading={false}
+          inspectPaneFilter="all"
+          inspectSearchQuery=""
+          inspectSnapshot={null}
+          mobileLayout={false}
+          onInspectLoadMore={() => undefined}
+          onInspectPaneFilterChange={() => undefined}
+          onInspectRefresh={() => undefined}
+          onInspectSearchQueryChange={() => undefined}
+          onFocusTerminal={() => undefined}
+          onDragLeave={() => undefined}
+          onDragOver={() => undefined}
+          onDrop={() => undefined}
+          scrollFontSize={14}
+          scrollbackContentRef={scrollbackContentRef}
+          terminalContainerRef={terminalContainerRef}
+          viewMode="terminal"
+        />
+      );
+    });
+
+    const banner = container.querySelector("[data-testid='terminal-redline-banner']");
+    expect(banner?.textContent).toContain("2 redlines");
+    expect(banner?.textContent).toContain("Width drift and history gap detected");
   });
 });

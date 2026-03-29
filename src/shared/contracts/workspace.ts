@@ -82,12 +82,59 @@ export interface ClientView {
 
 // ── Inspect / history types ──
 
+export type ClientDiagnosticIssue =
+  | "layout_misalignment"
+  | "color_whiteout"
+  | "width_mismatch"
+  | "history_gap";
+
+export type ClientDiagnosticSeverity = "warn" | "error";
+export type ClientDiagnosticStatus = "open" | "resolved";
+
+export interface ClientDiagnosticAction {
+  at: string;
+  type: string;
+  label: string;
+  detail?: string;
+}
+
+export interface ClientDiagnosticSample {
+  theme?: "dark" | "light";
+  viewMode?: "inspect" | "terminal";
+  terminalViewState?: "idle" | "connecting" | "restoring" | "live" | "stale";
+  frontendCols?: number;
+  frontendRows?: number;
+  backendCols?: number;
+  backendRows?: number;
+  hostWidth?: number;
+  hostHeight?: number;
+  screenWidth?: number;
+  screenOffsetLeft?: number;
+  screenOffsetTop?: number;
+  viewportWidth?: number;
+  viewportOffsetLeft?: number;
+  contrastRatio?: number;
+  bufferLineCount?: number;
+  lastResizeSource?: string;
+}
+
+export interface ClientDiagnosticDetails {
+  issue: ClientDiagnosticIssue;
+  severity: ClientDiagnosticSeverity;
+  status: ClientDiagnosticStatus;
+  summary: string;
+  sample: ClientDiagnosticSample;
+  recentActions: ClientDiagnosticAction[];
+  recentSamples?: ClientDiagnosticSample[];
+}
+
 export interface TabHistoryEvent {
   id: string;
   at: string;
   text: string;
-  kind: "event";
+  kind: "event" | "diagnostic";
   paneId?: string;
+  diagnostic?: ClientDiagnosticDetails;
 }
 
 export interface TabHistoryPane {

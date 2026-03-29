@@ -9,6 +9,41 @@ import type {
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
 
+const clientDiagnosticSampleSchema = z.object({
+  theme: z.enum(["dark", "light"]).optional(),
+  viewMode: z.enum(["inspect", "terminal"]).optional(),
+  terminalViewState: z.enum(["idle", "connecting", "restoring", "live", "stale"]).optional(),
+  frontendCols: z.number().optional(),
+  frontendRows: z.number().optional(),
+  backendCols: z.number().optional(),
+  backendRows: z.number().optional(),
+  hostWidth: z.number().optional(),
+  hostHeight: z.number().optional(),
+  screenWidth: z.number().optional(),
+  screenOffsetLeft: z.number().optional(),
+  screenOffsetTop: z.number().optional(),
+  viewportWidth: z.number().optional(),
+  viewportOffsetLeft: z.number().optional(),
+  contrastRatio: z.number().optional(),
+  bufferLineCount: z.number().optional(),
+  lastResizeSource: z.string().optional(),
+});
+
+const clientDiagnosticDetailsSchema = z.object({
+  issue: z.enum(["layout_misalignment", "color_whiteout", "width_mismatch", "history_gap"]),
+  severity: z.enum(["warn", "error"]),
+  status: z.enum(["open", "resolved"]),
+  summary: z.string(),
+  sample: clientDiagnosticSampleSchema,
+  recentActions: z.array(z.object({
+    at: z.string(),
+    type: z.string(),
+    label: z.string(),
+    detail: z.string().optional(),
+  })),
+  recentSamples: z.array(clientDiagnosticSampleSchema).optional(),
+});
+
 const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("auth"),
@@ -33,6 +68,13 @@ const controlClientMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("toggle_fullscreen"), paneId: z.string() }),
   z.object({ type: z.literal("capture_scrollback"), paneId: z.string(), lines: z.number().optional() }),
   z.object({ type: z.literal("capture_tab_history"), session: z.string().optional(), tabIndex: z.number(), lines: z.number().optional() }),
+  z.object({
+    type: z.literal("report_client_diagnostic"),
+    session: z.string().optional(),
+    tabIndex: z.number().int().min(0).optional(),
+    paneId: z.string().optional(),
+    diagnostic: clientDiagnosticDetailsSchema,
+  }),
   z.object({ type: z.literal("send_compose"), text: z.string() }),
   z.object({ type: z.literal("rename_session"), session: z.string(), newName: z.string() }),
   z.object({ type: z.literal("rename_tab"), session: z.string(), tabIndex: z.number(), newName: z.string() }),
@@ -73,6 +115,14 @@ export const summarizeClientMessage = (message: ControlClientMessage): string =>
     return JSON.stringify({
       type: message.type,
       textLength: message.text.length
+    });
+  }
+  if (message.type === "report_client_diagnostic") {
+    return JSON.stringify({
+      type: message.type,
+      issue: message.diagnostic.issue,
+      status: message.diagnostic.status,
+      actionCount: message.diagnostic.recentActions.length,
     });
   }
   return JSON.stringify({ type: message.type });

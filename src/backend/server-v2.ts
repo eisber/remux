@@ -33,11 +33,12 @@ import { readRuntimeMetadata } from "./util/runtime-metadata.js";
 import {
   buildLegacyClientView,
   buildLegacyScrollback,
-  buildLegacyTabHistory,
   buildLegacyWorkspaceSnapshot,
   findRuntimeTabByLegacyIndex,
+  renderInspectText,
   resolveLegacyAttachedSession,
 } from "./v2/translation.js";
+import { TabHistoryStore } from "./history/tab-history-store.js";
 import {
   EXPECTED_RUNTIME_V2_CONTRACT,
   assertCompatibleRuntimeV2Metadata,
@@ -1032,6 +1033,7 @@ export const createRemuxV2GatewayServer = (
   const controlClients = new Set<ControlContext>();
   const terminalClients = new Set<DataContext>();
   const paneBridges = new Map<string, SharedRuntimeV2PaneBridge>();
+  const tabHistoryStore = new TabHistoryStore();
 
   let runtimeTarget: RuntimeTargetHandle | null = null;
   let runtimeControl: RuntimeV2ControlChannel | null = null;
@@ -1201,6 +1203,7 @@ export const createRemuxV2GatewayServer = (
       return;
     }
     const summary = runtimeControl.currentSummary();
+    tabHistoryStore.recordSnapshot(buildLegacyWorkspaceSnapshot(summary));
     for (const client of controlClients) {
       if (!client.authed) {
         continue;
@@ -1288,6 +1291,7 @@ export const createRemuxV2GatewayServer = (
       return;
     }
     const summary = runtimeControl.currentSummary();
+    tabHistoryStore.recordSnapshot(buildLegacyWorkspaceSnapshot(summary));
     sendJson(context.socket, buildWorkspaceStateMessage(summary, resolveClientViewForContext(summary, context)));
   };
 
@@ -1359,6 +1363,8 @@ export const createRemuxV2GatewayServer = (
       return;
     }
     const summary = runtimeControl.currentSummary();
+    const workspace = buildLegacyWorkspaceSnapshot(summary);
+    tabHistoryStore.recordSnapshot(workspace);
     const tab = findRuntimeTabByLegacyIndex(summary, sessionName, tabIndex);
     if (!tab) {
       throw new Error(`tab not found: ${sessionName}:${tabIndex}`);
@@ -1376,7 +1382,39 @@ export const createRemuxV2GatewayServer = (
       snapshots.push(response.snapshot);
     }
 
-    sendJson(context.socket, buildLegacyTabHistory(summary, sessionName, tabIndex, lines, snapshots));
+    const legacySession = workspace.sessions.find((session) => session.name === sessionName);
+    const legacyTab = legacySession?.tabs.find((candidate) => candidate.index === tabIndex);
+    if (!legacyTab) {
+      throw new Error(`legacy tab not found: ${sessionName}:${tabIndex}`);
+    }
+
+    const capturedAt = new Date().toISOString();
+    const paneCaptures = tab.panes.map((pane, paneIndex) => {
+      const snapshot = snapshots[paneIndex];
+      return {
+        paneId: pane.paneId,
+        paneIndex,
+        command: "shell",
+        title: `Pane ${paneIndex} · ${pane.paneId}`,
+        text: snapshot ? renderInspectText(snapshot, lines) : "",
+        paneWidth: snapshot?.size.cols ?? 80,
+        isApproximate: snapshot ? snapshot.precision !== "precise" : true,
+        archived: false,
+        capturedAt,
+        lines,
+      };
+    });
+    const history = tabHistoryStore.buildTabHistory({
+      sessionName,
+      tab: legacyTab,
+      lines,
+      paneCaptures,
+    });
+
+    sendJson(context.socket, {
+      type: "tab_history",
+      ...history,
+    });
   };
 
   const sendScrollback = async (
@@ -1493,6 +1531,34 @@ export const createRemuxV2GatewayServer = (
       case "capture_tab_history": {
         const sessionName = message.session ?? resolveClientViewForContext(runtimeControl.currentSummary(), context).sessionName;
         await sendTabHistory(context, sessionName, message.tabIndex, message.lines ?? config.scrollbackLines);
+        return;
+      }
+      case "report_client_diagnostic": {
+        const summary = runtimeControl.currentSummary();
+        const resolvedView = resolveClientViewForContext(summary, context);
+        const sessionName = message.session ?? resolvedView.sessionName;
+        const tabIndex = message.tabIndex ?? resolvedView.tabIndex;
+        const workspace = buildLegacyWorkspaceSnapshot(summary);
+        tabHistoryStore.recordSnapshot(workspace);
+        const tab = workspace.sessions
+          .find((session) => session.name === sessionName)
+          ?.tabs.find((candidate) => candidate.index === tabIndex);
+        if (!tab) {
+          return;
+        }
+        tabHistoryStore.recordDiagnostic({
+          sessionName,
+          tabIndex,
+          tabName: tab.name,
+          paneId: message.paneId ?? resolvedView.paneId,
+          issue: message.diagnostic.issue,
+          severity: message.diagnostic.severity,
+          status: message.diagnostic.status,
+          summary: message.diagnostic.summary,
+          sample: message.diagnostic.sample,
+          recentActions: message.diagnostic.recentActions,
+          recentSamples: message.diagnostic.recentSamples,
+        });
         return;
       }
       case "send_compose": {
@@ -1791,11 +1857,13 @@ export const createRemuxV2GatewayServer = (
       runtimeControl = new RuntimeV2ControlChannel(runtimeTarget.baseUrl, logger);
       await runtimeControl.start();
       runtimeControl.onWorkspaceSnapshot(() => {
+        tabHistoryStore.recordSnapshot(buildLegacyWorkspaceSnapshot(runtimeControl!.currentSummary()));
         broadcastWorkspaceState();
         void retargetTerminalClients();
       });
 
       const initialSummary = runtimeControl.currentSummary();
+      tabHistoryStore.recordSnapshot(buildLegacyWorkspaceSnapshot(initialSummary));
       if (config.defaultSession && initialSummary.sessions.length === 1) {
         const onlySession = initialSummary.sessions[0]!;
         if (onlySession.sessionName !== config.defaultSession) {

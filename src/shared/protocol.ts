@@ -13,6 +13,12 @@ export type {
   WorkspaceRuntimeState,
   BackendCapabilities,
   ClientView,
+  ClientDiagnosticAction,
+  ClientDiagnosticDetails,
+  ClientDiagnosticIssue,
+  ClientDiagnosticSample,
+  ClientDiagnosticSeverity,
+  ClientDiagnosticStatus,
   TabHistoryEvent,
   TabHistoryPane
 } from "./contracts/workspace.js";
@@ -57,6 +63,7 @@ import type {
   WorkspaceSnapshot,
   WorkspaceRuntimeState,
   ClientView,
+  ClientDiagnosticDetails,
   TabHistoryPane,
   TabHistoryEvent
 } from "./contracts/workspace.js";
@@ -87,6 +94,13 @@ export type ControlClientMessage =
   | { type: "toggle_fullscreen"; paneId: string }
   | { type: "capture_scrollback"; paneId: string; lines?: number }
   | { type: "capture_tab_history"; session?: string; tabIndex: number; lines?: number }
+  | {
+      type: "report_client_diagnostic";
+      session?: string;
+      tabIndex?: number;
+      paneId?: string;
+      diagnostic: ClientDiagnosticDetails;
+    }
   | { type: "send_compose"; text: string }
   | { type: "rename_session"; session: string; newName: string }
   | { type: "rename_tab"; session: string; tabIndex: number; newName: string }
