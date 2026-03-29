@@ -163,6 +163,40 @@ test.describe("runtime-v2 browser behavior", () => {
     await expect.poll(async () => await page.getByTestId("terminal-status-overlay").count()).toBe(0);
   });
 
+  test("shares one upstream pane across desktop and mobile viewers without shrinking to the mobile viewport", async ({ browser }) => {
+    const desktop = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+    const mobile = await browser.newContext({
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 390, height: 844 },
+    });
+    const desktopPage = await desktop.newPage();
+    const mobilePage = await mobile.newPage();
+    const baselineAttachCount = server.upstream.latestTerminal()?.attachCount ?? 0;
+
+    try {
+      await desktopPage.goto(`${server.baseUrl}/?token=${server.token}`);
+      await mobilePage.goto(`${server.baseUrl}/?token=${server.token}`);
+
+      await expect(desktopPage.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+      await expect(mobilePage.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+      await expect.poll(() => (server.upstream.latestTerminal()?.attachCount ?? 0) - baselineAttachCount).toBe(1);
+      await expect.poll(() => server.upstream.latestTerminal()?.sizes.at(-1)?.cols ?? 0).toBeGreaterThan(100);
+
+      await mobilePage.getByTestId("compose-input").fill("echo multi-view");
+      await mobilePage.getByTestId("compose-input").press("Enter");
+
+      await expect
+        .poll(() => server.upstream.allTerminalWrites().join(""))
+        .toContain("echo multi-view");
+      await expect.poll(() => readTerminalText(desktopPage)).toContain("echo multi-view");
+      await expect.poll(() => readTerminalText(mobilePage)).toContain("echo multi-view");
+    } finally {
+      await desktop.close();
+      await mobile.close();
+    }
+  });
+
   test("mobile keeps compose available in live but removes it from inspect mode", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`${server.baseUrl}/?token=${server.token}`);

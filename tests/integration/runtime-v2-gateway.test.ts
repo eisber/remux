@@ -35,6 +35,39 @@ const waitForRawMessage = (socket: WebSocket, timeoutMs = 3_000): Promise<string
     socket.on("message", handler);
   });
 
+const authControlClient = async (
+  baseWsUrl: string,
+): Promise<{ control: WebSocket; clientId: string }> => {
+  const control = await openSocket(`${baseWsUrl}/ws/control`);
+  const authOkPromise = waitForMessage<{ type: "auth_ok"; clientId: string }>(
+    control,
+    (message) => message.type === "auth_ok",
+  );
+  control.send(JSON.stringify({ type: "auth", token: "test-token" }));
+  const authOk = await authOkPromise;
+  await waitForMessage(control, (message: { type: string }) => message.type === "attached");
+  await waitForMessage(control, (message: { type: string }) => message.type === "workspace_state");
+  return { control, clientId: authOk.clientId };
+};
+
+const authTerminalClient = async (
+  baseWsUrl: string,
+  clientId: string,
+  size: { cols: number; rows: number },
+): Promise<{ terminal: WebSocket; initialSnapshot: string }> => {
+  const terminal = await openSocket(`${baseWsUrl}/ws/terminal`);
+  const initialSnapshotPromise = waitForRawMessage(terminal);
+  terminal.send(JSON.stringify({
+    type: "auth",
+    token: "test-token",
+    clientId,
+    cols: size.cols,
+    rows: size.rows,
+  }));
+  const initialSnapshot = await initialSnapshotPromise;
+  return { terminal, initialSnapshot };
+};
+
 describe("runtime v2 gateway server", () => {
   let upstream: FakeRuntimeV2Server;
   let server: RunningServer;
@@ -140,6 +173,34 @@ describe("runtime v2 gateway server", () => {
     } finally {
       terminal?.close();
       control.close();
+    }
+  });
+
+  test("shares one upstream pane bridge across multiple browser viewers without shrinking to the latest narrow viewport", async () => {
+    const first = await authControlClient(baseWsUrl);
+    const second = await authControlClient(baseWsUrl);
+    let terminalA: WebSocket | null = null;
+    let terminalB: WebSocket | null = null;
+
+    try {
+      ({ terminal: terminalA } = await authTerminalClient(baseWsUrl, first.clientId, { cols: 120, rows: 40 }));
+      ({ terminal: terminalB } = await authTerminalClient(baseWsUrl, second.clientId, { cols: 48, rows: 18 }));
+
+      await expect.poll(() => upstream.latestTerminal("pane-1")?.attachCount ?? 0).toBe(1);
+      await expect.poll(() => upstream.latestTerminal("pane-1")?.sizes.at(-1)).toEqual({ cols: 120, rows: 40 });
+
+      const firstViewerEcho = waitForRawMessage(terminalA);
+      const secondViewerEcho = waitForRawMessage(terminalB);
+      terminalB.send("echo shared-view\r");
+
+      expect(await firstViewerEcho).toContain("echo shared-view\r");
+      expect(await secondViewerEcho).toContain("echo shared-view\r");
+      expect(upstream.latestTerminal("pane-1")?.writes.at(-1)).toBe("echo shared-view\r");
+    } finally {
+      terminalA?.close();
+      terminalB?.close();
+      first.control.close();
+      second.control.close();
     }
   });
 

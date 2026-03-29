@@ -87,13 +87,15 @@ interface DataContext {
   socket: WebSocket;
   authed: boolean;
   controlContext?: ControlContext;
-  bridge?: RuntimeV2TerminalBridge;
+  paneBridge?: SharedRuntimeV2PaneBridge;
   terminalSize?: RuntimeV2TerminalSize;
+  viewerId: string;
 }
 
 const RUNTIME_V2_BACKEND_KIND = "runtime-v2";
 const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
 const DEFAULT_TERMINAL_SIZE: RuntimeV2TerminalSize = { cols: 80, rows: 24 };
+const MAX_BUFFERED_TERMINAL_BYTES = 256 * 1024;
 
 const backendCapabilities: BackendCapabilities = {
   supportsPaneFocusById: true,
@@ -131,6 +133,35 @@ const toWsOrigin = (baseUrl: string): string => {
 const encodeBase64 = (text: string): string => Buffer.from(text, "utf8").toString("base64");
 
 const decodeBase64 = (value: string): string => Buffer.from(value, "base64").toString("utf8");
+
+type TerminalSizePolicy = "largest" | "smallest" | "latest";
+
+const areTerminalSizesEqual = (
+  left: RuntimeV2TerminalSize,
+  right: RuntimeV2TerminalSize,
+): boolean => left.cols === right.cols && left.rows === right.rows;
+
+const compareTerminalSizes = (
+  left: RuntimeV2TerminalSize,
+  right: RuntimeV2TerminalSize,
+): number => {
+  const areaDelta = (left.cols * left.rows) - (right.cols * right.rows);
+  if (areaDelta !== 0) {
+    return areaDelta;
+  }
+  if (left.cols !== right.cols) {
+    return left.cols - right.cols;
+  }
+  return left.rows - right.rows;
+};
+
+const resolveTerminalSizePolicy = (): TerminalSizePolicy => {
+  const raw = process.env.REMUX_TERMINAL_SIZE_POLICY?.trim().toLowerCase();
+  if (raw === "smallest" || raw === "latest" || raw === "largest") {
+    return raw;
+  }
+  return "largest";
+};
 
 const sanitizeFilename = (raw: string): string => {
   let name = raw.replace(/[\\/\0]/g, "").replace(/\.\./g, "");
@@ -456,18 +487,132 @@ class RuntimeV2ControlChannel {
   }
 }
 
-class RuntimeV2TerminalBridge {
+class SharedRuntimeV2PaneBridge {
   private socket: WebSocket | null = null;
   private attachVersion = 0;
-  private currentPaneId: string | null = null;
+  private currentSize: RuntimeV2TerminalSize = DEFAULT_TERMINAL_SIZE;
+  private latestSnapshotPayload: string | null = null;
+  private latestViewerId: string | null = null;
+  private readonly subscribers = new Map<string, WebSocket>();
+  private readonly viewerSizes = new Map<string, RuntimeV2TerminalSize>();
+  private readonly bufferedChunks: string[] = [];
+  private bufferedChunkBytes = 0;
+  private mutationQueue = Promise.resolve();
 
   constructor(
-    private readonly browserSocket: WebSocket,
+    readonly paneId: string,
     private readonly terminalWsUrl: string,
     private readonly logger: Pick<Console, "log" | "error">,
+    private readonly sizePolicy: TerminalSizePolicy,
+    private readonly onIdle: (paneId: string) => void,
   ) {}
 
-  async attach(paneId: string, size: RuntimeV2TerminalSize): Promise<void> {
+  async subscribe(viewerId: string, browserSocket: WebSocket, size: RuntimeV2TerminalSize): Promise<void> {
+    await this.enqueue(async () => {
+      this.subscribers.set(viewerId, browserSocket);
+      this.recordViewerSize(viewerId, size);
+      const desiredSize = this.resolveDesiredSize();
+      await this.ensureAttached(desiredSize);
+      if (this.latestSnapshotPayload) {
+        sendRaw(browserSocket, this.latestSnapshotPayload);
+        for (const chunk of this.bufferedChunks) {
+          sendRaw(browserSocket, chunk);
+        }
+      }
+    });
+  }
+
+  async unsubscribe(viewerId: string): Promise<void> {
+    await this.enqueue(async () => {
+      this.subscribers.delete(viewerId);
+      this.viewerSizes.delete(viewerId);
+      if (this.latestViewerId === viewerId) {
+        this.latestViewerId = this.viewerSizes.keys().next().value ?? null;
+      }
+
+      if (this.subscribers.size === 0) {
+        await this.closeSocket();
+        this.onIdle(this.paneId);
+        return;
+      }
+
+      await this.syncSize();
+    });
+  }
+
+  async updateViewerSize(viewerId: string, size: RuntimeV2TerminalSize): Promise<void> {
+    await this.enqueue(async () => {
+      if (!this.subscribers.has(viewerId)) {
+        return;
+      }
+      this.recordViewerSize(viewerId, size);
+      await this.syncSize();
+    });
+  }
+
+  write(input: string): void {
+    if (!this.socket || this.socket.readyState !== this.socket.OPEN) {
+      return;
+    }
+    const payload: RuntimeV2TerminalClientMessage = {
+      type: "input",
+      dataBase64: encodeBase64(input),
+    };
+    this.socket.send(serializeRuntimeV2TerminalMessage(payload));
+  }
+
+  async close(): Promise<void> {
+    await this.enqueue(async () => {
+      this.subscribers.clear();
+      this.viewerSizes.clear();
+      this.latestViewerId = null;
+      await this.closeSocket();
+    });
+  }
+
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = async (): Promise<void> => {
+      await task();
+    };
+
+    const next = this.mutationQueue.then(run, run);
+    this.mutationQueue = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private recordViewerSize(viewerId: string, size: RuntimeV2TerminalSize): void {
+    this.viewerSizes.set(viewerId, size);
+    this.latestViewerId = viewerId;
+  }
+
+  private resolveDesiredSize(): RuntimeV2TerminalSize {
+    if (this.viewerSizes.size === 0) {
+      return DEFAULT_TERMINAL_SIZE;
+    }
+
+    if (this.sizePolicy === "latest" && this.latestViewerId) {
+      return this.viewerSizes.get(this.latestViewerId) ?? Array.from(this.viewerSizes.values())[0]!;
+    }
+
+    const sizes = Array.from(this.viewerSizes.values());
+    return sizes.reduce((chosen, candidate) => {
+      const delta = compareTerminalSizes(candidate, chosen);
+      if (this.sizePolicy === "smallest") {
+        return delta < 0 ? candidate : chosen;
+      }
+      return delta > 0 ? candidate : chosen;
+    });
+  }
+
+  private async ensureAttached(size: RuntimeV2TerminalSize): Promise<void> {
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      if (!areTerminalSizesEqual(this.currentSize, size)) {
+        this.resize(size);
+        this.requestSnapshot();
+      }
+      return;
+    }
+
     this.attachVersion += 1;
     const version = this.attachVersion;
 
@@ -476,7 +621,6 @@ class RuntimeV2TerminalBridge {
       this.socket = null;
     }
 
-    this.currentPaneId = paneId;
     const socket = await openWebSocket(this.terminalWsUrl);
     if (version !== this.attachVersion) {
       socket.close();
@@ -496,35 +640,17 @@ class RuntimeV2TerminalBridge {
       this.logger.error("runtime terminal socket error", error);
     });
 
+    this.currentSize = size;
     const payload: RuntimeV2TerminalClientMessage = {
       type: "attach",
-      paneId,
+      paneId: this.paneId,
       mode: "interactive",
       size,
     };
     socket.send(serializeRuntimeV2TerminalMessage(payload));
   }
 
-  async retarget(paneId: string, size: RuntimeV2TerminalSize): Promise<void> {
-    const socket = this.socket;
-    if (this.currentPaneId === paneId && socket?.readyState === WebSocket.OPEN) {
-      return;
-    }
-    await this.attach(paneId, size);
-  }
-
-  write(input: string): void {
-    if (!this.socket || this.socket.readyState !== this.socket.OPEN) {
-      return;
-    }
-    const payload: RuntimeV2TerminalClientMessage = {
-      type: "input",
-      dataBase64: encodeBase64(input),
-    };
-    this.socket.send(serializeRuntimeV2TerminalMessage(payload));
-  }
-
-  resize(size: RuntimeV2TerminalSize): void {
+  private resize(size: RuntimeV2TerminalSize): void {
     if (!this.socket || this.socket.readyState !== this.socket.OPEN) {
       return;
     }
@@ -533,10 +659,27 @@ class RuntimeV2TerminalBridge {
       size,
     };
     this.socket.send(serializeRuntimeV2TerminalMessage(payload));
+    this.currentSize = size;
   }
 
-  async close(): Promise<void> {
+  private requestSnapshot(): void {
+    if (!this.socket) {
+      return;
+    }
+    this.socket.send(serializeRuntimeV2TerminalMessage({ type: "request_snapshot" }));
+  }
+
+  private async syncSize(): Promise<void> {
+    const desiredSize = this.resolveDesiredSize();
+    await this.ensureAttached(desiredSize);
+  }
+
+  private async closeSocket(): Promise<void> {
     this.attachVersion += 1;
+    this.latestSnapshotPayload = null;
+    this.bufferedChunks.length = 0;
+    this.bufferedChunkBytes = 0;
+    this.currentSize = DEFAULT_TERMINAL_SIZE;
     if (!this.socket) {
       return;
     }
@@ -563,15 +706,30 @@ class RuntimeV2TerminalBridge {
     }
 
     if (message.type === "snapshot") {
-      sendRaw(
-        this.browserSocket,
-        `\u001bc${decodeBase64(message.replayBase64 ?? message.contentBase64)}`,
-      );
+      this.latestSnapshotPayload = `\u001bc${decodeBase64(message.replayBase64 ?? message.contentBase64)}`;
+      this.bufferedChunks.length = 0;
+      this.bufferedChunkBytes = 0;
+      this.broadcast(this.latestSnapshotPayload);
       return;
     }
 
     if (message.type === "stream") {
-      sendRaw(this.browserSocket, decodeBase64(message.chunkBase64));
+      const chunk = decodeBase64(message.chunkBase64);
+      this.broadcast(chunk);
+      if (this.latestSnapshotPayload) {
+        this.bufferedChunks.push(chunk);
+        this.bufferedChunkBytes += chunk.length;
+        while (this.bufferedChunkBytes > MAX_BUFFERED_TERMINAL_BYTES && this.bufferedChunks.length > 0) {
+          const removed = this.bufferedChunks.shift();
+          this.bufferedChunkBytes -= removed?.length ?? 0;
+        }
+      }
+    }
+  }
+
+  private broadcast(payload: string): void {
+    for (const subscriber of this.subscribers.values()) {
+      sendRaw(subscriber, payload);
     }
   }
 }
@@ -623,6 +781,7 @@ export const createRemuxV2GatewayServer = (
   const logger = deps.logger ?? console;
   const authService = deps.authService ?? new AuthService({ password: config.password, token: config.token });
   const runtimeMetadata = readRuntimeMetadata();
+  const terminalSizePolicy = resolveTerminalSizePolicy();
 
   const app = express();
   app.use(express.json());
@@ -632,6 +791,7 @@ export const createRemuxV2GatewayServer = (
   const terminalWss = new WebSocketServer({ noServer: true, perMessageDeflate: true });
   const controlClients = new Set<ControlContext>();
   const terminalClients = new Set<DataContext>();
+  const paneBridges = new Map<string, SharedRuntimeV2PaneBridge>();
 
   let runtimeTarget: RuntimeTargetHandle | null = null;
   let runtimeControl: RuntimeV2ControlChannel | null = null;
@@ -822,12 +982,58 @@ export const createRemuxV2GatewayServer = (
     const paneId = resolveActivePaneId(runtimeControl.currentSummary());
     await Promise.all(
       Array.from(terminalClients).map(async (ctx) => {
-        if (!ctx.authed || !ctx.bridge) {
+        if (!ctx.authed) {
           return;
         }
-        await ctx.bridge.retarget(paneId, ctx.terminalSize ?? DEFAULT_TERMINAL_SIZE);
+        await attachTerminalClientToPane(ctx, paneId);
       }),
     );
+  };
+
+  const getOrCreatePaneBridge = (paneId: string): SharedRuntimeV2PaneBridge => {
+    let bridge = paneBridges.get(paneId);
+    if (!bridge) {
+      if (!runtimeTarget || !runtimeControl) {
+        throw new Error("runtime terminal bridge is unavailable");
+      }
+      const terminalPath = runtimeControl.currentMetadata().terminalWebsocketPath;
+      bridge = new SharedRuntimeV2PaneBridge(
+        paneId,
+        `${toWsOrigin(runtimeTarget.baseUrl)}${terminalPath}`,
+        logger,
+        terminalSizePolicy,
+        (idlePaneId) => {
+          paneBridges.delete(idlePaneId);
+        },
+      );
+      paneBridges.set(paneId, bridge);
+    }
+    return bridge;
+  };
+
+  const detachTerminalClient = async (context: DataContext): Promise<void> => {
+    const bridge = context.paneBridge;
+    context.paneBridge = undefined;
+    if (!bridge) {
+      return;
+    }
+    await bridge.unsubscribe(context.viewerId);
+  };
+
+  const attachTerminalClientToPane = async (
+    context: DataContext,
+    paneId: string,
+  ): Promise<void> => {
+    const size = context.terminalSize ?? DEFAULT_TERMINAL_SIZE;
+    if (context.paneBridge?.paneId === paneId) {
+      await context.paneBridge.updateViewerSize(context.viewerId, size);
+      return;
+    }
+
+    await detachTerminalClient(context);
+    const bridge = getOrCreatePaneBridge(paneId);
+    context.paneBridge = bridge;
+    await bridge.subscribe(context.viewerId, context.socket, size);
   };
 
   const sendAttached = (context: ControlContext): void => {
@@ -996,11 +1202,11 @@ export const createRemuxV2GatewayServer = (
       }
       case "send_compose": {
         const terminalClient = Array.from(context.terminalClients)[0];
-        if (!terminalClient?.bridge) {
+        if (!terminalClient?.paneBridge) {
           return;
         }
         sendComposeToRuntime({
-          runtime: terminalClient.bridge,
+          runtime: terminalClient.paneBridge,
           text: message.text,
           submitMode: "delayed",
           paneCommand: resolvePaneCommandForView(
@@ -1050,7 +1256,7 @@ export const createRemuxV2GatewayServer = (
       if (terminalClient.socket.readyState === terminalClient.socket.OPEN) {
         terminalClient.socket.close();
       }
-      await terminalClient.bridge?.close();
+      await detachTerminalClient(terminalClient);
     }
     context.terminalClients.clear();
   };
@@ -1149,6 +1355,7 @@ export const createRemuxV2GatewayServer = (
     const context: DataContext = {
       socket,
       authed: false,
+      viewerId: randomToken(12),
     };
     terminalClients.add(context);
 
@@ -1183,18 +1390,11 @@ export const createRemuxV2GatewayServer = (
         context.controlContext = controlContext;
         context.terminalSize = toRuntimeTerminalSize(extractTerminalDimensions(authMessage));
         controlContext.terminalClients.add(context);
-
-        const terminalPath = runtimeControl.currentMetadata().terminalWebsocketPath;
-        context.bridge = new RuntimeV2TerminalBridge(
-          socket,
-          `${toWsOrigin(runtimeTarget.baseUrl)}${terminalPath}`,
-          logger,
-        );
-        await context.bridge.attach(resolveActivePaneId(runtimeControl.currentSummary()), context.terminalSize);
+        await attachTerminalClientToPane(context, resolveActivePaneId(runtimeControl.currentSummary()));
         return;
       }
 
-      if (!context.bridge) {
+      if (!context.paneBridge) {
         return;
       }
 
@@ -1206,7 +1406,7 @@ export const createRemuxV2GatewayServer = (
             : Array.isArray(rawData)
               ? Buffer.concat(rawData)
               : Buffer.from(rawData);
-        context.bridge.write(chunk.toString("utf8"));
+        context.paneBridge.write(chunk.toString("utf8"));
         return;
       }
 
@@ -1227,7 +1427,7 @@ export const createRemuxV2GatewayServer = (
             && typeof payload.rows === "number"
           ) {
             context.terminalSize = { cols: payload.cols, rows: payload.rows };
-            context.bridge.resize(context.terminalSize);
+            await context.paneBridge.updateViewerSize(context.viewerId, context.terminalSize);
             return;
           }
         } catch {
@@ -1235,13 +1435,13 @@ export const createRemuxV2GatewayServer = (
         }
       }
 
-      context.bridge.write(text);
+      context.paneBridge.write(text);
     });
 
     socket.on("close", () => {
       terminalClients.delete(context);
       context.controlContext?.terminalClients.delete(context);
-      void context.bridge?.close();
+      void detachTerminalClient(context);
     });
   });
 
@@ -1356,6 +1556,8 @@ export const createRemuxV2GatewayServer = (
         await Promise.all(Array.from(controlClients).map((context) => shutdownControlContext(context)));
         controlWss.close();
         terminalWss.close();
+        await Promise.all(Array.from(paneBridges.values()).map((bridge) => bridge.close()));
+        paneBridges.clear();
         await runtimeControl?.close();
         await runtimeTarget?.stop();
         await new Promise<void>((resolve, reject) => {
