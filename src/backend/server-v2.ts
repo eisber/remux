@@ -25,6 +25,7 @@ import {
   sendComposeToRuntime,
 } from "./server/compose-submit.js";
 import { registerTelemetryRoutes } from "./telemetry.js";
+import { BandwidthTracker } from "./stats/index.js";
 import {
   extractTerminalDimensions,
   isObject,
@@ -132,6 +133,7 @@ interface PaneBridgeSubscribeOptions {
 
 interface QueuedTerminalFrame {
   payload: string | Buffer;
+  rawBytes: number;
   wireBytes: number;
   revision: number | null;
   source: "snapshot" | "stream";
@@ -649,6 +651,7 @@ export class SharedRuntimeV2PaneBridge {
   private readonly viewerQueueLowWatermarkBytes = resolveTerminalViewerQueueLowWatermarkBytes(
     this.viewerQueueHighWatermarkBytes,
   );
+  private readonly bandwidthTracker: BandwidthTracker | null;
   private mutationQueue = Promise.resolve();
   private resizeSnapshotTimer: ReturnType<typeof setTimeout> | null = null;
   private idleCloseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -664,7 +667,9 @@ export class SharedRuntimeV2PaneBridge {
     private readonly sizePolicy: TerminalSizePolicy,
     private readonly onIdle: (paneId: string) => void,
     private readonly onBell?: (paneId: string) => void,
+    bandwidthTracker?: BandwidthTracker,
   ) {
+    this.bandwidthTracker = bandwidthTracker ?? null;
     this.cursorTracker = new HeadlessTerminal({
       cols: DEFAULT_TERMINAL_SIZE.cols,
       rows: DEFAULT_TERMINAL_SIZE.rows,
@@ -909,6 +914,9 @@ export class SharedRuntimeV2PaneBridge {
       : this.latestSnapshotPayload;
     this.enqueueFrameForSubscriber(subscriber, {
       payload,
+      rawBytes: subscriber.transportMode === "patch"
+        ? this.latestSnapshotContent.byteLength
+        : this.latestSnapshotPayload.byteLength,
       wireBytes: this.measureQueuedFrameBytes(payload),
       revision: this.latestSnapshotRevision,
       source: "snapshot",
@@ -928,6 +936,7 @@ export class SharedRuntimeV2PaneBridge {
       : chunk.payload;
     this.enqueueFrameForSubscriber(subscriber, {
       payload,
+      rawBytes: chunk.payload.byteLength,
       wireBytes: this.measureQueuedFrameBytes(payload),
       revision: chunk.revision,
       source: "stream",
@@ -969,6 +978,9 @@ export class SharedRuntimeV2PaneBridge {
       : Buffer.concat([TERMINAL_RESET_BYTES, currentContent]);
     return {
       payload,
+      rawBytes: subscriber.transportMode === "patch"
+        ? currentContent.byteLength
+        : (typeof payload === "string" ? Buffer.byteLength(payload, "utf8") : payload.byteLength),
       wireBytes: this.measureQueuedFrameBytes(payload),
       revision,
       source: "snapshot",
@@ -982,6 +994,9 @@ export class SharedRuntimeV2PaneBridge {
     subscriber.queue.awaitingFreshSnapshot = true;
     subscriber.queue.pressureHigh = true;
     subscriber.queue.highWatermarkHits += 1;
+    const droppedBacklogFrames = subscriber.queue.pending.length;
+    this.bandwidthTracker?.recordQueueHighWatermarkHit();
+    this.bandwidthTracker?.recordDroppedBacklogFrames(droppedBacklogFrames);
     this.clearPendingSubscriberQueue(subscriber);
     this.logger.log("[runtime-v2] terminal viewer queue hit high watermark; downgrading to fresh snapshot", {
       paneId: this.paneId,
@@ -1051,6 +1066,17 @@ export class SharedRuntimeV2PaneBridge {
       subscriber.queue.draining = false;
       subscriber.queue.inFlight = null;
       subscriber.queue.queuedBytes = Math.max(0, subscriber.queue.queuedBytes - frame.wireBytes);
+      if (error) {
+        this.logger.error("runtime terminal subscriber send failed", error);
+        return;
+      }
+      if (frame.source === "snapshot") {
+        this.bandwidthTracker?.recordFullSnapshot();
+      } else {
+        this.bandwidthTracker?.recordDiffUpdate(frame.rawBytes);
+      }
+      this.bandwidthTracker?.recordRawBytes(frame.rawBytes);
+      this.bandwidthTracker?.recordCompressedBytes(frame.wireBytes);
       if (frame.revision !== null) {
         subscriber.queue.lastSentRevision = frame.revision;
         subscriber.queue.lastAckedRevision = frame.revision;
@@ -1064,10 +1090,6 @@ export class SharedRuntimeV2PaneBridge {
           lastAckedRevision: subscriber.queue.lastAckedRevision,
           lowWatermarkBytes: this.viewerQueueLowWatermarkBytes,
         });
-      }
-      if (error) {
-        this.logger.error("runtime terminal subscriber send failed", error);
-        return;
       }
       this.drainSubscriberQueue(subscriber);
     });
@@ -1679,6 +1701,7 @@ export const createRemuxV2GatewayServer = (
   const terminalClients = new Set<DataContext>();
   const paneBridges = new Map<string, SharedRuntimeV2PaneBridge>();
   const tabHistoryStore = new TabHistoryStore();
+  const bandwidthTracker = new BandwidthTracker();
 
   const notificationManager = new NotificationManager(logger);
 
@@ -1687,6 +1710,8 @@ export const createRemuxV2GatewayServer = (
   let started = false;
   let stopPromise: Promise<void> | null = null;
   let telemetryHandle: { close(): void } | null = null;
+  let bandwidthStatsTimer: ReturnType<typeof setInterval> | null = null;
+  const lastBandwidthStatsPayloadByClient = new Map<string, string>();
 
   server.on("connection", (socket) => {
     socket.setNoDelay(true);
@@ -1900,6 +1925,24 @@ export const createRemuxV2GatewayServer = (
     }
   };
 
+  const broadcastBandwidthStats = (): void => {
+    const stats = bandwidthTracker.getStats();
+    const payload = JSON.stringify(stats);
+    for (const client of controlClients) {
+      if (!client.authed || client.socket.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      if (lastBandwidthStatsPayloadByClient.get(client.clientId) === payload) {
+        continue;
+      }
+      lastBandwidthStatsPayloadByClient.set(client.clientId, payload);
+      sendJson(client.socket, {
+        type: "bandwidth_stats",
+        stats,
+      } as unknown as ControlServerMessage);
+    }
+  };
+
   const broadcastBell = (paneId: string): void => {
     const summary = runtimeControl?.currentSummary();
     const sessionName = summary?.sessions.find((s) =>
@@ -1950,6 +1993,7 @@ export const createRemuxV2GatewayServer = (
           paneBridges.delete(idlePaneId);
         },
         broadcastBell,
+        bandwidthTracker,
       );
       paneBridges.set(paneId, bridge);
     }
@@ -2411,6 +2455,7 @@ export const createRemuxV2GatewayServer = (
           });
           sendAttached(context);
           sendWorkspaceState(context);
+          broadcastBandwidthStats();
           return;
         }
 
@@ -2432,6 +2477,7 @@ export const createRemuxV2GatewayServer = (
 
     socket.on("close", () => {
       controlClients.delete(context);
+      lastBandwidthStatsPayloadByClient.delete(context.clientId);
       void shutdownControlContext(context);
     });
   });
@@ -2567,6 +2613,12 @@ export const createRemuxV2GatewayServer = (
       }
 
       telemetryHandle = await registerTelemetryRoutes(app, requireApiAuth, logger);
+      lastBandwidthStatsPayloadByClient.clear();
+      bandwidthStatsTimer = setInterval(() => {
+        broadcastBandwidthStats();
+      }, config.pollIntervalMs);
+      bandwidthStatsTimer.unref?.();
+      broadcastBandwidthStats();
       app.use(express.static(config.frontendDir));
       app.get(frontendFallbackRoute, (req, res) => {
         if (isWebSocketPath(req.path) || req.path.startsWith("/api/")) {
@@ -2627,6 +2679,11 @@ export const createRemuxV2GatewayServer = (
         return;
       }
       stopPromise = (async () => {
+        if (bandwidthStatsTimer !== null) {
+          clearInterval(bandwidthStatsTimer);
+          bandwidthStatsTimer = null;
+        }
+        lastBandwidthStatsPayloadByClient.clear();
         telemetryHandle?.close();
         await Promise.all(Array.from(controlClients).map((context) => shutdownControlContext(context)));
         controlWss.close();

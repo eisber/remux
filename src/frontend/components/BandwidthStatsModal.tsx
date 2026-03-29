@@ -22,14 +22,16 @@ const BandwidthStatsModal = ({ onClose, stats }: BandwidthStatsModalProps) => {
           <div className="stats-section">
             <h3>Terminal Stream</h3>
             <div className="stats-row"><span>Raw</span><span>{formatBytes(stats.rawBytesPerSec)}/s</span></div>
-            <div className="stats-row"><span>Compressed</span><span>{formatBytes(stats.compressedBytesPerSec)}/s</span></div>
+            <div className="stats-row"><span>Wire</span><span>{formatBytes(stats.compressedBytesPerSec)}/s</span></div>
             <div className="stats-row highlight"><span>Saved</span><span>{stats.savedPercent}%</span></div>
           </div>
           <div className="stats-section">
             <h3>State Diffs</h3>
             <div className="stats-row"><span>Full snapshots</span><span>{stats.fullSnapshotsSent}</span></div>
             <div className="stats-row"><span>Diff updates</span><span>{stats.diffUpdatesSent}</span></div>
-            <div className="stats-row"><span>Avg rows/diff</span><span>{stats.avgChangedRowsPerDiff}</span></div>
+            <div className="stats-row"><span>Avg diff bytes</span><span>{formatBytes(stats.avgDiffBytesPerUpdate)}</span></div>
+            <div className="stats-row"><span>Queue high watermark hits</span><span>{stats.viewerQueueHighWatermarkHits}</span></div>
+            <div className="stats-row"><span>Dropped backlog frames</span><span>{stats.droppedBacklogFrames}</span></div>
           </div>
           <div className="stats-section">
             <h3>Totals</h3>

@@ -634,6 +634,48 @@ describe("runtime v2 gateway server", () => {
     }
   });
 
+  test("broadcasts bandwidth stats to control clients after terminal activity", async () => {
+    const { control, clientId } = await authControlClient(baseWsUrl);
+    let terminal: WebSocket | null = null;
+
+    try {
+      const authResult = await authTerminalClient(
+        baseWsUrl,
+        clientId,
+        { cols: 120, rows: 40 },
+        { transportMode: "patch" },
+      );
+      terminal = authResult.terminal;
+
+      upstream.pushTerminalOutput("pane-1", "BANDWIDTH_FLOW\r\n");
+
+      const bandwidthStats = await waitForMessage<{
+        type: "bandwidth_stats";
+        stats: {
+          fullSnapshotsSent: number;
+          diffUpdatesSent: number;
+          rawBytesPerSec: number;
+          compressedBytesPerSec: number;
+          viewerQueueHighWatermarkHits: number;
+          droppedBacklogFrames: number;
+        };
+      }>(
+        control,
+        (message) => message.type === "bandwidth_stats" && message.stats.diffUpdatesSent > 0,
+      );
+
+      expect(bandwidthStats.stats.fullSnapshotsSent).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.diffUpdatesSent).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.rawBytesPerSec).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.compressedBytesPerSec).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.viewerQueueHighWatermarkHits).toBeGreaterThanOrEqual(0);
+      expect(bandwidthStats.stats.droppedBacklogFrames).toBeGreaterThanOrEqual(0);
+    } finally {
+      terminal?.close();
+      control.close();
+    }
+  });
+
   test("bridges terminal live data as binary frames and writes raw binary upstream", async () => {
     upstream.setTerminalStreamTransport("binary");
 
