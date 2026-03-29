@@ -4,6 +4,7 @@ import { WebSocket, WebSocketServer, type RawData } from "ws";
 import type {
   RuntimeV2InspectSnapshot,
   RuntimeV2Metadata,
+  RuntimeV2PaneSummary,
   RuntimeV2SplitDirection,
   RuntimeV2TerminalSize,
   RuntimeV2WorkspaceSummary,
@@ -178,6 +179,36 @@ export class FakeRuntimeV2Server {
 
   setPaneScrollback(paneId: string, rows: string[]): void {
     this.paneScrollback.set(paneId, [...rows]);
+  }
+
+  setPaneMetadata(paneId: string, patch: Partial<RuntimeV2PaneSummary>): void {
+    let updated = false;
+    const sessions = this.workspace.sessions.map((session) => ({
+      ...session,
+      tabs: session.tabs.map((tab) => ({
+        ...tab,
+        panes: tab.panes.map((pane) => {
+          if (pane.paneId !== paneId) {
+            return pane;
+          }
+          updated = true;
+          return {
+            ...pane,
+            ...patch,
+          };
+        }),
+      })),
+    }));
+
+    if (!updated) {
+      return;
+    }
+
+    this.workspace = {
+      ...this.workspace,
+      sessions,
+    };
+    this.broadcastWorkspace();
   }
 
   getPaneContent(paneId: string): string {

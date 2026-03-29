@@ -238,6 +238,23 @@ test.describe("runtime-v2 browser behavior", () => {
     await focusLiveTerminal(page);
   });
 
+  test("shows AI quick actions for Codex sessions and routes actions to the terminal", async ({ page }) => {
+    server.upstream.setPaneMetadata(server.upstream.activePaneId(), {
+      command: "codex",
+      currentPath: "/workspace/remux",
+    });
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+
+    await expect(page.getByTestId("ai-quick-actions")).toContainText("Codex");
+    await page.getByRole("button", { name: "Model" }).click();
+
+    await expect
+      .poll(() => server.upstream.allTerminalWrites().join(""))
+      .toContain("/model\r");
+  });
+
   test("keeps large live output scrollable and intact across the terminal buffer", async ({ page }) => {
     const paneId = server.upstream.activePaneId();
     const lines = Array.from(
