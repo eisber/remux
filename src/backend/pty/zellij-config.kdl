@@ -6,8 +6,6 @@ default_shell "zsh"
 pane_frames false
 session_serialization true
 scrollback_lines 10000
-show_startup_tips false
-show_release_notes false
 
 themes {
     remux {
