@@ -3,6 +3,7 @@ import express from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import type { AuthService } from "./auth/auth-service.js";
 import { createZellijPty, type ZellijPty } from "./pty/zellij-pty.js";
+import { ZellijController } from "./zellij-controller.js";
 
 export interface ZellijServerConfig {
   port: number;
@@ -53,19 +54,26 @@ export const createZellijServer = (
   // --- Server & WebSocket ---
 
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ noServer: true });
+  const terminalWss = new WebSocketServer({ noServer: true });
+  const controlWss = new WebSocketServer({ noServer: true });
   const clients = new Set<AuthenticatedClient>();
+  const controlClients = new Set<AuthenticatedClient>();
   let pty: ZellijPty | null = null;
+  let controller: ZellijController | null = null;
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
-    if (url.pathname !== "/ws/terminal") {
+    if (url.pathname === "/ws/terminal") {
+      terminalWss.handleUpgrade(request, socket, head, (ws) => {
+        terminalWss.emit("connection", ws);
+      });
+    } else if (url.pathname === "/ws/control") {
+      controlWss.handleUpgrade(request, socket, head, (ws) => {
+        controlWss.emit("connection", ws);
+      });
+    } else {
       socket.destroy();
-      return;
     }
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws);
-    });
   });
 
   // Enable TCP_NODELAY for low-latency terminal I/O.
@@ -100,11 +108,33 @@ export const createZellijServer = (
       }
     });
 
+    controller = new ZellijController({
+      session: config.zellijSession,
+      zellijBin: config.zellijBin,
+      logger,
+    });
+
     logger.log(`Zellij PTY started (pid=${pty.pid}, session=${config.zellijSession})`);
     return pty;
   };
 
-  wss.on("connection", (ws: WebSocket) => {
+  /** Broadcast workspace state to all authenticated control clients. */
+  const broadcastWorkspaceState = async (): Promise<void> => {
+    if (!controller) return;
+    try {
+      const state = await controller.queryWorkspaceState();
+      const msg = JSON.stringify({ type: "workspace_state", ...state });
+      for (const client of controlClients) {
+        if (client.authenticated && client.ws.readyState === WebSocket.OPEN) {
+          client.ws.send(msg);
+        }
+      }
+    } catch (err) {
+      logger.error("Failed to query workspace state:", err);
+    }
+  };
+
+  terminalWss.on("connection", (ws: WebSocket) => {
     const client: AuthenticatedClient = { ws, authenticated: false };
     clients.add(client);
 
@@ -189,6 +219,107 @@ export const createZellijServer = (
     });
   });
 
+  // --- Control WebSocket (/ws/control) ---
+
+  controlWss.on("connection", (ws: WebSocket) => {
+    const client: AuthenticatedClient = { ws, authenticated: false };
+    controlClients.add(client);
+
+    ws.on("message", async (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      let msg: Record<string, unknown>;
+      try {
+        msg = JSON.parse(toNodeBuffer(raw).toString("utf8"));
+      } catch {
+        return;
+      }
+
+      // Auth handshake.
+      if (!client.authenticated) {
+        if (msg.type !== "auth") {
+          ws.send(JSON.stringify({ type: "auth_error", reason: "expected auth" }));
+          ws.close(4001, "expected auth");
+          return;
+        }
+        const result = authService.verify({
+          token: msg.token as string | undefined,
+          password: msg.password as string | undefined,
+        });
+        if (!result.ok) {
+          ws.send(JSON.stringify({ type: "auth_error", reason: result.reason }));
+          ws.close(4001, "unauthorized");
+          return;
+        }
+        client.authenticated = true;
+        ws.send(JSON.stringify({ type: "auth_ok" }));
+        return;
+      }
+
+      // Authenticated commands.
+      if (!controller) {
+        ws.send(JSON.stringify({ type: "error", message: "zellij not started" }));
+        return;
+      }
+
+      try {
+        switch (msg.type) {
+          case "subscribe_workspace":
+            await broadcastWorkspaceState();
+            break;
+          case "new_tab":
+            await controller.newTab(msg.name as string | undefined);
+            await broadcastWorkspaceState();
+            break;
+          case "close_tab":
+            await controller.closeTab(msg.tabIndex as number);
+            await broadcastWorkspaceState();
+            break;
+          case "select_tab":
+            await controller.goToTab(msg.tabIndex as number);
+            await broadcastWorkspaceState();
+            break;
+          case "rename_tab":
+            await controller.renameTab(msg.tabIndex as number, msg.name as string);
+            await broadcastWorkspaceState();
+            break;
+          case "new_pane":
+            await controller.newPane(msg.direction as "right" | "down");
+            await broadcastWorkspaceState();
+            break;
+          case "close_pane":
+            await controller.closePane();
+            await broadcastWorkspaceState();
+            break;
+          case "toggle_fullscreen":
+            await controller.toggleFullscreen();
+            await broadcastWorkspaceState();
+            break;
+          case "capture_inspect": {
+            const content = await controller.dumpScreen(msg.full as boolean ?? true);
+            ws.send(JSON.stringify({ type: "inspect_content", content }));
+            break;
+          }
+          case "rename_session":
+            await controller.renameSession(msg.name as string);
+            await broadcastWorkspaceState();
+            break;
+          default:
+            ws.send(JSON.stringify({ type: "error", message: `unknown command: ${msg.type}` }));
+        }
+      } catch (err) {
+        ws.send(JSON.stringify({ type: "error", message: String(err) }));
+      }
+    });
+
+    ws.on("close", () => {
+      controlClients.delete(client);
+    });
+
+    ws.on("error", (err: Error) => {
+      logger.error("Control WebSocket error:", err.message);
+      controlClients.delete(client);
+    });
+  });
+
   return {
     server,
     async start() {
@@ -210,8 +341,13 @@ export const createZellijServer = (
       for (const client of clients) {
         client.ws.close(1001, "server shutting down");
       }
+      for (const client of controlClients) {
+        client.ws.close(1001, "server shutting down");
+      }
       clients.clear();
-      wss.close();
+      controlClients.clear();
+      terminalWss.close();
+      controlWss.close();
       return new Promise<void>((resolve) => {
         server.close(() => resolve());
       });

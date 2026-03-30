@@ -29,6 +29,8 @@ export interface ZellijPty {
   kill(): void;
   /** The underlying process ID. */
   readonly pid: number;
+  /** The Zellij session name. */
+  readonly session: string;
 }
 
 /**
@@ -69,23 +71,30 @@ export const createZellijPty = (options: ZellijPtyOptions = {}): ZellijPty => {
   } = options;
 
   const bin = resolveZellijBin(zellijBin);
+  const thisDir = path.dirname(fileURLToPath(import.meta.url));
+  const srcDir = path.resolve(thisDir, "../../src/backend/pty");
+
+  // Resolve a bundled file — check compiled dist/ first, then source.
+  const resolveBundled = (filename: string): string | undefined => {
+    const distPath = path.resolve(thisDir, filename);
+    const srcPath = path.resolve(srcDir, filename);
+    if (fs.existsSync(distPath)) return distPath;
+    if (fs.existsSync(srcPath)) return srcPath;
+    return undefined;
+  };
 
   // Use bundled config if user doesn't have their own.
   const configEnv: Record<string, string> = {};
   if (!process.env.ZELLIJ_CONFIG_FILE) {
-    const thisDir = path.dirname(fileURLToPath(import.meta.url));
-    const bundledConfig = path.resolve(thisDir, "zellij-config.kdl");
-    // Also check relative to source location (tsx watch).
-    const srcConfig = path.resolve(thisDir, "../../src/backend/pty/zellij-config.kdl");
-    const configPath = fs.existsSync(bundledConfig) ? bundledConfig
-      : fs.existsSync(srcConfig) ? srcConfig
-      : undefined;
-    if (configPath) {
-      configEnv.ZELLIJ_CONFIG_FILE = configPath;
-    }
+    const configPath = resolveBundled("zellij-config.kdl");
+    if (configPath) configEnv.ZELLIJ_CONFIG_FILE = configPath;
   }
 
-  const pty: IPty = ptySpawn(bin, ["attach", session, "--create"], {
+  // Use bare layout (no tab-bar, no status-bar) so the web UI provides chrome.
+  const layoutPath = resolveBundled("zellij-layout.kdl");
+  const layoutArgs = layoutPath ? ["--layout", layoutPath] : [];
+
+  const pty: IPty = ptySpawn(bin, ["attach", session, "--create", ...layoutArgs], {
     name: "xterm-256color",
     cols,
     rows,
@@ -100,6 +109,9 @@ export const createZellijPty = (options: ZellijPtyOptions = {}): ZellijPty => {
   });
 
   return {
+    get session() {
+      return session;
+    },
     onData(callback) {
       pty.onData(callback);
     },
