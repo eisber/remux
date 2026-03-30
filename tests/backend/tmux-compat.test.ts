@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
 
+const runCli = (args: string[]): string =>
+  execFileSync("node", ["--import", "tsx", "src/backend/cli-tmux-compat.ts", ...args], {
+    stdio: "pipe",
+    timeout: 5000,
+  }).toString();
+
 /**
  * Unit tests for tmux-compat CLI argument parsing and key mapping.
  *
@@ -30,10 +36,7 @@ const describeIf = zellijAvailable ? describe : describe.skip;
 describeIf("remux-tmux CLI adapter", () => {
   it("has-session returns non-zero for non-existent session", () => {
     try {
-      execFileSync("node", ["dist/backend/cli-tmux-compat.js", "has-session", "-t", "nonexistent-xyz-999"], {
-        stdio: "pipe",
-        timeout: 5000,
-      });
+      runCli(["has-session", "-t", "nonexistent-xyz-999"]);
       expect.unreachable("should have thrown");
     } catch (err: unknown) {
       expect((err as { status: number }).status).toBe(1);
@@ -41,29 +44,20 @@ describeIf("remux-tmux CLI adapter", () => {
   });
 
   it("list-sessions runs without error", () => {
-    const output = execFileSync("node", ["dist/backend/cli-tmux-compat.js", "list-sessions"], {
-      stdio: "pipe",
-      timeout: 5000,
-    }).toString();
+    const output = runCli(["list-sessions"]);
     // Should contain at least one active session (remux-main or remux-dev).
     expect(output.length).toBeGreaterThan(0);
   });
 
   it("stub commands succeed silently", () => {
     for (const cmd of ["set-option", "bind-key", "rename-session", "resize-window"]) {
-      execFileSync("node", ["dist/backend/cli-tmux-compat.js", cmd, "-t", "any"], {
-        stdio: "pipe",
-        timeout: 5000,
-      });
+      runCli([cmd, "-t", "any"]);
     }
   });
 
   it("unknown command exits with error", () => {
     try {
-      execFileSync("node", ["dist/backend/cli-tmux-compat.js", "invalid-command"], {
-        stdio: "pipe",
-        timeout: 5000,
-      });
+      runCli(["invalid-command"]);
       expect.unreachable("should have thrown");
     } catch (err: unknown) {
       expect((err as { status: number }).status).toBe(1);
