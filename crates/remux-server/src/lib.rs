@@ -17,7 +17,9 @@ use axum::{Json, Router};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use futures_util::StreamExt;
-use remux_core::{PaneId, SessionId, SplitDirection, TabId, TerminalSize, RUNTIME_V2_PROTOCOL_VERSION};
+use remux_core::{
+    PaneId, SessionId, SplitDirection, TabId, TerminalSize, RUNTIME_V2_PROTOCOL_VERSION,
+};
 use remux_inspect::build_pane_inspect_view;
 use remux_protocol::{control, terminal};
 use remux_pty::{PortablePtyProcess, PtyCommand, PtyError, PtyEvent};
@@ -26,7 +28,7 @@ use remux_session::{
     SessionSnapshot as RuntimeSessionSnapshot, SinglePaneWorkspace,
     TabSnapshot as RuntimeTabSnapshot, WorkspaceError,
 };
-use remux_terminal::TerminalState;
+use remux_terminal::{TerminalSnapshot, TerminalState};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::broadcast;
@@ -151,7 +153,9 @@ impl PaneRuntime {
                     .terminal_recovered_after_poison
                     .swap(true, Ordering::Relaxed)
                 {
-                    eprintln!("[remux-server] runtime terminal lock poisoned; resetting pane state");
+                    eprintln!(
+                        "[remux-server] runtime terminal lock poisoned; resetting pane state"
+                    );
                     guard.recover_from_poison();
                 }
                 guard
@@ -238,12 +242,7 @@ impl PaneRuntime {
 
     fn snapshot_message(&self) -> terminal::ServerMessage {
         let snapshot = self.lock_terminal().snapshot();
-        terminal::ServerMessage::Snapshot {
-            size: snapshot.size,
-            sequence: self.sequence.load(Ordering::Relaxed),
-            content_base64: BASE64.encode(snapshot.formatted_state),
-            replay_base64: Some(BASE64.encode(snapshot.replay_formatted)),
-        }
+        build_terminal_snapshot_message(&snapshot, self.sequence.load(Ordering::Relaxed))
     }
 
     fn exit_message(&self) -> Option<terminal::ServerMessage> {
@@ -715,8 +714,7 @@ impl WorkspaceRuntime {
                     .workspace
                     .lock()
                     .expect("runtime workspace lock poisoned");
-                workspace
-                    .take_writer_lease(pane_id, client_id, LeaseMode::Interactive)?
+                workspace.take_writer_lease(pane_id, client_id, LeaseMode::Interactive)?
             };
             if lease_changed {
                 self.notify_workspace_changed();
@@ -870,7 +868,10 @@ fn discover_runtime_identity() -> RuntimeIdentity {
         .ok()
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
-        .or_else(|| cwd.as_deref().and_then(|dir| run_git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])))
+        .or_else(|| {
+            cwd.as_deref()
+                .and_then(|dir| run_git(dir, &["rev-parse", "--abbrev-ref", "HEAD"]))
+        })
         .filter(|value| value != "HEAD");
     let git_commit_sha = cwd
         .as_deref()
@@ -890,6 +891,25 @@ fn package_version_from_dir(dir: &Path) -> Option<String> {
     let raw = fs::read_to_string(package_path).ok()?;
     let json = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     json.get("version")?.as_str().map(ToOwned::to_owned)
+}
+
+fn build_terminal_snapshot_message(
+    snapshot: &TerminalSnapshot,
+    sequence: u64,
+) -> terminal::ServerMessage {
+    terminal::ServerMessage::Snapshot {
+        size: snapshot.size,
+        source_size: snapshot.source_size,
+        cursor: terminal::CursorPosition {
+            row: snapshot.cursor.row,
+            col: snapshot.cursor.col,
+        },
+        scrollback_row_wraps: snapshot.scrollback_row_wraps.clone(),
+        visible_row_wraps: snapshot.visible_row_wraps.clone(),
+        sequence,
+        content_base64: BASE64.encode(&snapshot.formatted_state),
+        replay_base64: Some(BASE64.encode(&snapshot.replay_formatted)),
+    }
 }
 
 fn find_repo_package_json(dir: &Path) -> Option<PathBuf> {
@@ -1034,11 +1054,7 @@ fn map_pane_snapshot(
 }
 
 fn collect_session_pane_ids(session: &RuntimeSessionSnapshot) -> Vec<PaneId> {
-    session
-        .tabs
-        .iter()
-        .flat_map(collect_tab_pane_ids)
-        .collect()
+    session.tabs.iter().flat_map(collect_tab_pane_ids).collect()
 }
 
 fn collect_tab_pane_ids(tab: &RuntimeTabSnapshot) -> Vec<PaneId> {
@@ -1322,9 +1338,7 @@ async fn send_workspace_snapshot(
     send_json_message(socket, &snapshot).await
 }
 
-async fn recv_workspace_update(
-    receiver: Option<&mut broadcast::Receiver<()>>,
-) -> Option<()> {
+async fn recv_workspace_update(receiver: Option<&mut broadcast::Receiver<()>>) -> Option<()> {
     let receiver = match receiver {
         Some(receiver) => receiver,
         None => return None,
@@ -1733,6 +1747,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn snapshot_message_includes_terminal_reflow_metadata() {
+        let snapshot = TerminalSnapshot {
+            size: TerminalSize::new(12, 4),
+            source_size: TerminalSize::new(12, 4),
+            cursor: remux_terminal::TerminalCursor { row: 2, col: 5 },
+            scrollback_row_wraps: vec![false, true],
+            visible_row_wraps: vec![true, false, false, false],
+            formatted_state: b"terminal-state".to_vec(),
+            replay_formatted: b"replay-state".to_vec(),
+            scrollback_rows: vec!["row-1".to_owned(), "row-2".to_owned()],
+            visible_text: "visible".to_owned(),
+            visible_rows: vec![
+                "a".to_owned(),
+                "b".to_owned(),
+                "c".to_owned(),
+                "d".to_owned(),
+            ],
+            byte_count: 14,
+            precision: remux_core::InspectPrecision::Precise,
+        };
+
+        let message = build_terminal_snapshot_message(&snapshot, 17);
+        let json = serde_json::to_value(&message).expect("snapshot message should serialize");
+
+        assert_eq!(json["type"], "snapshot");
+        assert_eq!(json["size"]["cols"], 12);
+        assert_eq!(json["source_size"]["rows"], 4);
+        assert_eq!(json["cursor"]["row"], 2);
+        assert_eq!(json["cursor"]["col"], 5);
+        assert_eq!(
+            json["scrollback_row_wraps"],
+            serde_json::json!([false, true])
+        );
+        assert_eq!(
+            json["visible_row_wraps"],
+            serde_json::json!([true, false, false, false])
+        );
+        assert_eq!(json["sequence"], 17);
+        assert_eq!(json["content_base64"], BASE64.encode("terminal-state"));
+        assert_eq!(
+            json["replay_base64"],
+            serde_json::json!(BASE64.encode("replay-state"))
+        );
+    }
+
+    #[tokio::test]
     async fn later_interactive_clients_claim_write_access_when_they_send_input() {
         let runtime = WorkspaceRuntime::spawn_with_command(test_runtime_command())
             .expect("test runtime should spawn");
@@ -1751,7 +1811,10 @@ mod tests {
                 client_id: first.client_id.clone(),
             }
         );
-        assert_eq!(runtime.workspace_summary().lease_holder_client_id, first.client_id.clone());
+        assert_eq!(
+            runtime.workspace_summary().lease_holder_client_id,
+            first.client_id.clone()
+        );
 
         runtime
             .write_input(
@@ -1761,10 +1824,16 @@ mod tests {
             )
             .expect("second client input should claim the lease and succeed");
 
-        assert_eq!(runtime.workspace_summary().lease_holder_client_id, second.client_id.clone());
+        assert_eq!(
+            runtime.workspace_summary().lease_holder_client_id,
+            second.client_id.clone()
+        );
 
         runtime.detach(&pane_id, first.client_id.as_deref());
-        assert_eq!(runtime.workspace_summary().lease_holder_client_id, second.client_id.clone());
+        assert_eq!(
+            runtime.workspace_summary().lease_holder_client_id,
+            second.client_id.clone()
+        );
 
         runtime.detach(&pane_id, second.client_id.as_deref());
         runtime.shutdown();
@@ -1827,7 +1896,9 @@ mod tests {
             .attach(&pane_id, ClientMode::Interactive, size)
             .expect("attach should succeed");
         let client_id = attachment.client_id.as_deref();
-        let mut updates = runtime.subscribe(&pane_id).expect("subscribe should succeed");
+        let mut updates = runtime
+            .subscribe(&pane_id)
+            .expect("subscribe should succeed");
         let command =
             "for i in $(seq 1 120); do printf \"RUST-%03d\\n\" \"$i\"; sleep 0.01; done\r";
 
@@ -1929,7 +2000,9 @@ mod tests {
             .attach(&pane_id, ClientMode::Interactive, size)
             .expect("attach should succeed");
         let client_id = attachment.client_id.as_deref();
-        let mut updates = runtime.subscribe(&pane_id).expect("subscribe should succeed");
+        let mut updates = runtime
+            .subscribe(&pane_id)
+            .expect("subscribe should succeed");
         tokio::time::sleep(Duration::from_millis(500)).await;
         while let Ok(Ok(RuntimeUpdate::Output { .. })) =
             timeout(Duration::from_millis(50), updates.recv()).await
@@ -2016,7 +2089,9 @@ mod tests {
             .attach(&pane_id, ClientMode::Interactive, size)
             .expect("initial attach should succeed");
         let client_id = initial.client_id.as_deref();
-        let mut updates = runtime.subscribe(&pane_id).expect("subscribe should succeed");
+        let mut updates = runtime
+            .subscribe(&pane_id)
+            .expect("subscribe should succeed");
         tokio::time::sleep(Duration::from_millis(500)).await;
         while let Ok(Ok(RuntimeUpdate::Output { .. })) =
             timeout(Duration::from_millis(50), updates.recv()).await
@@ -2115,13 +2190,18 @@ mod tests {
             .active_session_id
             .clone()
             .expect("active session should exist");
-        let original_tab = summary.active_tab_id.clone().expect("active tab should exist");
+        let original_tab = summary
+            .active_tab_id
+            .clone()
+            .expect("active tab should exist");
         let pane_id = runtime.pane_id();
         let attachment = runtime
             .attach(&pane_id, ClientMode::Interactive, size)
             .expect("attach should succeed");
         let client_id = attachment.client_id.as_deref();
-        let mut updates = runtime.subscribe(&pane_id).expect("subscribe should succeed");
+        let mut updates = runtime
+            .subscribe(&pane_id)
+            .expect("subscribe should succeed");
         tokio::time::sleep(Duration::from_millis(500)).await;
         while let Ok(Ok(RuntimeUpdate::Output { .. })) =
             timeout(Duration::from_millis(50), updates.recv()).await
@@ -2185,7 +2265,9 @@ mod tests {
         let other_tab = runtime
             .create_tab(&original_session, "Scratch")
             .expect("create tab should succeed");
-        runtime.select_tab(&other_tab).expect("select other tab should succeed");
+        runtime
+            .select_tab(&other_tab)
+            .expect("select other tab should succeed");
         runtime
             .select_tab(&original_tab)
             .expect("select original tab should succeed");

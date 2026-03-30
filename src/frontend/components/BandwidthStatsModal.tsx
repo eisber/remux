@@ -41,6 +41,7 @@ const BandwidthStatsModal = ({ onClose, stats }: BandwidthStatsModalProps) => {
             <h3>State Diffs</h3>
             <div className="stats-row"><span>Full snapshots</span><span>{stats.fullSnapshotsSent}</span></div>
             <div className="stats-row"><span>Diff updates</span><span>{stats.diffUpdatesSent}</span></div>
+            <div className="stats-row"><span>Incremental patches</span><span>{stats.incrementalPatchesSent}</span></div>
             <div className="stats-row"><span>Avg diff bytes</span><span>{formatBytes(stats.avgDiffBytesPerUpdate)}</span></div>
             <div className="stats-row"><span>Rebuilt snapshots</span><span>{stats.rebuiltSnapshotsSent}</span></div>
             <div className="stats-row"><span>Continuation resumes</span><span>{stats.continuationResumes}</span></div>
@@ -48,8 +49,13 @@ const BandwidthStatsModal = ({ onClose, stats }: BandwidthStatsModalProps) => {
             <div className="stats-row"><span>Continuation attempts</span><span>{continuationAttempts}</span></div>
             <div className="stats-row"><span>Continuation success rate</span><span>{continuationSuccessRate}</span></div>
             <div className="stats-row"><span>Continuation fallback rate</span><span>{continuationFallbackRate}</span></div>
+            <div className="stats-row"><span>Snapshot bytes</span><span>{formatBytes(stats.snapshotBytesSent)}</span></div>
+            <div className="stats-row"><span>Stream bytes</span><span>{formatBytes(stats.streamBytesSent)}</span></div>
             <div className="stats-row"><span>Queue high watermark hits</span><span>{stats.viewerQueueHighWatermarkHits}</span></div>
             <div className="stats-row"><span>Dropped backlog frames</span><span>{stats.droppedBacklogFrames}</span></div>
+            <div className="stats-row"><span>Stale revision drops</span><span>{stats.staleRevisionDrops}</span></div>
+            <div className="stats-row"><span>Replay-to-live transitions</span><span>{stats.replayToLiveTransitions}</span></div>
+            <div className="stats-row"><span>Avg replay-to-live latency</span><span>{stats.avgReplayToLiveLatencyMs}ms</span></div>
           </div>
           <div className="stats-section">
             <h3>Totals</h3>

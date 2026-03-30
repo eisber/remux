@@ -112,7 +112,7 @@ snapshot 和 replay 不应消失，但应退化为：
 
 ## Current Status Snapshot
 
-截至 `v0.2.52-dev` 这一轮，基座主线已经从“纯 raw stream + snapshot/replay”往前推进了一段，但还没有到 `tmux` / `zellij` 那种 Rust authoritative diff/render 完整态。
+截至 `v0.2.53-dev` 这一轮，基座主线已经从“纯 raw stream + snapshot/replay”往前推进了一段，但还没有到 `tmux` / `zellij` 那种 Rust authoritative diff/render 完整态。
 
 已经落地的关键项：
 
@@ -128,6 +128,9 @@ snapshot 和 replay 不应消失，但应退化为：
 - bandwidth stats 已显式暴露 rebuilt snapshot、continuation resume、continuation fallback 计数
 - bandwidth telemetry 现在会忽略非有限数值输入，避免异常样本把总量与 RTT 污染成 `NaN`
 - bandwidth stats modal 现在直接展示 continuation attempts / success rate / fallback rate，便于快速看出重连命中率
+- bandwidth stats 已进一步暴露 incremental patches、snapshot bytes、stream bytes、stale revision drops、replay-to-live latency
+- browser 在丢弃 stale/epoch/revision gap 的 `terminal_patch` 时会主动上报 `revision_mismatch` 诊断，gateway 会把它计入 foundation telemetry
+- `/api/config` 现在显式暴露 `preferredTerminalTransport`，server 也会在 `REMUX_TERMINAL_TRANSPORT_MODE=raw` 时强制降级 terminal fast path
 - `BandwidthTracker` 已有单测覆盖 rolling window、continuation 计数、异常输入清洗
 - runtime-v2 的 patch / resize owner / reconnect / slow viewer 已有后端、集成和 browser 回归测试
 

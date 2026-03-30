@@ -24,6 +24,11 @@ export interface RuntimeV2TerminalSize {
   rows: number;
 }
 
+export interface RuntimeV2TerminalCursorPosition {
+  row: number;
+  col: number;
+}
+
 export type RuntimeV2SplitDirection = "right" | "down" | "vertical" | "horizontal";
 
 export type RuntimeV2LayoutNode =
@@ -185,6 +190,10 @@ export type RuntimeV2TerminalServerMessage =
   | {
       type: "snapshot";
       size: RuntimeV2TerminalSize;
+      sourceSize?: RuntimeV2TerminalSize;
+      cursor?: RuntimeV2TerminalCursorPosition;
+      scrollbackRowWraps?: boolean[];
+      visibleRowWraps?: boolean[];
       sequence: number;
       contentBase64: string;
       replayBase64?: string | null;

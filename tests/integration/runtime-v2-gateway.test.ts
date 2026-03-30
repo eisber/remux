@@ -102,6 +102,7 @@ describe("runtime v2 gateway server", () => {
   let baseWsUrl: string;
 
   beforeEach(async () => {
+    delete process.env.REMUX_TERMINAL_TRANSPORT_MODE;
     upstream = new FakeRuntimeV2Server();
     const upstreamBaseUrl = await upstream.start();
     server = createRemuxV2GatewayServer(buildConfig("test-token"), {
@@ -116,6 +117,7 @@ describe("runtime v2 gateway server", () => {
   });
 
   afterEach(async () => {
+    delete process.env.REMUX_TERMINAL_TRANSPORT_MODE;
     await server.stop();
     await upstream.stop();
   });
@@ -719,6 +721,22 @@ describe("runtime v2 gateway server", () => {
       terminal = authResult.terminal;
 
       upstream.pushTerminalOutput("pane-1", "BANDWIDTH_FLOW\r\n");
+      control.send(JSON.stringify({
+        type: "report_client_diagnostic",
+        viewRevision: 1,
+        paneId: "pane-1",
+        diagnostic: {
+          issue: "revision_mismatch",
+          severity: "warn",
+          status: "open",
+          summary: "Dropped terminal patch after revision gap",
+          sample: {
+            viewRevision: 1,
+            terminalEpoch: 1,
+          },
+          recentActions: [],
+        },
+      }));
 
       const bandwidthStats = await waitForMessage<{
         type: "bandwidth_stats";
@@ -728,14 +746,24 @@ describe("runtime v2 gateway server", () => {
           rebuiltSnapshotsSent: number;
           continuationResumes: number;
           continuationFallbackSnapshots: number;
+          incrementalPatchesSent: number;
+          snapshotBytesSent: number;
+          streamBytesSent: number;
           rawBytesPerSec: number;
           compressedBytesPerSec: number;
           viewerQueueHighWatermarkHits: number;
           droppedBacklogFrames: number;
+          staleRevisionDrops: number;
+          replayToLiveTransitions: number;
+          avgReplayToLiveLatencyMs: number;
         };
       }>(
         control,
-        (message) => message.type === "bandwidth_stats" && message.stats.diffUpdatesSent > 0,
+        (message) => (
+          message.type === "bandwidth_stats"
+          && message.stats.diffUpdatesSent > 0
+          && message.stats.staleRevisionDrops > 0
+        ),
       );
 
       expect(bandwidthStats.stats.fullSnapshotsSent).toBeGreaterThan(0);
@@ -743,10 +771,16 @@ describe("runtime v2 gateway server", () => {
       expect(bandwidthStats.stats.rebuiltSnapshotsSent).toBeGreaterThanOrEqual(0);
       expect(bandwidthStats.stats.continuationResumes).toBeGreaterThanOrEqual(0);
       expect(bandwidthStats.stats.continuationFallbackSnapshots).toBeGreaterThanOrEqual(0);
+      expect(bandwidthStats.stats.incrementalPatchesSent).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.snapshotBytesSent).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.streamBytesSent).toBeGreaterThan(0);
       expect(bandwidthStats.stats.rawBytesPerSec).toBeGreaterThan(0);
       expect(bandwidthStats.stats.compressedBytesPerSec).toBeGreaterThan(0);
       expect(bandwidthStats.stats.viewerQueueHighWatermarkHits).toBeGreaterThanOrEqual(0);
       expect(bandwidthStats.stats.droppedBacklogFrames).toBeGreaterThanOrEqual(0);
+      expect(bandwidthStats.stats.staleRevisionDrops).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.replayToLiveTransitions).toBeGreaterThan(0);
+      expect(bandwidthStats.stats.avgReplayToLiveLatencyMs).toBeGreaterThanOrEqual(0);
     } finally {
       terminal?.close();
       control.close();
@@ -910,6 +944,7 @@ describe("runtime v2 gateway server", () => {
       runtimeMode: string;
       backendKind?: string;
       localWebSocketOrigin?: string;
+      preferredTerminalTransport?: "raw" | "patch";
     };
 
     expect(config.passwordRequired).toBe(false);
@@ -917,6 +952,51 @@ describe("runtime v2 gateway server", () => {
     expect(config.runtimeMode).toBe("runtime-v2");
     expect(config.backendKind).toBe("runtime-v2");
     expect(config.localWebSocketOrigin).toBeUndefined();
+    expect(config.preferredTerminalTransport).toBe("patch");
+  });
+
+  test("forces raw terminal frames when patch transport is disabled by the server feature flag", async () => {
+    await server.stop();
+    await upstream.stop();
+    process.env.REMUX_TERMINAL_TRANSPORT_MODE = "raw";
+    upstream = new FakeRuntimeV2Server();
+    const upstreamBaseUrl = await upstream.start();
+    server = createRemuxV2GatewayServer(buildConfig("test-token"), {
+      authService: new AuthService({ token: "test-token" }),
+      logger: silentLogger,
+      upstreamBaseUrl,
+    });
+    await server.start();
+    const address = server.server.address() as AddressInfo;
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    baseWsUrl = `ws://127.0.0.1:${address.port}`;
+
+    const { control, clientId } = await authControlClient(baseWsUrl);
+    let terminal: WebSocket | null = null;
+
+    try {
+      const authResult = await authTerminalClient(
+        baseWsUrl,
+        clientId,
+        { cols: 120, rows: 40 },
+        { transportMode: "patch", viewRevision: 1 },
+      );
+      terminal = authResult.terminal;
+      expect(authResult.initialSnapshot).not.toContain("\"type\":\"terminal_patch\"");
+      expect(authResult.initialSnapshot).toContain("PANE_ONE_READY");
+
+      upstream.pushTerminalOutput("pane-1", "RAW-MODE-LIVE\r\n");
+      const liveFrame = await waitForTerminalFrame(terminal);
+      expect(liveFrame.isBinary).toBe(true);
+      expect(liveFrame.text).toContain("RAW-MODE-LIVE");
+
+      const response = await fetch(`${baseUrl}/api/config`);
+      const config = await response.json() as { preferredTerminalTransport?: "raw" | "patch" };
+      expect(config.preferredTerminalTransport).toBe("raw");
+    } finally {
+      terminal?.close();
+      control.close();
+    }
   });
 
   test("answers control ping messages and ignores terminal keepalive frames", async () => {

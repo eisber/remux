@@ -7,6 +7,7 @@ export const nativeConfigFixture: ServerConfig = {
   inspectLines: 1000,
   pollIntervalMs: 2500,
   uploadMaxSize: 52_428_800,
+  preferredTerminalTransport: "patch",
   backendKind: "runtime-v2",
   runtimeMode: "runtime-v2",
 };

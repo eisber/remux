@@ -65,14 +65,20 @@ export interface BandwidthStats {
   savedPercent: number;
   fullSnapshotsSent: number;
   diffUpdatesSent: number;
+  incrementalPatchesSent: number;
   /** @deprecated Compatibility alias for older UI/tests. */
   avgChangedRowsPerDiff: number;
   avgDiffBytesPerUpdate: number;
   rebuiltSnapshotsSent: number;
   continuationResumes: number;
   continuationFallbackSnapshots: number;
+  snapshotBytesSent: number;
+  streamBytesSent: number;
   viewerQueueHighWatermarkHits: number;
   droppedBacklogFrames: number;
+  staleRevisionDrops: number;
+  replayToLiveTransitions: number;
+  avgReplayToLiveLatencyMs: number;
   totalRawBytes: number;
   totalCompressedBytes: number;
   totalSavedBytes: number;

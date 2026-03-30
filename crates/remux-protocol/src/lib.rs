@@ -191,6 +191,13 @@ pub mod terminal {
     use super::*;
 
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct CursorPosition {
+        pub row: u16,
+        pub col: u16,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(rename_all = "snake_case")]
     pub enum ClientMode {
         Interactive,
@@ -223,6 +230,10 @@ pub mod terminal {
         },
         Snapshot {
             size: TerminalSize,
+            source_size: TerminalSize,
+            cursor: CursorPosition,
+            scrollback_row_wraps: Vec<bool>,
+            visible_row_wraps: Vec<bool>,
             sequence: u64,
             content_base64: String,
             replay_base64: Option<String>,

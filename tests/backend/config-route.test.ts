@@ -17,11 +17,13 @@ describe("GET /api/config", () => {
     tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "remux-config-route-test-"));
     delete process.env.REMUX_LOCAL_WS_ORIGIN;
     delete process.env.REMUX_RUNTIME_BRANCH;
+    delete process.env.REMUX_TERMINAL_TRANSPORT_MODE;
   });
 
   afterEach(async () => {
     delete process.env.REMUX_LOCAL_WS_ORIGIN;
     delete process.env.REMUX_RUNTIME_BRANCH;
+    delete process.env.REMUX_TERMINAL_TRANSPORT_MODE;
     if (server) {
       await server.stop();
     }
@@ -54,6 +56,7 @@ describe("GET /api/config", () => {
       inspectLines: number;
       pollIntervalMs: number;
       localWebSocketOrigin?: string;
+      preferredTerminalTransport?: "raw" | "patch";
     };
 
     expect(json.version).toBe(packageJson.version);
@@ -61,6 +64,7 @@ describe("GET /api/config", () => {
     expect(json.inspectLines).toBe(100);
     expect(json.pollIntervalMs).toBe(60_000);
     expect(json.localWebSocketOrigin).toBeUndefined();
+    expect(json.preferredTerminalTransport).toBe("patch");
     expect(json.gitCommitSha).toMatch(/^[0-9a-f]{40}$/);
     expect(typeof json.gitDirty).toBe("boolean");
 
@@ -92,6 +96,17 @@ describe("GET /api/config", () => {
 
     const json = await res.json() as { localWebSocketOrigin?: string };
     expect(json.localWebSocketOrigin).toBe("ws://127.0.0.1:3457");
+  });
+
+  test("advertises raw terminal transport when patch fast path is disabled", async () => {
+    process.env.REMUX_TERMINAL_TRANSPORT_MODE = "raw";
+    await startServer();
+
+    const res = await fetch(`${getBaseUrl()}/api/config`);
+    expect(res.status).toBe(200);
+
+    const json = await res.json() as { preferredTerminalTransport?: "raw" | "patch" };
+    expect(json.preferredTerminalTransport).toBe("raw");
   });
 
   test("does not fall back to the frontend for unavailable API routes", async () => {

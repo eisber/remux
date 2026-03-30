@@ -31,6 +31,7 @@ Returns server configuration. Call this first to determine auth requirements.
   "inspectLines": 1000,
   "pollIntervalMs": 2500,
   "uploadMaxSize": 52428800,
+  "preferredTerminalTransport": "patch",
   "backendKind": "runtime-v2",
   "runtimeMode": "runtime-v2"
 }
