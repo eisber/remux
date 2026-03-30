@@ -33,8 +33,13 @@ export class BandwidthTracker {
   private rebuiltSnapshotsSent = 0;
   private continuationResumes = 0;
   private continuationFallbackSnapshots = 0;
+  private snapshotBytesSent = 0;
+  private streamBytesSent = 0;
   private viewerQueueHighWatermarkHits = 0;
   private droppedBacklogFrames = 0;
+  private staleRevisionDrops = 0;
+  private replayToLiveTransitions = 0;
+  private totalReplayToLiveLatencyMs = 0;
 
   // RTT
   private _rttMs: number | null = null;
@@ -88,12 +93,29 @@ export class BandwidthTracker {
     this.continuationFallbackSnapshots++;
   }
 
+  recordSnapshotBytes(bytes: number): void {
+    this.snapshotBytesSent += Math.floor(normalizeBytes(bytes));
+  }
+
+  recordStreamBytes(bytes: number): void {
+    this.streamBytesSent += Math.floor(normalizeBytes(bytes));
+  }
+
   recordQueueHighWatermarkHit(): void {
     this.viewerQueueHighWatermarkHits++;
   }
 
   recordDroppedBacklogFrames(frames: number): void {
     this.droppedBacklogFrames += Math.floor(normalizeBytes(frames));
+  }
+
+  recordStaleRevisionDrop(): void {
+    this.staleRevisionDrops++;
+  }
+
+  recordReplayToLiveLatency(ms: number): void {
+    this.replayToLiveTransitions++;
+    this.totalReplayToLiveLatencyMs += Math.floor(normalizeBytes(ms));
   }
 
   /**
@@ -127,6 +149,9 @@ export class BandwidthTracker {
     const avgDiffBytesPerUpdate = this._diffUpdatesSent > 0
       ? Math.round((this.totalDiffBytes / this._diffUpdatesSent) * 10) / 10
       : 0;
+    const avgReplayToLiveLatencyMs = this.replayToLiveTransitions > 0
+      ? Math.round((this.totalReplayToLiveLatencyMs / this.replayToLiveTransitions) * 10) / 10
+      : 0;
 
     return {
       rawBytesPerSec: Math.round(rawPerSec),
@@ -134,13 +159,19 @@ export class BandwidthTracker {
       savedPercent: Math.max(0, savedPercent),
       fullSnapshotsSent: this._fullSnapshotsSent,
       diffUpdatesSent: this._diffUpdatesSent,
+      incrementalPatchesSent: this._diffUpdatesSent,
       avgChangedRowsPerDiff: avgDiffBytesPerUpdate,
       avgDiffBytesPerUpdate,
       rebuiltSnapshotsSent: this.rebuiltSnapshotsSent,
       continuationResumes: this.continuationResumes,
       continuationFallbackSnapshots: this.continuationFallbackSnapshots,
+      snapshotBytesSent: this.snapshotBytesSent,
+      streamBytesSent: this.streamBytesSent,
       viewerQueueHighWatermarkHits: this.viewerQueueHighWatermarkHits,
       droppedBacklogFrames: this.droppedBacklogFrames,
+      staleRevisionDrops: this.staleRevisionDrops,
+      replayToLiveTransitions: this.replayToLiveTransitions,
+      avgReplayToLiveLatencyMs,
       totalRawBytes: this.totalRaw,
       totalCompressedBytes: this.totalCompressed,
       totalSavedBytes: Math.max(0, this.totalRaw - this.totalCompressed),

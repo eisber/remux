@@ -77,6 +77,7 @@ export const TERMINAL_REDLINE_LABELS: Record<ClientDiagnosticIssue, string> = {
   color_whiteout: "color whiteout",
   width_mismatch: "width drift",
   history_gap: "history gap",
+  revision_mismatch: "revision mismatch",
 };
 
 const normalizeColor = (value: string | null | undefined): string | null => {

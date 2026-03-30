@@ -1,4 +1,4 @@
-import type { TerminalPatchMessage } from "../shared/protocol.js";
+import type { ClientDiagnosticDetails, TerminalPatchMessage } from "../shared/protocol.js";
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -120,3 +120,34 @@ export const resolveTerminalBaseRevision = (
   }
   return lastAppliedRevision;
 };
+
+export const buildTerminalPatchDropDiagnostic = (
+  message: TerminalPatchMessage,
+  reason: "stale_view" | "epoch_gap" | "revision_gap",
+  activeViewRevision: number | null | undefined,
+  activeEpoch: number | null | undefined,
+): ClientDiagnosticDetails => ({
+  issue: "revision_mismatch",
+  severity: reason === "stale_view" ? "warn" : "error",
+  status: "open",
+  summary: reason === "stale_view"
+    ? `Dropped terminal patch ${message.revision} from stale view revision ${message.viewRevision}`
+    : reason === "epoch_gap"
+      ? `Dropped terminal patch ${message.revision} after epoch gap ${message.epoch}`
+      : `Dropped terminal patch ${message.revision} after revision gap from ${String(message.baseRevision)}`,
+  sample: {
+    viewRevision: typeof activeViewRevision === "number" ? activeViewRevision : undefined,
+    terminalEpoch: typeof activeEpoch === "number" ? activeEpoch : undefined,
+    backendCols: message.cols,
+    backendRows: message.rows,
+  },
+  recentActions: [],
+  recentSamples: [
+    {
+      viewRevision: message.viewRevision,
+      terminalEpoch: message.epoch,
+      backendCols: message.cols,
+      backendRows: message.rows,
+    },
+  ],
+});

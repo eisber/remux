@@ -12,6 +12,7 @@ export interface ServerConfig {
   pollIntervalMs: number;
   uploadMaxSize?: number;
   localWebSocketOrigin?: string;
+  preferredTerminalTransport?: "raw" | "patch";
   /**
    * @deprecated Use `serverCapabilities.semantic.runtimeKind` instead.
    * Kept for backward compatibility with older clients.

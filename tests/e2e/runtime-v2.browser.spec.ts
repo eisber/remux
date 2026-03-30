@@ -691,6 +691,57 @@ test.describe("runtime-v2 browser behavior", () => {
     expect((reconnectAuth?.baseRevision as number) >= 2).toBe(true);
   });
 
+  test("uses raw terminal transport when the server disables patch mode", async ({ page }) => {
+    await server.stop();
+    server = await startRuntimeV2E2EServer({ terminalTransportMode: "raw" });
+
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      const terminalAuthPayloads: Array<Record<string, unknown>> = [];
+
+      class InstrumentedWebSocket extends NativeWebSocket {
+        override send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+          if (typeof data === "string" && this.url.includes("/ws/terminal")) {
+            try {
+              const parsed = JSON.parse(data) as Record<string, unknown>;
+              if (parsed.type === "auth") {
+                terminalAuthPayloads.push(parsed);
+              }
+            } catch {
+              // Ignore non-JSON terminal frames.
+            }
+          }
+          super.send(data);
+        }
+      }
+
+      Object.setPrototypeOf(InstrumentedWebSocket, NativeWebSocket);
+      Object.defineProperty(window, "WebSocket", {
+        configurable: true,
+        writable: true,
+        value: InstrumentedWebSocket,
+      });
+
+      (window as Window & {
+        __remuxTerminalAuthStats?: { auths: () => Array<Record<string, unknown>> };
+      }).__remuxTerminalAuthStats = {
+        auths: () => terminalAuthPayloads,
+      };
+    });
+
+    await page.goto(`${server.baseUrl}/?token=${server.token}`);
+    await expectAttachedStatus(page);
+    await expect.poll(() => readTerminalText(page)).toContain("PANE_ONE_READY");
+
+    const initialAuth = await page.evaluate(() => (
+      (window as Window & {
+        __remuxTerminalAuthStats?: { auths: () => Array<Record<string, unknown>> };
+      }).__remuxTerminalAuthStats?.auths()[0] ?? null
+    ));
+    expect(initialAuth?.transportMode).toBe("raw");
+    expect(initialAuth?.baseRevision ?? null).toBeNull();
+  });
+
   test("switching tabs clears repaint-heavy stale terminal UI instead of leaking the previous tab", async ({ page }) => {
     const firstPaneId = server.upstream.activePaneId();
     server.upstream.setPaneContent(firstPaneId, buildRepaintHeavyTranscript("TAB-0"));

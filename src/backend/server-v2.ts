@@ -153,6 +153,8 @@ interface PaneBridgeSubscriberQueue {
   lastSentRevision: number | null;
   lastAckedRevision: number | null;
   highWatermarkHits: number;
+  awaitingReplayToLive: boolean;
+  lastSnapshotSentAtMs: number | null;
 }
 
 interface BufferedTerminalChunk {
@@ -241,6 +243,7 @@ const toWsOrigin = (baseUrl: string): string => {
 };
 
 type TerminalSizePolicy = "largest" | "smallest" | "latest";
+type PreferredTerminalTransport = "raw" | "patch";
 
 const areTerminalSizesEqual = (
   left: RuntimeV2TerminalSize,
@@ -267,6 +270,11 @@ const resolveTerminalSizePolicy = (): TerminalSizePolicy => {
     return raw;
   }
   return "latest";
+};
+
+const resolvePreferredTerminalTransport = (): PreferredTerminalTransport => {
+  const raw = process.env.REMUX_TERMINAL_TRANSPORT_MODE?.trim().toLowerCase();
+  return raw === "raw" ? "raw" : "patch";
 };
 
 const resolveIdlePaneBridgeGraceMs = (): number => {
@@ -691,6 +699,8 @@ export class SharedRuntimeV2PaneBridge {
       lastSentRevision: null,
       lastAckedRevision: null,
       highWatermarkHits: 0,
+      awaitingReplayToLive: false,
+      lastSnapshotSentAtMs: null,
     };
   }
 
@@ -759,6 +769,17 @@ export class SharedRuntimeV2PaneBridge {
         this.resizeOwnerViewerId = viewerId;
       }
       const desiredSize = this.resolveDesiredSize();
+      this.logger.log("[runtime-v2] terminal viewer subscribed", {
+        paneId: this.paneId,
+        viewerId,
+        transportMode: options.transportMode ?? "raw",
+        requestedSize: size,
+        desiredSize,
+        wasEmpty,
+        hadOpenSocket,
+        requestedBaseRevision: options.baseRevision ?? null,
+        requestedViewRevision: options.getViewRevision?.() ?? 1,
+      });
       await this.ensureAttached(desiredSize);
       if (wasEmpty && hadOpenSocket) {
         this.requestSnapshot("all");
@@ -820,12 +841,21 @@ export class SharedRuntimeV2PaneBridge {
       }
 
       if (this.subscribers.size === 0) {
+        this.logger.log("[runtime-v2] terminal viewer unsubscribed; keeping pane bridge warm", {
+          paneId: this.paneId,
+          viewerId,
+        });
         this.awaitingFreshSnapshotReplay = true;
         this.requestSnapshot("all");
         this.scheduleIdleClose();
         return;
       }
 
+      this.logger.log("[runtime-v2] terminal viewer unsubscribed; resyncing surviving viewers", {
+        paneId: this.paneId,
+        viewerId,
+        remainingViewers: this.subscribers.size,
+      });
       await this.syncSize();
     });
   }
@@ -837,8 +867,19 @@ export class SharedRuntimeV2PaneBridge {
       }
       this.recordViewerSize(viewerId, size);
       if (this.resizeOwnerViewerId !== viewerId) {
+        this.logger.log("[runtime-v2] ignoring passive viewer resize for shared pane", {
+          paneId: this.paneId,
+          viewerId,
+          size,
+          resizeOwnerViewerId: this.resizeOwnerViewerId,
+        });
         return;
       }
+      this.logger.log("[runtime-v2] resize owner updated terminal size", {
+        paneId: this.paneId,
+        viewerId,
+        size,
+      });
       await this.syncSize();
     });
   }
@@ -1097,8 +1138,21 @@ export class SharedRuntimeV2PaneBridge {
       }
       if (frame.source === "snapshot") {
         subscriber.bandwidthTracker?.recordFullSnapshot();
+        subscriber.bandwidthTracker?.recordSnapshotBytes(frame.rawBytes);
+        subscriber.queue.awaitingReplayToLive = true;
+        subscriber.queue.lastSnapshotSentAtMs = Date.now();
       } else if (subscriber.transportMode === "patch") {
         subscriber.bandwidthTracker?.recordDiffUpdate(frame.rawBytes);
+      }
+      if (frame.source === "stream") {
+        subscriber.bandwidthTracker?.recordStreamBytes(frame.rawBytes);
+        if (subscriber.queue.awaitingReplayToLive && subscriber.queue.lastSnapshotSentAtMs !== null) {
+          subscriber.bandwidthTracker?.recordReplayToLiveLatency(
+            Date.now() - subscriber.queue.lastSnapshotSentAtMs,
+          );
+          subscriber.queue.awaitingReplayToLive = false;
+          subscriber.queue.lastSnapshotSentAtMs = null;
+        }
       }
       subscriber.bandwidthTracker?.recordRawBytes(frame.rawBytes);
       subscriber.bandwidthTracker?.recordCompressedBytes(frame.wireBytes);
@@ -1716,6 +1770,7 @@ export const createRemuxV2GatewayServer = (
   const authService = deps.authService ?? new AuthService({ password: config.password, token: config.token });
   const runtimeMetadata = readRuntimeMetadata();
   const terminalSizePolicy = resolveTerminalSizePolicy();
+  const preferredTerminalTransport = resolvePreferredTerminalTransport();
 
   const app = express();
   app.use(express.json());
@@ -1764,6 +1819,7 @@ export const createRemuxV2GatewayServer = (
       pollIntervalMs: config.pollIntervalMs,
       uploadMaxSize: UPLOAD_MAX_BYTES,
       localWebSocketOrigin,
+      preferredTerminalTransport,
       // @deprecated — use serverCapabilities.semantic.runtimeKind instead
       backendKind: RUNTIME_V2_BACKEND_KIND,
       // @deprecated — duplicates backendKind; use serverCapabilities.semantic.runtimeKind
@@ -1782,6 +1838,7 @@ export const createRemuxV2GatewayServer = (
       supportedRuntimeProtocolVersion: EXPECTED_RUNTIME_V2_CONTRACT.protocolVersion,
       supportedRuntimeControlWebsocketPath: EXPECTED_RUNTIME_V2_CONTRACT.controlWebsocketPath,
       supportedRuntimeTerminalWebsocketPath: EXPECTED_RUNTIME_V2_CONTRACT.terminalWebsocketPath,
+      preferredTerminalTransport,
       upstreamBaseUrl: runtimeTarget?.baseUrl ?? null,
       platform: process.platform,
       arch: process.arch,
@@ -2331,6 +2388,10 @@ export const createRemuxV2GatewayServer = (
           });
           return;
         }
+        if (message.diagnostic.issue === "revision_mismatch" && message.diagnostic.status === "open") {
+          context.bandwidthTracker.recordStaleRevisionDrop();
+          sendBandwidthStats(context);
+        }
         const resolvedView = resolveClientViewForContext(summary, context);
         const sessionName = message.session ?? resolvedView.sessionName;
         const tabIndex = message.tabIndex ?? resolvedView.tabIndex;
@@ -2558,7 +2619,9 @@ export const createRemuxV2GatewayServer = (
 
         context.authed = true;
         context.controlContext = controlContext;
-        context.transportMode = authMessage.transportMode === "patch" ? "patch" : "raw";
+        context.transportMode = (
+          preferredTerminalTransport === "patch" && authMessage.transportMode === "patch"
+        ) ? "patch" : "raw";
         context.terminalSize = toRuntimeTerminalSize(extractTerminalDimensions(authMessage));
         if (
           typeof authMessage.viewRevision === "number"

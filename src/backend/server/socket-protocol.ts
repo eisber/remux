@@ -32,7 +32,7 @@ const clientDiagnosticSampleSchema = z.object({
 });
 
 const clientDiagnosticDetailsSchema = z.object({
-  issue: z.enum(["layout_misalignment", "color_whiteout", "width_mismatch", "history_gap"]),
+  issue: z.enum(["layout_misalignment", "color_whiteout", "width_mismatch", "history_gap", "revision_mismatch"]),
   severity: z.enum(["warn", "error"]),
   status: z.enum(["open", "resolved"]),
   summary: z.string(),

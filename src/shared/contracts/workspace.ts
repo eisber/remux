@@ -93,7 +93,8 @@ export type ClientDiagnosticIssue =
   | "layout_misalignment"
   | "color_whiteout"
   | "width_mismatch"
-  | "history_gap";
+  | "history_gap"
+  | "revision_mismatch";
 
 export type ClientDiagnosticSeverity = "warn" | "error";
 export type ClientDiagnosticStatus = "open" | "resolved";

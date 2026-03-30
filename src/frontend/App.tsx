@@ -51,6 +51,7 @@ import {
 import { attachWebSocketKeepAlive } from "./websocket-keepalive";
 import { resolveReconnectDelay, shouldPauseReconnect } from "./reconnect-policy";
 import {
+  buildTerminalPatchDropDiagnostic,
   decodeTerminalPatchData,
   parseTerminalPatchMessage,
   resolveTerminalPatchDisposition,
@@ -100,6 +101,7 @@ export const App = () => {
   const terminalViewRevisionRef = useRef<number | null>(null);
   const terminalPatchEpochRef = useRef<number | null>(null);
   const terminalPatchRevisionRef = useRef<number | null>(null);
+  const lastReportedTerminalPatchDropRef = useRef<string | null>(null);
   const lastOpenedTerminalViewRevisionRef = useRef<number | null>(null);
   const launchContextRef = useRef(initialLaunchContext);
   const readTerminalGeometryRef = useRef<() => { cols: number; rows: number } | null>(() => null);
@@ -373,9 +375,16 @@ export const App = () => {
 
   // ── Terminal socket management ──
   const openTerminalSocket = useCallback((passwordValue: string, clientId: string, viewRevision = terminalViewRevisionRef.current): void => {
-    const baseRevision = typeof viewRevision === "number" ? terminalPatchRevisionRef.current : null;
+    const transportMode = connectionActionsRef.current.serverConfig?.preferredTerminalTransport === "raw"
+      ? "raw"
+      : "patch";
+    const baseRevision = (
+      transportMode === "patch"
+      && typeof viewRevision === "number"
+    ) ? terminalPatchRevisionRef.current : null;
     debugLog("terminal_socket.open.begin", {
       hasPassword: Boolean(passwordValue),
+      transportMode,
       viewRevision,
       baseRevision,
     });
@@ -384,6 +393,7 @@ export const App = () => {
       clearTimeout(terminalReconnectTimerRef.current);
       terminalReconnectTimerRef.current = null;
     }
+    lastReportedTerminalPatchDropRef.current = null;
     lastOpenedTerminalViewRevisionRef.current = viewRevision ?? null;
     terminalInputBatcherRef.current.clear();
     awaitingTerminalReplayRef.current = true;
@@ -415,7 +425,7 @@ export const App = () => {
         token,
         password: passwordValue || undefined,
         clientId,
-        transportMode: "patch",
+        transportMode,
         ...(typeof viewRevision === "number" ? { viewRevision } : {}),
         ...(typeof baseRevision === "number" ? { baseRevision } : {}),
         ...(terminalGeometry ?? {})
@@ -467,6 +477,7 @@ export const App = () => {
             terminalPatchRevisionRef.current,
           );
           if (!disposition.apply) {
+            const dropReason = disposition.reason;
             const debugEvent = disposition.reason === "stale_view"
               ? "terminal_patch.drop.stale"
               : disposition.reason === "epoch_gap"
@@ -482,6 +493,25 @@ export const App = () => {
               patchBaseRevision: patchMessage.baseRevision,
               localRevision: terminalPatchRevisionRef.current,
             });
+            const patchDropKey = [
+              dropReason,
+              patchMessage.viewRevision,
+              patchMessage.epoch,
+              patchMessage.revision,
+              patchMessage.baseRevision ?? "null",
+            ].join(":");
+            if (lastReportedTerminalPatchDropRef.current !== patchDropKey) {
+              lastReportedTerminalPatchDropRef.current = patchDropKey;
+              reportDiagnostic({
+                paneId: patchMessage.paneId,
+                diagnostic: buildTerminalPatchDropDiagnostic(
+                  patchMessage,
+                  dropReason === "ok" ? "revision_gap" : dropReason,
+                  terminalViewRevisionRef.current,
+                  terminalPatchEpochRef.current,
+                ),
+              });
+            }
             if (disposition.reason === "revision_gap" || disposition.reason === "epoch_gap") {
               const auth = terminalAuthRef.current;
               terminalPatchEpochRef.current = null;
@@ -500,6 +530,7 @@ export const App = () => {
             if (terminalViewRevisionRef.current !== patchMessage.viewRevision) {
               return;
             }
+            lastReportedTerminalPatchDropRef.current = null;
             terminalPatchEpochRef.current = patchMessage.epoch;
             terminalPatchRevisionRef.current = patchMessage.revision;
           }, {
@@ -596,6 +627,7 @@ export const App = () => {
     awaitingTerminalReplayRef.current = false;
     terminalPatchEpochRef.current = null;
     terminalPatchRevisionRef.current = null;
+    lastReportedTerminalPatchDropRef.current = null;
     terminalReconnectAttemptRef.current = 0;
     recordDiagnosticActionRef.current(
       "terminal.view_revision",

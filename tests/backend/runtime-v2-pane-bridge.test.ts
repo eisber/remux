@@ -1158,10 +1158,10 @@ describe("SharedRuntimeV2PaneBridge", () => {
     expect(bandwidthTracker.getStats().continuationResumes).toBeGreaterThanOrEqual(0);
     expect(bandwidthTracker.getStats().continuationFallbackSnapshots).toBeGreaterThanOrEqual(0);
     expect(bandwidthTracker.getStats().incrementalPatchesSent).toBeGreaterThan(0);
-    expect(bandwidthTracker.getStats().snapshotBytesSent).toBeGreaterThan(0);
-    expect(bandwidthTracker.getStats().streamBytesSent).toBeGreaterThan(0);
+    await expect.poll(() => bandwidthTracker.getStats().snapshotBytesSent).toBeGreaterThan(0);
+    await expect.poll(() => bandwidthTracker.getStats().streamBytesSent).toBeGreaterThan(0);
     expect(bandwidthTracker.getStats().staleRevisionDrops).toBeGreaterThanOrEqual(0);
-    expect(bandwidthTracker.getStats().replayToLiveTransitions).toBeGreaterThan(0);
+    await expect.poll(() => bandwidthTracker.getStats().replayToLiveTransitions).toBeGreaterThan(0);
     expect(bandwidthTracker.getStats().avgReplayToLiveLatencyMs).toBeGreaterThanOrEqual(0);
   });
 });
