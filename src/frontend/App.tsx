@@ -1,18 +1,20 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent } from "react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type CSSProperties, type ClipboardEvent as ReactClipboardEvent, type KeyboardEvent } from "react";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
+import { AppHeader } from "./components/AppHeader";
+import { InspectView } from "./components/InspectView";
 import { ComposeBar } from "./components/ComposeBar";
+import { SessionSection } from "./components/sidebar/SessionSection";
+import { AppearanceSection } from "./components/sidebar/AppearanceSection";
+import { AppShell } from "./screens/AppShell";
 import { useViewportLayout } from "./mobile-layout";
 import { useTerminalRuntime } from "./hooks/useTerminalRuntime";
 import { useZellijConnection } from "./hooks/useZellijConnection";
+import { useZellijControl } from "./hooks/useZellijControl";
 import type { TerminalWriteChunk } from "./terminal-write-buffer";
 
 declare global {
   interface Window {
-    __remuxDebugEvents?: Array<{
-      at: string;
-      event: string;
-      payload?: unknown;
-    }>;
+    __remuxDebugEvents?: Array<{ at: string; event: string; payload?: unknown }>;
     __remuxDebugState?: unknown;
   }
 }
@@ -22,6 +24,11 @@ const LazyPasswordOverlay = lazy(() => import("./components/PasswordOverlay"));
 export const App = () => {
   const toolbarRef = useRef<ToolbarHandle>(null);
   const [statusMessage, setStatusMessage] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    localStorage.getItem("remux-sidebar-collapsed") === "true",
+  );
+  const [viewMode, setViewMode] = useState<"terminal" | "inspect">("terminal");
   const { mobileLayout, mobileLandscape, viewportHeight, viewportOffsetLeft, viewportOffsetTop } = useViewportLayout();
 
   // --- Theme ---
@@ -33,13 +40,17 @@ export const App = () => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem("remux-theme", theme);
   }, [theme]);
+  useEffect(() => {
+    localStorage.setItem("remux-sidebar-collapsed", sidebarCollapsed ? "true" : "false");
+  }, [sidebarCollapsed]);
+
+  // --- Zellij control channel ---
+  const control = useZellijControl();
 
   // --- Terminal write bridge ---
-  // useTerminalRuntime creates writeToTerminal, but useZellijConnection
-  // needs a callback for incoming data.  Use an indirect ref to break the cycle.
   const writeRef = useRef<(chunk: TerminalWriteChunk) => void>(() => {});
 
-  // --- Connection ---
+  // --- Terminal I/O connection ---
   const connection = useZellijConnection(
     useCallback((data: string | Uint8Array) => writeRef.current(data), []),
   );
@@ -52,21 +63,35 @@ export const App = () => {
       connection.sendResize(payload.cols, payload.rows);
     }, [connection.sendResize]),
     setStatusMessage,
-    terminalVisible: connection.status === "connected",
+    terminalVisible: viewMode === "terminal" && connection.status === "connected",
     terminalSocketRef: connection.socketRef,
     theme,
     toolbarRef,
   });
 
-  // Wire the write bridge now that terminal is available.
   writeRef.current = terminal.writeToTerminal;
 
-  // Focus terminal and send initial fit after connection is established.
+  // Focus terminal after connection.
   useEffect(() => {
     if (connection.status !== "connected") return;
     terminal.requestTerminalFit({ notify: true, retryUntilVisible: true });
     terminal.focusTerminal();
   }, [connection.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-fit terminal when switching back to terminal mode.
+  useEffect(() => {
+    if (viewMode === "terminal") {
+      terminal.requestTerminalFit({ notify: true, retryUntilVisible: true });
+      terminal.focusTerminal();
+    }
+  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Request inspect content when switching to inspect mode.
+  useEffect(() => {
+    if (viewMode === "inspect" && control.connected) {
+      control.requestInspect(true);
+    }
+  }, [viewMode, control.connected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // --- Compose bar ---
   const [composeText, setComposeText] = useState("");
@@ -86,9 +111,7 @@ export const App = () => {
     }
   }, [sendCompose]);
 
-  const handleComposePaste = useCallback((_event: ReactClipboardEvent<HTMLInputElement>) => {
-    // Default paste into input is fine.
-  }, []);
+  const handleComposePaste = useCallback((_event: ReactClipboardEvent<HTMLInputElement>) => {}, []);
 
   // --- Status message auto-clear ---
   useEffect(() => {
@@ -97,9 +120,14 @@ export const App = () => {
     return () => clearTimeout(timer);
   }, [statusMessage]);
 
-  // --- Determine what to show ---
-  const showPassword = connection.needsPassword;
-  const showTerminal = connection.status === "connected" || connection.status === "connecting" || connection.status === "authenticating";
+  // --- Derived state ---
+  const showPassword = connection.needsPassword || control.needsPassword;
+  const isConnected = connection.status === "connected";
+  const ws = control.workspace;
+  const tabs = ws?.tabs ?? [];
+  const activeTabIndex = ws?.activeTabIndex ?? 0;
+  const sessionName = ws?.session ?? "remux";
+
   const terminalStatusMessage =
     connection.status === "connecting" ? "Connecting..." :
     connection.status === "authenticating" ? "Authenticating..." :
@@ -107,36 +135,59 @@ export const App = () => {
     connection.status === "error" && connection.errorMessage ? connection.errorMessage :
     statusMessage || undefined;
 
-  return (
-    <div
-      className={`app-shell${mobileLayout ? " mobile-layout" : ""}${mobileLandscape ? " mobile-landscape" : ""}`}
-      style={{
-        "--app-height": `${viewportHeight}px`,
-        "--app-offset-left": `${viewportOffsetLeft}px`,
-        "--app-offset-top": `${viewportOffsetTop}px`,
-      } as React.CSSProperties}
-    >
-      {/* Header bar */}
-      <header className="app-header" data-testid="app-header">
-        <div className="app-header-left">
-          <span className="app-title">Remux</span>
-          <span className={`connection-dot ${connection.status === "connected" ? "online" : "offline"}`} />
-        </div>
-        <div className="app-header-right">
-          <button
-            className="theme-toggle"
-            onClick={() => setTheme((t) => t === "dark" ? "light" : "dark")}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          >
-            {theme === "dark" ? "☀" : "☾"}
-          </button>
-        </div>
-      </header>
+  // --- Sidebar ---
+  const sidebar = (
+    <aside className={`sidebar${drawerOpen ? " drawer-open" : ""}`} data-testid="sidebar">
+      <SessionSection
+        sessionName={sessionName}
+        onRenameSession={control.renameSession}
+      />
+      <AppearanceSection
+        followBackendFocus={false}
+        onToggleFollowBackendFocus={() => {}}
+        onResetInspectFontSize={() => {}}
+        onSetTheme={setTheme}
+        onUpdateInspectFontSize={() => {}}
+        inspectFontSize={0}
+        showFollowFocus={false}
+        theme={theme}
+      />
+    </aside>
+  );
 
-      {/* Terminal */}
+  return (
+    <AppShell
+      drawerOpen={drawerOpen}
+      mobileLandscape={mobileLandscape}
+      mobileLayout={mobileLayout}
+      onCloseDrawer={() => setDrawerOpen(false)}
+      sidebar={sidebar}
+      sidebarCollapsed={sidebarCollapsed}
+      viewportHeight={viewportHeight}
+      viewportOffsetLeft={viewportOffsetLeft}
+      viewportOffsetTop={viewportOffsetTop}
+    >
+      {/* Header with tab bar */}
+      <AppHeader
+        mobileLayout={mobileLayout}
+        onToggleDrawer={() => setDrawerOpen((o) => !o)}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
+        tabs={tabs}
+        activeTabIndex={activeTabIndex}
+        sessionName={sessionName}
+        onSelectTab={control.selectTab}
+        onCloseTab={control.closeTab}
+        onNewTab={() => control.newTab()}
+        onRenameTab={control.renameTab}
+        viewMode={viewMode}
+        onSetViewMode={setViewMode}
+      />
+
+      {/* Terminal / Inspect */}
       <main className="terminal-wrap">
-        <div className="terminal-stage live-active">
-          <div className="terminal-layer">
+        <div className={`terminal-stage${viewMode === "inspect" ? " inspect-active" : " live-active"}`}>
+          <div className={`terminal-layer${viewMode !== "terminal" ? " is-hidden" : ""}`}>
             <div
               className="terminal-host"
               ref={terminal.terminalContainerRef}
@@ -151,10 +202,20 @@ export const App = () => {
               )}
             </div>
           </div>
+          {viewMode === "inspect" && (
+            <div className="inspect-layer is-active">
+              <InspectView
+                content={control.inspectContent}
+                loading={false}
+                onRefresh={() => control.requestInspect(false)}
+                onRequestFull={() => control.requestInspect(true)}
+              />
+            </div>
+          )}
         </div>
       </main>
 
-      {/* Toolbar (mobile) */}
+      {/* Toolbar */}
       <Toolbar
         ref={toolbarRef}
         sendRaw={connection.sendRaw}
@@ -164,11 +225,11 @@ export const App = () => {
         setStatusMessage={setStatusMessage}
         snippets={[]}
         onExecuteSnippet={() => {}}
-        hidden={!showTerminal}
+        hidden={!isConnected}
       />
 
       {/* Compose bar (mobile) */}
-      {mobileLayout && showTerminal && (
+      {mobileLayout && isConnected && (
         <ComposeBar
           composeText={composeText}
           onChange={setComposeText}
@@ -182,15 +243,15 @@ export const App = () => {
       {showPassword && (
         <Suspense fallback={null}>
           <LazyPasswordOverlay
-            onChange={connection.setPassword}
-            onSubmit={connection.submitPassword}
+            onChange={(v) => { connection.setPassword(v); control.setPassword(v); }}
+            onSubmit={() => { connection.submitPassword(); control.submitPassword(); }}
             password={connection.password}
-            passwordErrorMessage={connection.passwordErrorMessage}
+            passwordErrorMessage={connection.passwordErrorMessage || control.passwordErrorMessage}
           />
         </Suspense>
       )}
 
-      {/* Retry button when reconnect exhausted */}
+      {/* Error retry */}
       {connection.status === "error" && connection.errorMessage && !showPassword && (
         <div className="overlay">
           <div className="card">
@@ -199,6 +260,6 @@ export const App = () => {
           </div>
         </div>
       )}
-    </div>
+    </AppShell>
   );
 };
