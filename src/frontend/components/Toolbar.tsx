@@ -1,9 +1,13 @@
 import { forwardRef, memo, useEffect, useImperativeHandle, useRef, useState } from "react";
-import {
-  groupSnippets,
-  type SnippetGroup,
-  type SnippetRecord as Snippet
-} from "../snippets.js";
+
+/** Minimal snippet type for toolbar compatibility. */
+export interface Snippet {
+  id: string;
+  label: string;
+  icon?: string;
+  command: string;
+  group?: string;
+}
 
 type ModifierKey = "ctrl" | "alt" | "shift" | "meta";
 type ModifierMode = "off" | "sticky" | "locked";
@@ -41,7 +45,15 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
     const [zellijExpanded, setZellijExpanded] = useState(false);
     const [snippetsExpanded, setSnippetsExpanded] = useState(false);
     const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
-    const groupedSnippets: SnippetGroup[] = groupSnippets(snippets);
+    // Group snippets by their group field (simplified from old snippet system).
+    const groupedSnippets: Array<{ name: string; snippets: Snippet[] }> = [];
+    const groupMap = new Map<string, Snippet[]>();
+    for (const s of snippets) {
+      const g = s.group ?? "General";
+      if (!groupMap.has(g)) groupMap.set(g, []);
+      groupMap.get(g)!.push(s);
+    }
+    for (const [name, items] of groupMap) groupedSnippets.push({ name, snippets: items });
 
     // We need a ref to always have access to the latest modifiers in the imperative handle
     const modifiersRef = useRef(modifiers);
