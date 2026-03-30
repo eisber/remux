@@ -28,3 +28,7 @@ src/backend/zellij/plugin/target/
 native/zellij-bridge/target/
 .playwright-cli/
 *.yaml
+
+# Go TUI binary
+remux-tui
+remux-tui.exe
