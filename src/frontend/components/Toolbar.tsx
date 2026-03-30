@@ -38,6 +38,7 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
 
     const [toolbarExpanded, setToolbarExpanded] = useState(readToolbarExpandedPreference);
     const [toolbarDeepExpanded, setToolbarDeepExpanded] = useState(false);
+    const [zellijExpanded, setZellijExpanded] = useState(false);
     const [snippetsExpanded, setSnippetsExpanded] = useState(false);
     const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
     const groupedSnippets: SnippetGroup[] = groupSnippets(snippets);
@@ -149,6 +150,7 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
               setToolbarExpanded((v) => !v);
               if (toolbarExpanded) {
                 setToolbarDeepExpanded(false);
+                setZellijExpanded(false);
                 setSnippetsExpanded(false);
               }
             }}
@@ -183,9 +185,14 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
           </button>
           {/* file input moved outside toolbar for inspect mode access */}
           <button onClick={() => sendTerminal("\u001b[3~")}>Del</button>
-          <button onClick={() => sendTerminal("\u001b[2~")}>Insert</button>
           <button onClick={() => sendTerminal("\u001b[5~")}>PgUp</button>
           <button onClick={() => sendTerminal("\u001b[6~")}>PgDn</button>
+          <button
+            className="toolbar-expand-btn"
+            onClick={() => setZellijExpanded((v) => !v)}
+          >
+            {zellijExpanded ? "Zellij ▲" : "Zellij ▼"}
+          </button>
           <button
             className="toolbar-expand-btn"
             onClick={() => setToolbarDeepExpanded((v) => !v)}
@@ -201,6 +208,27 @@ export const Toolbar = memo(forwardRef<ToolbarHandle, ToolbarProps>(
             </button>
           )}
         </div>
+
+        {/* Zellij actions row (collapsible from within expanded) */}
+        {toolbarExpanded && (
+          <div className={`toolbar-row-deep ${zellijExpanded ? "expanded" : ""}`}>
+            <div className="toolbar-row-zellij">
+              {/* Tab operations: Ctrl+T enters tab mode */}
+              <button onClick={() => { sendRaw("\u0014n"); onFocusTerminal(); }}>+Tab</button>
+              <button onClick={() => { sendRaw("\u0014\u001b[D"); onFocusTerminal(); }}>◂Tab</button>
+              <button onClick={() => { sendRaw("\u0014\u001b[C"); onFocusTerminal(); }}>Tab▸</button>
+              <button onClick={() => { sendRaw("\u0014x"); onFocusTerminal(); }}>✕Tab</button>
+              {/* Pane operations: Ctrl+P enters pane mode */}
+              <button onClick={() => { sendRaw("\u0010d"); onFocusTerminal(); }}>⬓Split</button>
+              <button onClick={() => { sendRaw("\u0010r"); onFocusTerminal(); }}>⬔Split</button>
+              <button onClick={() => { sendRaw("\u0010f"); onFocusTerminal(); }}>Full</button>
+              <button onClick={() => { sendRaw("\u0010x"); onFocusTerminal(); }}>✕Pane</button>
+              {/* Pane navigation: Ctrl+P then arrows */}
+              <button onClick={() => { sendRaw("\u0010\u001b[D"); onFocusTerminal(); }}>◂P</button>
+              <button onClick={() => { sendRaw("\u0010\u001b[C"); onFocusTerminal(); }}>P▸</button>
+            </div>
+          </div>
+        )}
 
         {/* F-keys row (collapsible from within expanded) */}
         {toolbarExpanded && (

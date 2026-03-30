@@ -1683,6 +1683,12 @@ button.danger {
   padding-top: 3px;
 }
 
+.toolbar-row-zellij {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+}
+
 .toolbar-row-deep-fkeys {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
