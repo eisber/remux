@@ -70,9 +70,55 @@ describe("BandwidthStatsModal", () => {
     expect(container.textContent ?? "").toContain("Incremental patches");
     expect(container.textContent ?? "").toContain("Snapshot bytes");
     expect(container.textContent ?? "").toContain("Stream bytes");
+    expect(container.textContent ?? "").toContain("Continuation attempts");
+    expect(container.textContent ?? "").toContain("40%");
+    expect(container.textContent ?? "").toContain("60%");
     expect(container.textContent ?? "").toContain("Queue high watermark hits");
     expect(container.textContent ?? "").toContain("Dropped backlog frames");
     expect(container.textContent ?? "").toContain("Stale revision drops");
     expect(container.textContent ?? "").toContain("Replay-to-live transitions");
+  });
+
+  test("shows n/a for continuation health when there are no attempts", () => {
+    const onClose = vi.fn();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <BandwidthStatsModal
+          onClose={onClose}
+          stats={{
+            rawBytesPerSec: 0,
+            compressedBytesPerSec: 0,
+            savedPercent: 0,
+            fullSnapshotsSent: 0,
+            diffUpdatesSent: 0,
+            avgChangedRowsPerDiff: 0,
+            avgDiffBytesPerUpdate: 0,
+            rebuiltSnapshotsSent: 0,
+            continuationResumes: 0,
+            continuationFallbackSnapshots: 0,
+            incrementalPatchesSent: 0,
+            snapshotBytesSent: 0,
+            streamBytesSent: 0,
+            viewerQueueHighWatermarkHits: 0,
+            droppedBacklogFrames: 0,
+            staleRevisionDrops: 0,
+            replayToLiveTransitions: 0,
+            avgReplayToLiveLatencyMs: 0,
+            totalRawBytes: 0,
+            totalCompressedBytes: 0,
+            totalSavedBytes: 0,
+            rttMs: null,
+            protocol: "wss + permessage-deflate",
+          }}
+        />
+      );
+    });
+
+    expect(container.textContent ?? "").toContain("Continuation attempts");
+    expect(container.textContent ?? "").toContain("n/a");
   });
 });

@@ -1773,18 +1773,21 @@ mod tests {
 
         assert_eq!(json["type"], "snapshot");
         assert_eq!(json["size"]["cols"], 12);
-        assert_eq!(json["sourceSize"]["rows"], 4);
+        assert_eq!(json["source_size"]["rows"], 4);
         assert_eq!(json["cursor"]["row"], 2);
         assert_eq!(json["cursor"]["col"], 5);
-        assert_eq!(json["scrollbackRowWraps"], serde_json::json!([false, true]));
         assert_eq!(
-            json["visibleRowWraps"],
+            json["scrollback_row_wraps"],
+            serde_json::json!([false, true])
+        );
+        assert_eq!(
+            json["visible_row_wraps"],
             serde_json::json!([true, false, false, false])
         );
         assert_eq!(json["sequence"], 17);
-        assert_eq!(json["contentBase64"], BASE64.encode("terminal-state"));
+        assert_eq!(json["content_base64"], BASE64.encode("terminal-state"));
         assert_eq!(
-            json["replayBase64"],
+            json["replay_base64"],
             serde_json::json!(BASE64.encode("replay-state"))
         );
     }
