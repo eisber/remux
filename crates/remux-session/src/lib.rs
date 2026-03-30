@@ -120,10 +120,7 @@ pub enum WorkspaceError {
         current_client_id: String,
     },
     #[error("pane {pane_id} does not hold a lease for {client_id}")]
-    LeaseNotHeld {
-        pane_id: PaneId,
-        client_id: String,
-    },
+    LeaseNotHeld { pane_id: PaneId, client_id: String },
 }
 
 impl WorkspaceState {
@@ -205,12 +202,13 @@ impl WorkspaceState {
 
     #[must_use]
     pub fn writer_lease(&self, pane_id: &PaneId) -> Option<&WriterLease> {
-        self.find_pane_location(pane_id).and_then(|(session_index, tab_index)| {
-            self.sessions[session_index].tabs[tab_index]
-                .panes
-                .get(pane_id)
-                .and_then(|pane| pane.writer_lease.as_ref())
-        })
+        self.find_pane_location(pane_id)
+            .and_then(|(session_index, tab_index)| {
+                self.sessions[session_index].tabs[tab_index]
+                    .panes
+                    .get(pane_id)
+                    .and_then(|pane| pane.writer_lease.as_ref())
+            })
     }
 
     #[must_use]
@@ -475,7 +473,10 @@ impl WorkspaceState {
         None
     }
 
-    fn session_mut_by_id(&mut self, session_id: &SessionId) -> Result<&mut SessionState, WorkspaceError> {
+    fn session_mut_by_id(
+        &mut self,
+        session_id: &SessionId,
+    ) -> Result<&mut SessionState, WorkspaceError> {
         let session_index = self
             .find_session_index(session_id)
             .ok_or_else(|| WorkspaceError::UnknownSession(session_id.clone()))?;
@@ -671,7 +672,9 @@ impl LayoutNode {
     fn contains_pane(&self, target: &PaneId) -> bool {
         match self {
             Self::Leaf(pane_id) => pane_id == target,
-            Self::Split { children, .. } => children.iter().any(|child| child.contains_pane(target)),
+            Self::Split { children, .. } => {
+                children.iter().any(|child| child.contains_pane(target))
+            }
         }
     }
 
@@ -819,10 +822,7 @@ mod tests {
             &LayoutNode::Split {
                 direction: SplitDirection::Vertical,
                 ratio: 50,
-                children: vec![
-                    LayoutNode::Leaf(root_pane),
-                    LayoutNode::Leaf(fallback_pane),
-                ],
+                children: vec![LayoutNode::Leaf(root_pane), LayoutNode::Leaf(fallback_pane),],
             }
         );
     }

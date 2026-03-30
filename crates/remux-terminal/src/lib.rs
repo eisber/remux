@@ -7,6 +7,10 @@ use remux_core::{InspectPrecision, TerminalSize};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSnapshot {
     pub size: TerminalSize,
+    pub source_size: TerminalSize,
+    pub cursor: TerminalCursor,
+    pub scrollback_row_wraps: Vec<bool>,
+    pub visible_row_wraps: Vec<bool>,
     pub formatted_state: Vec<u8>,
     pub replay_formatted: Vec<u8>,
     pub scrollback_rows: Vec<String>,
@@ -14,6 +18,12 @@ pub struct TerminalSnapshot {
     pub visible_rows: Vec<String>,
     pub byte_count: usize,
     pub precision: InspectPrecision,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TerminalCursor {
+    pub row: u16,
+    pub col: u16,
 }
 
 pub struct TerminalState {
@@ -91,10 +101,20 @@ impl TerminalState {
         match catch_unwind(AssertUnwindSafe(|| {
             let screen = self.parser.screen();
             let scrollback_rows = collect_scrollback_rows(screen, size.cols);
+            let scrollback_row_wraps = collect_scrollback_row_wraps(screen);
+            let visible_row_wraps = collect_visible_row_wraps(screen, size.rows);
+            let (cursor_row, cursor_col) = screen.cursor_position();
             let formatted_state = screen.state_formatted();
 
             TerminalSnapshot {
                 size,
+                source_size: size,
+                cursor: TerminalCursor {
+                    row: cursor_row,
+                    col: cursor_col,
+                },
+                scrollback_row_wraps,
+                visible_row_wraps,
                 replay_formatted: build_replay_formatted(screen, size.cols),
                 formatted_state,
                 scrollback_rows,
@@ -109,6 +129,10 @@ impl TerminalState {
                 self.recover_from_parser_panic("snapshot");
                 TerminalSnapshot {
                     size,
+                    source_size: size,
+                    cursor: TerminalCursor::default(),
+                    scrollback_row_wraps: Vec::new(),
+                    visible_row_wraps: vec![false; usize::from(size.rows)],
                     formatted_state: Vec::new(),
                     replay_formatted: Vec::new(),
                     scrollback_rows: Vec::new(),
@@ -143,6 +167,24 @@ fn collect_scrollback_rows(screen: &vt100::Screen, width: u16) -> Vec<String> {
     }
 
     rows
+}
+
+fn collect_scrollback_row_wraps(screen: &vt100::Screen) -> Vec<bool> {
+    let mut history = screen.clone();
+    history.set_scrollback(usize::MAX);
+    let total_scrollback = history.scrollback();
+    let mut wraps = Vec::with_capacity(total_scrollback);
+
+    for offset in (1..=total_scrollback).rev() {
+        history.set_scrollback(offset);
+        wraps.push(history.row_wrapped(0));
+    }
+
+    wraps
+}
+
+fn collect_visible_row_wraps(screen: &vt100::Screen, rows: u16) -> Vec<bool> {
+    (0..rows).map(|row| screen.row_wrapped(row)).collect()
 }
 
 fn build_replay_formatted(screen: &vt100::Screen, width: u16) -> Vec<u8> {
@@ -427,6 +469,41 @@ mod tests {
             .iter()
             .any(|row| row.contains("abcde")));
         assert_eq!(snapshot.precision, InspectPrecision::Partial);
+    }
+
+    #[test]
+    fn terminal_snapshot_exposes_cursor_source_size_and_wrap_metadata() {
+        let size = TerminalSize::new(5, 3);
+        let mut terminal = TerminalState::new(size, 100);
+        terminal.ingest(b"abcdef\r\nrow-2\r\nxy");
+
+        let snapshot = terminal.snapshot();
+        let screen = terminal.parser.screen();
+
+        assert_eq!(snapshot.source_size, size);
+        assert_eq!(
+            snapshot.cursor,
+            TerminalCursor {
+                row: screen.cursor_position().0,
+                col: screen.cursor_position().1,
+            }
+        );
+        assert_eq!(
+            snapshot.scrollback_row_wraps.len(),
+            snapshot.scrollback_rows.len()
+        );
+        assert_eq!(
+            snapshot.visible_row_wraps.len(),
+            snapshot.visible_rows.len()
+        );
+        assert_eq!(
+            snapshot.scrollback_row_wraps,
+            collect_scrollback_row_wraps(screen),
+        );
+        assert_eq!(
+            snapshot.visible_row_wraps,
+            collect_visible_row_wraps(screen, size.rows),
+        );
     }
 
     #[test]

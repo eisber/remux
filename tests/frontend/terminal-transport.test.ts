@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  buildTerminalPatchDropDiagnostic,
   decodeTerminalPatchData,
   parseTerminalPatchMessage,
   resolveTerminalBaseRevision,
@@ -132,5 +133,42 @@ describe("terminal transport helpers", () => {
     expect(resolveTerminalBaseRevision(3, 3, 9)).toBe(9);
     expect(resolveTerminalBaseRevision(4, 3, 9)).toBeUndefined();
     expect(resolveTerminalBaseRevision(3, 3, null)).toBeUndefined();
+  });
+
+  test("builds a client diagnostic payload for dropped terminal patches", () => {
+    const message = parseTerminalPatchMessage(JSON.stringify({
+      type: "terminal_patch",
+      paneId: "pane-1",
+      epoch: 7,
+      viewRevision: 5,
+      revision: 13,
+      baseRevision: 12,
+      reset: false,
+      source: "stream",
+      dataBase64: "QQ==",
+      cols: 132,
+      rows: 40,
+    }));
+
+    expect(message).not.toBeNull();
+    expect(buildTerminalPatchDropDiagnostic(message!, "revision_gap", 5, 7)).toMatchObject({
+      issue: "revision_mismatch",
+      severity: "error",
+      status: "open",
+      sample: {
+        viewRevision: 5,
+        terminalEpoch: 7,
+        backendCols: 132,
+        backendRows: 40,
+      },
+      recentSamples: expect.arrayContaining([
+        expect.objectContaining({
+          viewRevision: 5,
+          terminalEpoch: 7,
+          backendCols: 132,
+          backendRows: 40,
+        }),
+      ]),
+    });
   });
 });

@@ -43,8 +43,14 @@ describe("BandwidthStatsModal", () => {
             rebuiltSnapshotsSent: 1,
             continuationResumes: 2,
             continuationFallbackSnapshots: 3,
+            incrementalPatchesSent: 8,
+            snapshotBytesSent: 2048,
+            streamBytesSent: 1024,
             viewerQueueHighWatermarkHits: 3,
             droppedBacklogFrames: 7,
+            staleRevisionDrops: 2,
+            replayToLiveTransitions: 4,
+            avgReplayToLiveLatencyMs: 18,
             totalRawBytes: 4096,
             totalCompressedBytes: 3072,
             totalSavedBytes: 1024,
@@ -61,7 +67,12 @@ describe("BandwidthStatsModal", () => {
     expect(container.textContent ?? "").toContain("Rebuilt snapshots");
     expect(container.textContent ?? "").toContain("Continuation resumes");
     expect(container.textContent ?? "").toContain("Continuation fallbacks");
+    expect(container.textContent ?? "").toContain("Incremental patches");
+    expect(container.textContent ?? "").toContain("Snapshot bytes");
+    expect(container.textContent ?? "").toContain("Stream bytes");
     expect(container.textContent ?? "").toContain("Queue high watermark hits");
     expect(container.textContent ?? "").toContain("Dropped backlog frames");
+    expect(container.textContent ?? "").toContain("Stale revision drops");
+    expect(container.textContent ?? "").toContain("Replay-to-live transitions");
   });
 });
