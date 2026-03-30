@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -130,7 +131,16 @@ const main = async (): Promise<void> => {
   const debugLogPath = args.debugLog ?? process.env.REMUX_DEBUG_LOG;
   const logger = createLogger(debugLogPath);
   const cliDir = path.dirname(fileURLToPath(import.meta.url));
-  const frontendDir = path.resolve(cliDir, "../frontend");
+  // Prefer built frontend (dist/frontend) over source (src/frontend).
+  // When running via tsx, cliDir=src/backend; dist/frontend is at ../../dist/frontend.
+  // When running compiled, cliDir=dist/backend; dist/frontend is at ../frontend.
+  const candidates = [
+    path.resolve(cliDir, "../../dist/frontend"),
+    path.resolve(cliDir, "../frontend"),
+  ];
+  const frontendDir = candidates.find((d) =>
+    fs.existsSync(path.join(d, "assets")),
+  ) ?? candidates[candidates.length - 1];
 
   const tunnelProvider = createTunnelProvider(args.tunnelProvider, logger);
 
