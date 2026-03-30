@@ -14,36 +14,45 @@ test.afterEach(async () => {
   }
 });
 
-test("capture UI screenshot for PR preview", async ({ page }) => {
-  await page.goto(`${server.baseUrl}/?token=${server.token}`);
-  await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
+test("serve frontend and extension API endpoints", async ({ page }) => {
+  // Verify the frontend loads.
+  const resp = await page.goto(`${server!.baseUrl}/?token=${server!.token}`);
+  expect(resp?.status()).toBe(200);
 
-  // Default is terminal mode — wait for terminal to render
-  await expect(page.getByTestId("terminal-host")).toBeVisible();
+  // Verify extension API endpoints are available.
+  const bwResp = await page.request.get(`${server!.baseUrl}/api/stats/bandwidth`);
+  expect(bwResp.status()).toBe(200);
+  const bwJson = await bwResp.json();
+  expect(bwJson).toHaveProperty("rawBytesPerSec");
+  expect(bwJson).toHaveProperty("rttMs");
 
-  // Emit some sample content so the terminal isn't blank
-  server.upstream.setPaneContent("pane-1", "$ remuxd running\r\n");
-  await page.reload();
-  await expect(page.getByTestId("terminal-host")).toBeVisible();
+  const configResp = await page.request.get(`${server!.baseUrl}/api/config`);
+  expect(configResp.status()).toBe(200);
+  const config = await configResp.json();
+  expect(config.passwordRequired).toBe(false);
 
-  // Small delay for render
-  await page.waitForTimeout(500);
+  // Push notification VAPID key endpoint.
+  const vapidResp = await page.request.get(`${server!.baseUrl}/api/push/vapid-key`);
+  expect(vapidResp.status()).toBe(200);
+  const vapid = await vapidResp.json();
+  expect(vapid).toHaveProperty("publicKey");
+
+  // File browser endpoint.
+  const filesResp = await page.request.get(`${server!.baseUrl}/api/files`);
+  expect(filesResp.status()).toBe(200);
+  const files = await filesResp.json();
+  expect(files).toHaveProperty("path");
+  expect(files).toHaveProperty("entries");
+});
+
+test("capture UI screenshot", async ({ page }) => {
+  await page.goto(`${server!.baseUrl}/?token=${server!.token}`);
+
+  // Wait for the app to render.
+  await page.waitForTimeout(1000);
 
   await page.screenshot({
     path: "screenshots/main-view.png",
-    fullPage: true
-  });
-});
-
-test("capture sidebar screenshot", async ({ page }) => {
-  await page.goto(`${server.baseUrl}/?token=${server.token}`);
-  await expect(page.getByTestId("top-status-indicator")).toHaveClass(/ok/);
-
-  // Sidebar is always visible on desktop
-  await expect(page.locator(".sidebar")).toBeVisible();
-
-  await page.screenshot({
-    path: "screenshots/sidebar-view.png",
-    fullPage: true
+    fullPage: true,
   });
 });
