@@ -91,10 +91,11 @@ export const createZellijPty = (options: ZellijPtyOptions = {}): ZellijPty => {
   }
 
   // Use bare layout (no tab-bar, no status-bar) so the web UI provides chrome.
+  // --layout is a top-level zellij flag, placed BEFORE the subcommand.
   const layoutPath = resolveBundled("zellij-layout.kdl");
   const layoutArgs = layoutPath ? ["--layout", layoutPath] : [];
 
-  const pty: IPty = ptySpawn(bin, ["attach", session, "--create", ...layoutArgs], {
+  const pty: IPty = ptySpawn(bin, [...layoutArgs, "attach", session, "--create"], {
     name: "xterm-256color",
     cols,
     rows,
