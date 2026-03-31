@@ -199,170 +199,207 @@ const HTML_TEMPLATE = `<!doctype html>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
       html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
-
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        background: #1e1e1e;
+        background: #1e1e1e; color: #ccc;
+        height: 100vh; height: 100dvh;
         display: flex;
-        flex-direction: column;
-        height: 100vh;
-        height: 100dvh;
       }
 
-      /* ── Title bar ── */
-      .title-bar {
-        background: #2d2d2d;
-        padding: 6px 12px;
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        border-bottom: 1px solid #1a1a1a;
+      /* ── Sidebar (Obsidian-style) ── */
+      .sidebar {
+        width: 220px; min-width: 220px;
+        background: #252526;
+        border-right: 1px solid #1a1a1a;
+        display: flex; flex-direction: column;
         flex-shrink: 0;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
+        transition: margin-left .2s;
       }
+      .sidebar.collapsed { margin-left: -220px; }
 
-      .status {
-        font-size: 11px;
-        color: #888;
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        white-space: nowrap;
+      .sidebar-header {
+        padding: 10px 12px;
+        font-size: 11px; font-weight: 600;
+        color: #888; text-transform: uppercase;
+        letter-spacing: .5px;
+        display: flex; align-items: center; justify-content: space-between;
       }
+      .sidebar-header button {
+        background: none; border: none; color: #888; cursor: pointer;
+        font-size: 16px; line-height: 1; padding: 2px 4px;
+      }
+      .sidebar-header button:hover { color: #e5e5e5; }
 
+      .session-list {
+        flex: 1; overflow-y: auto; padding: 0 6px;
+      }
+      .session-item {
+        display: flex; align-items: center; gap: 8px;
+        padding: 6px 8px; border-radius: 4px;
+        font-size: 13px; cursor: pointer;
+        color: #aaa; border: none; background: none;
+        width: 100%; text-align: left; font-family: inherit;
+      }
+      .session-item:hover { background: #2a2d2e; color: #e5e5e5; }
+      .session-item.active { background: #37373d; color: #fff; }
+      .session-item .dot {
+        width: 6px; height: 6px; border-radius: 50%;
+        background: #27c93f; flex-shrink: 0;
+      }
+      .session-item .dot.ended { background: #555; }
+      .session-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .session-item .clients { font-size: 10px; color: #666; }
+      .session-item .del {
+        opacity: 0; font-size: 11px; color: #888; background: none;
+        border: none; cursor: pointer; padding: 2px 4px; font-family: inherit;
+      }
+      .session-item:hover .del { opacity: 1; }
+      .session-item .del:hover { color: #ff5f56; }
+
+      .sidebar-footer {
+        padding: 8px 12px;
+        border-top: 1px solid #1a1a1a;
+        display: flex; flex-direction: column; gap: 4px;
+      }
+      .sidebar-footer .status {
+        font-size: 11px; color: #888;
+        display: flex; align-items: center; gap: 6px;
+      }
       .status-dot {
-        width: 7px; height: 7px; border-radius: 50%; background: #888;
-        flex-shrink: 0;
+        width: 7px; height: 7px; border-radius: 50%; background: #888; flex-shrink: 0;
       }
       .status-dot.connected { background: #27c93f; }
       .status-dot.disconnected { background: #ff5f56; }
       .status-dot.connecting { background: #ffbd2e; animation: pulse 1s infinite; }
-
       @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
 
-      /* ── Tab bar ── */
-      .tab-bar {
-        display: flex;
-        gap: 2px;
-        flex: 1;
+      /* ── Main area ── */
+      .main {
+        flex: 1; display: flex; flex-direction: column;
         min-width: 0;
       }
 
+      /* ── Tab bar ── */
+      .tab-bar {
+        background: #252526;
+        display: flex; align-items: center;
+        border-bottom: 1px solid #1a1a1a;
+        flex-shrink: 0; min-height: 34px;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+      }
+      .tab-toggle {
+        padding: 6px 10px; background: none; border: none;
+        color: #888; cursor: pointer; font-size: 16px;
+        flex-shrink: 0;
+      }
+      .tab-toggle:hover { color: #e5e5e5; }
+      .tab-list { display: flex; flex: 1; min-width: 0; }
       .tab {
-        padding: 4px 12px;
-        font-size: 12px;
-        color: #888;
-        background: transparent;
-        border: none;
-        border-radius: 4px;
-        cursor: pointer;
-        white-space: nowrap;
-        font-family: inherit;
+        padding: 6px 14px; font-size: 12px;
+        color: #888; background: transparent;
+        border: none; border-bottom: 2px solid transparent;
+        cursor: pointer; white-space: nowrap; font-family: inherit;
       }
-      .tab:hover { background: #3a3a3a; color: #ccc; }
-      .tab.active { background: #1e1e1e; color: #e5e5e5; }
-      .tab .close {
-        margin-left: 6px; opacity: 0.4; font-size: 10px;
-      }
-      .tab .close:hover { opacity: 1; }
-
+      .tab:hover { color: #ccc; background: #2a2d2e; }
+      .tab.active { color: #e5e5e5; border-bottom-color: #007acc; background: #1e1e1e; }
       .tab-new {
-        padding: 4px 8px;
-        font-size: 14px;
-        color: #666;
-        background: transparent;
-        border: none;
-        cursor: pointer;
-        font-family: inherit;
+        padding: 6px 10px; font-size: 14px; color: #666;
+        background: none; border: none; cursor: pointer;
+        flex-shrink: 0;
       }
       .tab-new:hover { color: #ccc; }
 
       /* ── Terminal ── */
       #terminal {
-        flex: 1;
-        background: #1e1e1e;
-        overflow: hidden;
-        position: relative;
+        flex: 1; background: #1e1e1e; overflow: hidden;
       }
       #terminal canvas { display: block; }
 
-      /* ── Compose bar (mobile) ── */
+      /* ── Compose bar ── */
       .compose-bar {
         display: none;
-        background: #2d2d2d;
+        background: #252526;
         border-top: 1px solid #1a1a1a;
-        padding: 4px 8px;
-        gap: 4px;
+        padding: 5px 8px; gap: 5px;
         flex-shrink: 0;
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
       }
-
       .compose-bar button {
-        padding: 6px 10px;
-        font-size: 13px;
+        padding: 8px 12px; font-size: 14px;
         font-family: 'Menlo', 'Monaco', monospace;
-        color: #d4d4d4;
-        background: #3a3a3a;
-        border: 1px solid #555;
-        border-radius: 4px;
-        cursor: pointer;
-        white-space: nowrap;
+        color: #d4d4d4; background: #3a3a3a;
+        border: 1px solid #555; border-radius: 5px;
+        cursor: pointer; white-space: nowrap;
         -webkit-tap-highlight-color: transparent;
-        touch-action: manipulation;
-        min-width: 36px;
-        text-align: center;
+        touch-action: manipulation; min-width: 40px;
+        text-align: center; user-select: none;
       }
       .compose-bar button:active { background: #555; }
-      .compose-bar button.modifier-active { background: #4a6a9a; border-color: #6a9ade; }
-
-      /* Show compose bar on touch devices */
+      .compose-bar button.active { background: #4a6a9a; border-color: #6a9ade; }
       @media (hover: none) and (pointer: coarse) {
         .compose-bar { display: flex; }
+      }
+
+      /* ── Mobile: collapse sidebar by default ── */
+      @media (max-width: 768px) {
+        .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 100;
+          margin-left: -220px; box-shadow: 4px 0 20px rgba(0,0,0,.5); }
+        .sidebar.open { margin-left: 0; }
+        .sidebar-overlay { display: none; position: fixed; inset: 0;
+          background: rgba(0,0,0,.4); z-index: 99; }
+        .sidebar-overlay.visible { display: block; }
       }
     </style>
   </head>
   <body>
-    <div class="title-bar">
-      <div class="tab-bar" id="tab-bar"></div>
-      <button class="tab-new" id="btn-new-tab" title="New session">+</button>
-      <div class="status">
-        <div class="status-dot connecting" id="status-dot"></div>
-        <span id="status-text">...</span>
+    <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <span>Sessions</span>
+        <button id="btn-new-session" title="New session">+</button>
       </div>
-    </div>
+      <div class="session-list" id="session-list"></div>
+      <div class="sidebar-footer">
+        <div class="status">
+          <div class="status-dot connecting" id="status-dot"></div>
+          <span id="status-text">...</span>
+        </div>
+      </div>
+    </aside>
 
-    <div id="terminal"></div>
-
-    <div class="compose-bar" id="compose-bar">
-      <button data-seq="esc">Esc</button>
-      <button data-seq="tab">Tab</button>
-      <button data-modifier="ctrl" id="btn-ctrl">Ctrl</button>
-      <button data-seq="up">↑</button>
-      <button data-seq="down">↓</button>
-      <button data-seq="left">←</button>
-      <button data-seq="right">→</button>
-      <button data-ch="|">|</button>
-      <button data-ch="~">~</button>
-      <button data-ch="-">-</button>
-      <button data-ch="/">/ </button>
+    <div class="main">
+      <div class="tab-bar">
+        <button class="tab-toggle" id="btn-sidebar" title="Toggle sidebar">☰</button>
+        <div class="tab-list" id="tab-list"></div>
+        <button class="tab-new" id="btn-new-tab" title="New session">+</button>
+      </div>
+      <div id="terminal"></div>
+      <div class="compose-bar" id="compose-bar">
+        <button data-seq="esc">Esc</button>
+        <button data-seq="tab">Tab</button>
+        <button data-mod="ctrl" id="btn-ctrl">Ctrl</button>
+        <button data-seq="up">↑</button>
+        <button data-seq="down">↓</button>
+        <button data-seq="left">←</button>
+        <button data-seq="right">→</button>
+        <button data-ch="|">|</button>
+        <button data-ch="~">~</button>
+        <button data-ch="/">/ </button>
+      </div>
     </div>
 
     <script type="module">
       import { init, Terminal, FitAddon } from '/dist/ghostty-web.js';
-
       await init();
 
       const term = new Terminal({
         cols: 80, rows: 24,
         fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-        fontSize: 14,
-        cursorBlink: true,
+        fontSize: 14, cursorBlink: true,
         theme: { background: '#1e1e1e', foreground: '#d4d4d4' },
         scrollback: 10000,
       });
-
       const fitAddon = new FitAddon();
       term.loadAddon(fitAddon);
       term.open(document.getElementById('terminal'));
@@ -373,45 +410,90 @@ const HTML_TEMPLATE = `<!doctype html>
       // ── State ──
       let currentSession = 'main';
       let sessions = [];
+      let openTabs = ['main'];
       let ws = null;
       let ctrlActive = false;
 
-      const dot = document.getElementById('status-dot');
-      const statusText = document.getElementById('status-text');
-      function setStatus(s, t) { dot.className = 'status-dot ' + s; statusText.textContent = t; }
+      const $ = (s) => document.getElementById(s);
+      function setStatus(s, t) { $('status-dot').className = 'status-dot ' + s; $('status-text').textContent = t; }
 
-      // ── Tab bar ──
-      const tabBar = document.getElementById('tab-bar');
+      // ── Sidebar ──
+      const sidebar = $('sidebar');
+      const overlay = $('sidebar-overlay');
+      function toggleSidebar() {
+        const isMobile = window.innerWidth <= 768;
+        if (isMobile) {
+          sidebar.classList.toggle('open');
+          overlay.classList.toggle('visible', sidebar.classList.contains('open'));
+        } else {
+          sidebar.classList.toggle('collapsed');
+        }
+        setTimeout(() => fitAddon.fit(), 250);
+      }
+      $('btn-sidebar').addEventListener('click', toggleSidebar);
+      overlay.addEventListener('click', () => {
+        sidebar.classList.remove('open');
+        overlay.classList.remove('visible');
+      });
 
-      function renderTabs() {
-        tabBar.innerHTML = '';
+      // ── Render sessions sidebar ──
+      function renderSessions() {
+        const list = $('session-list');
+        list.innerHTML = '';
         sessions.forEach(s => {
-          const btn = document.createElement('button');
-          btn.className = 'tab' + (s.name === currentSession ? ' active' : '');
-          btn.innerHTML = s.name + (s.ended ? ' ✕' : '') +
-            '<span class="close" data-delete="' + s.name + '">×</span>';
-          btn.addEventListener('click', (e) => {
-            if (e.target.dataset.delete) {
-              sendControl({ type: 'delete_session', name: e.target.dataset.delete });
+          const el = document.createElement('button');
+          el.className = 'session-item' + (s.name === currentSession ? ' active' : '');
+          el.innerHTML = '<span class="dot' + (s.ended ? ' ended' : '') + '"></span>'
+            + '<span class="name">' + s.name + '</span>'
+            + (s.clients > 0 ? '<span class="clients">' + s.clients + '</span>' : '')
+            + '<button class="del" data-del="' + s.name + '">×</button>';
+          el.addEventListener('click', (e) => {
+            if (e.target.dataset.del) {
+              e.stopPropagation();
+              sendControl({ type: 'delete_session', name: e.target.dataset.del });
               return;
             }
             switchSession(s.name);
+            if (window.innerWidth <= 768) { sidebar.classList.remove('open'); overlay.classList.remove('visible'); }
           });
-          tabBar.appendChild(btn);
+          list.appendChild(el);
         });
       }
 
-      document.getElementById('btn-new-tab').addEventListener('click', () => {
+      // ── Render tab bar ──
+      function renderTabs() {
+        // Ensure current session has a tab
+        if (!openTabs.includes(currentSession)) openTabs.push(currentSession);
+        // Remove tabs for deleted sessions
+        openTabs = openTabs.filter(t => sessions.some(s => s.name === t) || t === currentSession);
+
+        const list = $('tab-list');
+        list.innerHTML = '';
+        openTabs.forEach(name => {
+          const btn = document.createElement('button');
+          btn.className = 'tab' + (name === currentSession ? ' active' : '');
+          btn.textContent = name;
+          btn.addEventListener('click', () => switchSession(name));
+          list.appendChild(btn);
+        });
+      }
+
+      $('btn-new-session').addEventListener('click', () => {
         const name = prompt('Session name:');
-        if (name && name.trim()) {
-          switchSession(name.trim());
-        }
+        if (name && name.trim()) switchSession(name.trim());
+      });
+      $('btn-new-tab').addEventListener('click', () => {
+        const name = prompt('Session name:');
+        if (name && name.trim()) switchSession(name.trim());
       });
 
       function switchSession(name) {
         currentSession = name;
+        if (!openTabs.includes(name)) openTabs.push(name);
         sendControl({ type: 'attach', session: name, cols: term.cols, rows: term.rows });
         term.clear();
+        renderTabs();
+        renderSessions();
       }
 
       // ── WebSocket ──
@@ -421,48 +503,25 @@ const HTML_TEMPLATE = `<!doctype html>
       function connect() {
         setStatus('connecting', '...');
         ws = new WebSocket(proto + '//' + location.host + '/ws');
-
         ws.onopen = () => {
-          // Auth first, then attach
-          if (urlToken) {
-            ws.send(JSON.stringify({ type: 'auth', token: urlToken }));
-          }
+          if (urlToken) ws.send(JSON.stringify({ type: 'auth', token: urlToken }));
           sendControl({ type: 'attach', session: currentSession, cols: term.cols, rows: term.rows });
         };
-
         ws.onmessage = (e) => {
           if (typeof e.data === 'string' && e.data[0] === '{') {
             try {
               const msg = JSON.parse(e.data);
               if (msg.type === 'auth_ok') return;
-              if (msg.type === 'auth_error') {
-                setStatus('disconnected', 'Auth failed');
-                ws.close();
-                return;
-              }
-              if (msg.type === 'session_list') {
-                sessions = msg.sessions;
-                renderTabs();
-                return;
-              }
-              if (msg.type === 'attached') {
-                currentSession = msg.session;
-                setStatus('connected', currentSession);
-                renderTabs();
-                return;
-              }
+              if (msg.type === 'auth_error') { setStatus('disconnected', 'Auth failed'); ws.close(); return; }
+              if (msg.type === 'session_list') { sessions = msg.sessions; renderSessions(); renderTabs(); return; }
+              if (msg.type === 'attached') { currentSession = msg.session; setStatus('connected', msg.session); renderSessions(); renderTabs(); return; }
             } catch {}
           }
           term.write(e.data);
         };
-
-        ws.onclose = () => {
-          setStatus('disconnected', 'Disconnected');
-          setTimeout(connect, 2000);
-        };
+        ws.onclose = () => { setStatus('disconnected', 'Disconnected'); setTimeout(connect, 2000); };
         ws.onerror = () => setStatus('disconnected', 'Error');
       }
-
       connect();
 
       function sendControl(msg) {
@@ -474,63 +533,41 @@ const HTML_TEMPLATE = `<!doctype html>
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         if (ctrlActive) {
           ctrlActive = false;
-          document.getElementById('btn-ctrl').classList.remove('modifier-active');
-          // Convert to ctrl char: 'c' -> 0x03, 'z' -> 0x1a, etc.
+          $('btn-ctrl').classList.remove('active');
           const ch = data.toLowerCase().charCodeAt(0);
-          if (ch >= 0x61 && ch <= 0x7a) {
-            ws.send(String.fromCharCode(ch - 0x60));
-            return;
-          }
+          if (ch >= 0x61 && ch <= 0x7a) { ws.send(String.fromCharCode(ch - 0x60)); return; }
         }
         ws.send(data);
       });
 
-      // ── Resize → server ──
-      term.onResize(({ cols, rows }) => {
-        sendControl({ type: 'resize', cols, rows });
-      });
+      term.onResize(({ cols, rows }) => sendControl({ type: 'resize', cols, rows }));
 
-      // ── Compose bar ──
-      const SEQ_MAP = {
-        esc: '\\x1b', tab: '\\t',
-        up: '\\x1b[A', down: '\\x1b[B', left: '\\x1b[D', right: '\\x1b[C',
-      };
+      // ── Compose bar (use pointerdown for reliable mobile) ──
+      const SEQ = { esc: '\\x1b', tab: '\\t', up: '\\x1b[A', down: '\\x1b[B', left: '\\x1b[D', right: '\\x1b[C' };
 
-      document.getElementById('compose-bar').addEventListener('click', (e) => {
+      $('compose-bar').addEventListener('pointerdown', (e) => {
         const btn = e.target.closest('button');
         if (!btn) return;
         e.preventDefault();
-
-        if (btn.dataset.modifier === 'ctrl') {
+        if (btn.dataset.mod === 'ctrl') {
           ctrlActive = !ctrlActive;
-          btn.classList.toggle('modifier-active', ctrlActive);
+          btn.classList.toggle('active', ctrlActive);
           return;
         }
-
-        const data = SEQ_MAP[btn.dataset.seq] || btn.dataset.ch;
-        if (data && ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(data);
-        }
+        const data = SEQ[btn.dataset.seq] || btn.dataset.ch;
+        if (data && ws && ws.readyState === WebSocket.OPEN) ws.send(data);
         term.focus();
       });
 
-      // ── Mobile keyboard (visualViewport) ──
+      // ── Mobile keyboard ──
       if (window.visualViewport) {
-        const termEl = document.getElementById('terminal');
         window.visualViewport.addEventListener('resize', () => {
-          const kbH = window.innerHeight - window.visualViewport.height;
           document.body.style.height = window.visualViewport.height + 'px';
           fitAddon.fit();
         });
-        window.visualViewport.addEventListener('scroll', () => {
-          window.scrollTo(0, 0);
-        });
+        window.visualViewport.addEventListener('scroll', () => window.scrollTo(0, 0));
       }
-
-      // Focus terminal on touch
-      document.getElementById('terminal').addEventListener('touchend', () => {
-        term.focus();
-      });
+      document.getElementById('terminal').addEventListener('touchend', () => term.focus());
     </script>
   </body>
 </html>`;
