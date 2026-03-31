@@ -1,7 +1,12 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const GLOBAL_COMMAND_TIMEOUT_MS = 5000;
+const LSOF_TIMEOUT_MS = 2000;
 
 // --- Zellij JSON types (from `list-tabs --json` and `list-panes --json`) ---
 
@@ -229,47 +234,191 @@ export class ZellijController implements ZellijControllerApi {
   }
 
   async listSessions(): Promise<string[]> {
-    const raw = await this.runGlobal(["list-sessions", "--no-formatting"]);
-    return raw
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
+    try {
+      const raw = await this.runGlobal(["list-sessions", "--no-formatting"]);
+      return raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      return this.listSessionsFromSockets().map((session) => session.name);
+    }
   }
 
   async listSessionsStructured(): Promise<ZellijSessionInfo[]> {
-    const sessions = await this.listSessions();
-    return sessions.map((line) => {
-      const match = line.match(/^(.*?)\s+\[Created\s+(.+?)\s+ago\](?:\s+\(EXITED.*\))?$/);
-      if (!match) {
+    try {
+      const raw = await this.runGlobal(["list-sessions", "--no-formatting"]);
+      const sessions = raw
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean);
+      return sessions.map((line) => {
+        const match = line.match(/^(.*?)\s+\[Created\s+(.+?)\s+ago\](?:\s+\(EXITED.*\))?$/);
+        if (!match) {
+          return {
+            name: line,
+            createdAgo: "",
+            isActive: !line.includes("(EXITED"),
+          };
+        }
+
         return {
-          name: line,
-          createdAgo: "",
+          name: match[1].trim(),
+          createdAgo: match[2].trim(),
           isActive: !line.includes("(EXITED"),
         };
-      }
-
-      return {
-        name: match[1].trim(),
-        createdAgo: match[2].trim(),
-        isActive: !line.includes("(EXITED"),
-      };
-    });
+      });
+    } catch {
+      return this.listSessionsFromSockets();
+    }
   }
 
   async killSession(name: string): Promise<void> {
-    await this.runGlobal(["kill-session", name]);
+    try {
+      await this.runGlobal(["kill-session", name]);
+    } catch (error) {
+      await this.forceRemoveSessionSocket(name, error);
+    }
   }
 
   async deleteSession(name: string): Promise<void> {
-    await this.runGlobal(["delete-session", "--force", name]);
+    try {
+      await this.runGlobal(["delete-session", "--force", name]);
+    } catch (error) {
+      await this.forceRemoveSessionSocket(name, error);
+    }
   }
 
   // --- Internal ---
 
+  private listSessionsFromSockets(): ZellijSessionInfo[] {
+    const sessions = new Map<string, ZellijSessionInfo & { mtimeMs: number }>();
+
+    for (const contractDir of this.resolveContractDirs()) {
+      let entries: fs.Dirent[] = [];
+      try {
+        entries = fs.readdirSync(contractDir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+
+      for (const entry of entries) {
+        if (!entry.isSocket() || entry.name === "web_server_bus") {
+          continue;
+        }
+
+        const socketPath = path.join(contractDir, entry.name);
+        let stats: fs.Stats;
+        try {
+          stats = fs.lstatSync(socketPath);
+        } catch {
+          continue;
+        }
+
+        const current = sessions.get(entry.name);
+        if (current && current.mtimeMs >= stats.mtimeMs) {
+          continue;
+        }
+
+        sessions.set(entry.name, {
+          name: entry.name,
+          createdAgo: formatSocketAge(stats.mtimeMs),
+          isActive: true,
+          mtimeMs: stats.mtimeMs,
+        });
+      }
+    }
+
+    return [...sessions.values()]
+      .sort((left, right) => left.mtimeMs - right.mtimeMs)
+      .map(({ mtimeMs: _mtimeMs, ...session }) => session);
+  }
+
+  private resolveContractDirs(): string[] {
+    const uid = typeof process.getuid === "function" ? process.getuid() : process.env.UID;
+    if (!uid) {
+      return [];
+    }
+
+    const zellijRoot = path.join(os.tmpdir(), `zellij-${uid}`);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = fs.readdirSync(zellijRoot, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+
+    return entries
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("contract_version_"))
+      .map((entry) => path.join(zellijRoot, entry.name));
+  }
+
+  private resolveSessionSocketPath(name: string): string | null {
+    for (const contractDir of this.resolveContractDirs()) {
+      const socketPath = path.join(contractDir, name);
+      try {
+        if (fs.lstatSync(socketPath).isSocket()) {
+          return socketPath;
+        }
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  }
+
+  private async forceRemoveSessionSocket(name: string, originalError: unknown): Promise<void> {
+    const socketPath = this.resolveSessionSocketPath(name);
+    if (!socketPath) {
+      throw originalError;
+    }
+
+    await this.signalSocketProcesses(socketPath, "SIGTERM");
+    await delay(250);
+
+    if (await this.hasSocketProcesses(socketPath)) {
+      await this.signalSocketProcesses(socketPath, "SIGKILL");
+      await delay(250);
+    }
+
+    if (!(await this.hasSocketProcesses(socketPath)) && fs.existsSync(socketPath)) {
+      fs.rmSync(socketPath, { force: true });
+    }
+
+    if (fs.existsSync(socketPath)) {
+      throw originalError;
+    }
+  }
+
+  private async signalSocketProcesses(socketPath: string, signal: NodeJS.Signals): Promise<void> {
+    const pids = await this.listSocketProcessIds(socketPath);
+    for (const pid of pids) {
+      try {
+        process.kill(pid, signal);
+      } catch {}
+    }
+  }
+
+  private async hasSocketProcesses(socketPath: string): Promise<boolean> {
+    return (await this.listSocketProcessIds(socketPath)).length > 0;
+  }
+
+  private async listSocketProcessIds(socketPath: string): Promise<number[]> {
+    try {
+      const { stdout } = await execFileAsync("lsof", ["-t", socketPath], { timeout: LSOF_TIMEOUT_MS });
+      return stdout
+        .split("\n")
+        .map((line) => Number(line.trim()))
+        .filter((pid) => Number.isInteger(pid) && pid > 0);
+    } catch {
+      return [];
+    }
+  }
+
   private async run(args: string[]): Promise<string> {
     try {
       const { stdout } = await execFileAsync(this.zellijBin, ["-s", this.session, ...args], {
-        timeout: 5000,
+        timeout: GLOBAL_COMMAND_TIMEOUT_MS,
       });
       return stdout;
     } catch (err) {
@@ -280,7 +429,7 @@ export class ZellijController implements ZellijControllerApi {
 
   private async runGlobal(args: string[]): Promise<string> {
     try {
-      const { stdout } = await execFileAsync(this.zellijBin, args, { timeout: 5000 });
+      const { stdout } = await execFileAsync(this.zellijBin, args, { timeout: GLOBAL_COMMAND_TIMEOUT_MS });
       return stdout;
     } catch (err) {
       this.logger.error(`zellij ${args.join(" ")} failed:`, err);
@@ -288,3 +437,27 @@ export class ZellijController implements ZellijControllerApi {
     }
   }
 }
+
+const formatSocketAge = (mtimeMs: number): string => {
+  const diffMs = Math.max(0, Date.now() - mtimeMs);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}d`;
+  }
+  if (hours > 0) {
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  }
+  if (minutes > 0) {
+    return seconds > 0 ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  return `${seconds}s`;
+};
+
+const delay = (ms: number): Promise<void> => {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+};
