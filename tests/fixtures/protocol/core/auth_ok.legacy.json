@@ -1,8 +1,0 @@
-{
-  "type": "auth_ok",
-  "capabilities": {
-    "envelope": true,
-    "inspectV2": true,
-    "deviceTrust": true
-  }
-}

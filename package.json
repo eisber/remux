@@ -1,103 +1,32 @@
 {
   "name": "remux",
-  "version": "0.2.72",
-  "description": "Remote workspace cockpit for terminal-first work, powered by Zellij",
+  "version": "0.3.0",
+  "description": "Remote terminal workspace — powered by ghostty-web",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yaoshenwang/remux.git"
   },
-  "bugs": {
-    "url": "https://github.com/yaoshenwang/remux/issues"
-  },
-  "homepage": "https://github.com/yaoshenwang/remux#readme",
-  "keywords": [
-    "terminal",
-    "remote",
-    "mobile",
-    "websocket",
-    "workspace",
-    "zellij",
-    "web-terminal"
-  ],
   "type": "module",
-  "publishConfig": {
-    "access": "public"
-  },
-  "files": [
-    "dist",
-    "docs",
-    "README.md",
-    "LICENSE"
-  ],
   "bin": {
-    "remux": "dist/backend/cli-zellij.js",
-    "remux-tmux": "dist/backend/cli-tmux-compat.js"
+    "remux": "server.js"
   },
   "scripts": {
-    "dev": "concurrently \"pnpm:dev:backend\" \"pnpm:dev:frontend\"",
-    "dev:backend": "VITE_DEV_MODE=1 tsx watch src/backend/cli-zellij.ts",
-    "dev:frontend": "vite --config vite.config.ts",
-    "build": "pnpm run build:frontend && pnpm run build:backend",
-    "build:backend": "tsc -p tsconfig.backend.json",
-    "build:frontend": "vite build --config vite.config.ts && cp node_modules/ghostty-web/dist/ghostty-vt.wasm dist/frontend/ghostty-vt.wasm",
-    "start": "pnpm run build && node dist/backend/cli-zellij.js",
-    "check:terminology": "node scripts/check-active-terminology.mjs",
-    "typecheck": "tsc -p tsconfig.backend.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
-    "test": "vitest run --config vitest.config.ts",
-    "test:watch": "vitest --config vitest.config.ts",
-    "test:e2e": "playwright test",
-    "test:gate": "pnpm run typecheck && pnpm run check:terminology && pnpm test && pnpm run build",
-    "postinstall": "node --input-type=commonjs -e \"var fs=require('fs'),p=require('path');['darwin-arm64','darwin-x64'].forEach(function(d){var f=p.join('node_modules','node-pty','prebuilds',d,'spawn-helper');try{fs.chmodSync(f,0o755)}catch(e){}})\"",
-    "prepack": "pnpm run build"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "ghostty-web": "^0.4.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.20.0"
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
       "node-pty"
     ]
   },
-  "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-serialize": "^0.14.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "@xterm/headless": "^6.0.0",
-    "@xterm/xterm": "^6.0.0",
-    "better-sqlite3": "^12.8.0",
-    "express": "^5.2.1",
-    "ghostty-web": "^0.4.0",
-    "node-pty": "^1.1.0",
-    "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "web-push": "^3.6.7",
-    "ws": "^8.20.0",
-    "yargs": "^18.0.0"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.58.2",
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.5.0",
-    "@types/qrcode": "^1.5.6",
-    "@types/qrcode-terminal": "^0.12.2",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@types/web-push": "^3.6.4",
-    "@types/ws": "^8.18.1",
-    "@types/yargs": "^17.0.35",
-    "@vitejs/plugin-react": "^6.0.1",
-    "ajv": "^8.18.0",
-    "concurrently": "^9.2.1",
-    "jsdom": "^29.0.1",
-    "tsx": "^4.21.0",
-    "typescript": "^6.0.2",
-    "vite": "^8.0.3",
-    "vitest": "^4.1.2"
-  }
+  "postinstall": "node --input-type=commonjs -e \"var fs=require('fs'),p=require('path');['darwin-arm64','darwin-x64'].forEach(function(d){var f=p.join('node_modules','node-pty','prebuilds',d,'spawn-helper');try{fs.chmodSync(f,0o755)}catch(e){}})\""
 }
