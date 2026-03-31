@@ -231,6 +231,16 @@ export const App = () => {
 
   const clientCount = control.connectedClients.length;
   const [clientsExpanded, setClientsExpanded] = useState(false);
+  const createSessionInputRef = useRef<HTMLInputElement>(null);
+
+  const submitCreateSession = useCallback(() => {
+    const value = createSessionInputRef.current?.value.trim();
+    if (!value) {
+      return;
+    }
+    control.createSession(value);
+    setCreatingSession(false);
+  }, [control.createSession]);
 
   const sidebar = (
     <aside className={`sidebar${drawerOpen ? " drawer-open" : ""}`} data-testid="sidebar">
@@ -247,25 +257,26 @@ export const App = () => {
       </div>
 
       {creatingSession && (
-        <div className="sidebar-create-session">
+        <form
+          className="sidebar-create-session"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitCreateSession();
+          }}
+        >
           <input
+            ref={createSessionInputRef}
             className="sidebar-session-input"
             placeholder="Session name"
             autoFocus
             onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const value = e.currentTarget.value.trim();
-                if (value) {
-                  control.createSession(value);
-                }
-                setCreatingSession(false);
-              }
               if (e.key === "Escape") {
+                e.preventDefault();
                 setCreatingSession(false);
               }
             }}
           />
-        </div>
+        </form>
       )}
 
       <div className="sidebar-session-list">
