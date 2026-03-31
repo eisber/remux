@@ -1298,6 +1298,7 @@ button, input {
   text-transform: uppercase;
 }
 
+/* xterm.js compat mode */
 .terminal-host .xterm {
   height: 100%;
   padding: 0.25rem;
@@ -1313,6 +1314,14 @@ button, input {
   touch-action: pan-y;
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
+}
+
+/* ghostty-web canvas mode */
+.terminal-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
 }
 
 .inspect-main {

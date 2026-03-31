@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, type Dispatch, type MutableRefObject, type RefObject, type SetStateAction } from "react";
-import { Terminal } from "@xterm/xterm";
-import { FitAddon } from "@xterm/addon-fit";
-import { SerializeAddon } from "@xterm/addon-serialize";
 import { themes } from "../themes";
 import type { ToolbarHandle } from "../components/Toolbar";
-import { loadPreferredTerminalRenderer } from "../terminal-renderer";
+import { createTerminalCore, type TerminalCore } from "../terminal/terminal-adapter";
 import {
   createTerminalWriteBuffer,
   type TerminalWriteBuffer,
@@ -53,7 +50,7 @@ interface TerminalFitOptions {
 interface UseTerminalRuntimeResult {
   copySelection: () => Promise<void>;
   fileInputRef: RefObject<HTMLInputElement | null>;
-  fitAddonRef: MutableRefObject<FitAddon | null>;
+  fitAddonRef: MutableRefObject<any | null>;
   focusTerminal: () => void;
   localEchoRef: MutableRefObject<LocalEchoPrediction | null>;
   readTerminalGeometry: () => { cols: number; rows: number } | null;
@@ -62,9 +59,8 @@ interface UseTerminalRuntimeResult {
   requestTerminalFit: (options?: TerminalFitOptions) => void;
   resetTerminalBuffer: () => void;
   inspectContentRef: RefObject<HTMLDivElement | null>;
-  serializeAddonRef: MutableRefObject<SerializeAddon | null>;
   terminalContainerRef: RefObject<HTMLDivElement | null>;
-  terminalRef: MutableRefObject<Terminal | null>;
+  terminalRef: MutableRefObject<any | null>;
   writeToTerminal: (
     chunk: TerminalWriteChunk,
     onComplete?: () => void,
@@ -88,9 +84,9 @@ export const useTerminalRuntime = ({
 }: UseTerminalRuntimeOptions): UseTerminalRuntimeResult => {
   const terminalContainerRef = useRef<HTMLDivElement>(null);
   const inspectContentRef = useRef<HTMLDivElement | null>(null);
-  const terminalRef = useRef<Terminal | null>(null);
-  const fitAddonRef = useRef<FitAddon | null>(null);
-  const serializeAddonRef = useRef<SerializeAddon | null>(null);
+  const terminalRef = useRef<any | null>(null);
+  const fitAddonRef = useRef<any | null>(null);
+  const terminalCoreRef = useRef<TerminalCore | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const sendRawToSocketRef = useRef(onSendRaw);
   const setStatusMessageRef = useRef(setStatusMessage);
@@ -103,7 +99,6 @@ export const useTerminalRuntime = ({
   const lastResizeSocketRef = useRef<WebSocket | null>(null);
   const requestTerminalFitRef = useRef<(options?: TerminalFitOptions) => void>(() => undefined);
   const terminalVisibleRef = useRef(terminalVisible);
-  const rendererAddonRef = useRef<{ dispose(): void } | null>(null);
   const terminalWriteBufferRef = useRef<TerminalWriteBuffer | null>(null);
   const localEchoRef = useRef<LocalEchoPrediction | null>(null);
 
@@ -207,9 +202,9 @@ export const useTerminalRuntime = ({
   requestTerminalFitRef.current = requestTerminalFit;
 
   const readTerminalBuffer = useCallback((): string => {
-    const addon = serializeAddonRef.current;
-    if (!addon) return "";
-    return addon.serialize({ scrollback: 10000 });
+    const core = terminalCoreRef.current;
+    if (!core) return "";
+    return core.serialize({ scrollback: 10000 });
   }, []);
 
   const readTerminalViewport = useCallback((): string => {
@@ -362,150 +357,169 @@ export const useTerminalRuntime = ({
       return;
     }
 
-    const initialFontSize = getPreferredTerminalFontSize(mobileLayout);
-    const themeConfig = themes[theme];
-    const terminal = new Terminal({
-      cursorBlink: true,
-      scrollback: 10000,
-      fontFamily: "'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', 'FiraCode Nerd Font', 'JetBrainsMono Nerd Font', 'DejaVu Sans Mono Nerd Font', 'Symbols Nerd Font Mono', Menlo, Monaco, 'Courier New', monospace",
-      fontSize: initialFontSize,
-      theme: themeConfig?.xterm ?? {
-        background: "#0d1117",
-        foreground: "#d1e4ff",
-        cursor: "#93c5fd"
-      }
-    });
-    const fitAddon = new FitAddon();
-    const serializeAddon = new SerializeAddon();
-    terminal.loadAddon(fitAddon);
-    terminal.loadAddon(serializeAddon);
-    rendererAddonRef.current = loadPreferredTerminalRenderer(terminal);
-    terminal.attachCustomKeyEventHandler((event) => {
-      const modifierKey = navigator.platform.toLowerCase().includes("mac")
-        ? event.metaKey
-        : event.ctrlKey;
-      const key = event.key.toLowerCase();
+    let cancelled = false;
+    let cleanupFn: (() => void) | null = null;
 
-      if (modifierKey && key === "c" && terminal.hasSelection()) {
-        void copySelectionRef.current();
-        event.preventDefault();
-        return false;
+    void (async () => {
+      const container = terminalContainerRef.current;
+      if (!container) return;
+
+      const initialFontSize = getPreferredTerminalFontSize(mobileLayout);
+      const themeConfig = themes[theme];
+      const core = await createTerminalCore(container, {
+        cursorBlink: true,
+        scrollback: 10000,
+        fontFamily: "'MesloLGS NF', 'MesloLGM NF', 'Hack Nerd Font', 'FiraCode Nerd Font', 'JetBrainsMono Nerd Font', 'DejaVu Sans Mono Nerd Font', 'Symbols Nerd Font Mono', Menlo, Monaco, 'Courier New', monospace",
+        fontSize: initialFontSize,
+        theme: themeConfig?.xterm ?? {
+          background: "#0d1117",
+          foreground: "#d1e4ff",
+          cursor: "#93c5fd"
+        },
+      });
+
+      if (cancelled) {
+        core.dispose();
+        return;
       }
 
-      if (modifierKey && key === "v") {
-        void (async () => {
-          try {
-            if (typeof navigator.clipboard.read === "function") {
-              const items = await navigator.clipboard.read();
-              for (const item of items) {
-                if (item.types.includes("text/plain")) {
-                  const blob = await item.getType("text/plain");
-                  const text = await blob.text();
-                  if (text) {
-                    sendRawToSocketRef.current(text);
+      const { terminal } = core;
+      terminal.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+        const modifierKey = navigator.platform.toLowerCase().includes("mac")
+          ? event.metaKey
+          : event.ctrlKey;
+        const key = event.key.toLowerCase();
+
+        if (modifierKey && key === "c" && terminal.hasSelection()) {
+          void copySelectionRef.current();
+          event.preventDefault();
+          return false;
+        }
+
+        if (modifierKey && key === "v") {
+          void (async () => {
+            try {
+              if (typeof navigator.clipboard.read === "function") {
+                const items = await navigator.clipboard.read();
+                for (const item of items) {
+                  if (item.types.includes("text/plain")) {
+                    const blob = await item.getType("text/plain");
+                    const text = await blob.text();
+                    if (text) {
+                      sendRawToSocketRef.current(text);
+                      focusTerminalRef.current();
+                      return;
+                    }
+                  }
+                }
+                for (const item of items) {
+                  const imageType = item.types.find((t: string) => t.startsWith("image/"));
+                  if (imageType) {
+                    const blob = await item.getType(imageType);
+                    setStatusMessageRef.current("Uploading image…");
+                    const result = await uploadImage(blob, imageType);
+                    sendRawToSocketRef.current(result.path);
                     focusTerminalRef.current();
+                    const sizeKB = Math.round(result.size / 1024);
+                    setStatusMessageRef.current(`Image uploaded (${sizeKB}KB)`);
                     return;
                   }
                 }
-              }
-              for (const item of items) {
-                const imageType = item.types.find((t) => t.startsWith("image/"));
-                if (imageType) {
-                  const blob = await item.getType(imageType);
-                  setStatusMessageRef.current("Uploading image…");
-                  const result = await uploadImage(blob, imageType);
-                  sendRawToSocketRef.current(result.path);
+              } else {
+                const text = await navigator.clipboard.readText();
+                if (text) {
+                  sendRawToSocketRef.current(text);
                   focusTerminalRef.current();
-                  const sizeKB = Math.round(result.size / 1024);
-                  setStatusMessageRef.current(`Image uploaded (${sizeKB}KB)`);
-                  return;
                 }
               }
-            } else {
-              const text = await navigator.clipboard.readText();
-              if (text) {
-                sendRawToSocketRef.current(text);
-                focusTerminalRef.current();
-              }
+            } catch (err) {
+              setStatusMessageRef.current(
+                err instanceof Error && err.message !== "clipboard read failed"
+                  ? err.message
+                  : "clipboard read failed",
+              );
             }
-          } catch (err) {
-            setStatusMessageRef.current(
-              err instanceof Error && err.message !== "clipboard read failed"
-                ? err.message
-                : "clipboard read failed",
-            );
-          }
-        })();
-        event.preventDefault();
-        return false;
-      }
+          })();
+          event.preventDefault();
+          return false;
+        }
 
-      return true;
-    });
-    terminal.open(terminalContainerRef.current);
-    terminalWriteBufferRef.current = createTerminalWriteBuffer((chunk, onWritten) => {
-      terminal.write(chunk, onWritten);
-    });
-    localEchoRef.current = new LocalEchoPrediction({
-      writeToTerminal: (data) => terminal.write(data),
-    });
-    requestAnimationFrame(() => {
-      terminal.focus();
-      requestTerminalFitRef.current({ notify: false, retryUntilVisible: true });
-    });
+        return true;
+      });
+      terminal.open(container);
+      terminalWriteBufferRef.current = createTerminalWriteBuffer((chunk, onWritten) => {
+        terminal.write(chunk, onWritten);
+      });
+      localEchoRef.current = new LocalEchoPrediction({
+        writeToTerminal: (data: string) => terminal.write(data),
+      });
+      requestAnimationFrame(() => {
+        terminal.focus();
+        requestTerminalFitRef.current({ notify: false, retryUntilVisible: true });
+      });
 
-    const disposable = terminal.onData((data) => {
-      const output = toolbarRef.current?.applyModifiersAndClear(data) ?? data;
-      // Filter out CPR responses — the server handles DSR queries directly.
-      const filtered = output.replace(CPR_RESPONSE_RE, "");
-      if (filtered) {
-        localEchoRef.current?.predictInput(filtered);
-        sendRawToSocketRef.current(filtered);
-      }
-    });
+      const disposable = terminal.onData((data: string) => {
+        const output = toolbarRef.current?.applyModifiersAndClear(data) ?? data;
+        // Filter out CPR responses — the server handles DSR queries directly.
+        const filtered = output.replace(CPR_RESPONSE_RE, "");
+        if (filtered) {
+          localEchoRef.current?.predictInput(filtered);
+          sendRawToSocketRef.current(filtered);
+        }
+      });
 
-    terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-    serializeAddonRef.current = serializeAddon;
+      terminalCoreRef.current = core;
+      terminalRef.current = terminal;
+      fitAddonRef.current = core.fitAddon;
 
-    const resizeObserver = new ResizeObserver(() => {
-      requestTerminalFitRef.current({ notify: true });
-    });
-    resizeObserver.observe(terminalContainerRef.current);
+      const resizeObserver = new ResizeObserver(() => {
+        requestTerminalFitRef.current({ notify: true });
+      });
+      resizeObserver.observe(container);
 
-    const fontSet = document.fonts;
-    const handleFontsChanged = () => {
-      if (terminalVisibleRef.current) {
-        requestTerminalFitRef.current({ notify: true, retryUntilVisible: true });
-      }
-    };
+      const fontSet = document.fonts;
+      const handleFontsChanged = () => {
+        if (terminalVisibleRef.current) {
+          requestTerminalFitRef.current({ notify: true, retryUntilVisible: true });
+        }
+      };
 
-    void fontSet?.ready.then(() => {
-      handleFontsChanged();
-    });
-    fontSet?.addEventListener?.("loadingdone", handleFontsChanged);
+      void fontSet?.ready.then(() => {
+        handleFontsChanged();
+      });
+      fontSet?.addEventListener?.("loadingdone", handleFontsChanged);
+
+      cleanupFn = () => {
+        clearPendingFit();
+        clearPendingResize();
+        resizeObserver.disconnect();
+        fontSet?.removeEventListener?.("loadingdone", handleFontsChanged);
+        disposable.dispose();
+        localEchoRef.current?.reset();
+        localEchoRef.current = null;
+        terminalWriteBufferRef.current?.clear();
+        terminalWriteBufferRef.current = null;
+        core.dispose();
+        terminalCoreRef.current = null;
+        terminalRef.current = null;
+        fitAddonRef.current = null;
+        lastResizeSignatureRef.current = "";
+        lastResizeSocketRef.current = null;
+      };
+    })();
 
     return () => {
-      clearPendingFit();
-      clearPendingResize();
-      resizeObserver.disconnect();
-      fontSet?.removeEventListener?.("loadingdone", handleFontsChanged);
-      disposable.dispose();
-      localEchoRef.current?.reset();
-      localEchoRef.current = null;
-      rendererAddonRef.current?.dispose();
-      rendererAddonRef.current = null;
-      terminalWriteBufferRef.current?.clear();
-      terminalWriteBufferRef.current = null;
-      terminal.dispose();
-      terminalRef.current = null;
-      fitAddonRef.current = null;
-      serializeAddonRef.current = null;
-      lastResizeSignatureRef.current = "";
-      lastResizeSocketRef.current = null;
+      cancelled = true;
+      if (cleanupFn) {
+        cleanupFn();
+      } else {
+        // Async init hasn't completed yet — cleanup will happen in the cancelled check
+        clearPendingFit();
+        clearPendingResize();
+      }
     };
   // Terminal initialization happens once; subsequent layout changes use
-  // requestTerminalFit plus the effects below instead of recreating xterm.
+  // requestTerminalFit plus the effects below instead of recreating the terminal.
   }, [clearPendingFit, clearPendingResize]);
 
   useEffect(() => {
@@ -561,7 +575,6 @@ export const useTerminalRuntime = ({
     requestTerminalFit,
     resetTerminalBuffer,
     inspectContentRef,
-    serializeAddonRef,
     terminalContainerRef,
     terminalRef,
     writeToTerminal
