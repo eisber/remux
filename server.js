@@ -36,7 +36,15 @@ function findGhosttyWeb() {
 
 const { distPath, wasmPath } = findGhosttyWeb();
 
-// ── Session Manager (tsm pattern) ─────────────────────────────────
+// ── Data Model ────────────────────────────────────────────────────
+//
+//  Session "work"          ← sidebar (left)
+//  ├── Tab 0  (PTY: zsh)  ← tab bar (right)
+//  ├── Tab 1  (PTY: vim)
+//  └── Tab 2  (PTY: htop)
+//
+//  Session "logs"
+//  └── Tab 0  (PTY: tail)
 
 function getShell() {
   return process.platform === "win32"
@@ -81,11 +89,10 @@ class RingBuffer {
   }
 }
 
-const sessionMap = new Map();
+let tabIdCounter = 0;
 
-function createSession(name, cols = 80, rows = 24) {
-  if (sessionMap.has(name)) return sessionMap.get(name);
-
+function createTab(session, cols = 80, rows = 24) {
+  const id = tabIdCounter++;
   const ptyProcess = pty.spawn(getShell(), [], {
     name: "xterm-256color",
     cols, rows,
@@ -93,100 +100,133 @@ function createSession(name, cols = 80, rows = 24) {
     env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" },
   });
 
-  const session = {
-    name,
+  const tab = {
+    id,
     pty: ptyProcess,
     scrollback: new RingBuffer(),
-    clients: new Set(),
+    clients: new Set(),   // ws clients viewing THIS tab
     cols, rows,
-    createdAt: Date.now(),
     ended: false,
+    title: `Tab ${session.tabs.length + 1}`,
   };
 
   ptyProcess.onData((data) => {
-    session.scrollback.write(data);
-    for (const ws of session.clients) {
+    tab.scrollback.write(data);
+    for (const ws of tab.clients) {
       if (ws.readyState === ws.OPEN) ws.send(data);
     }
   });
 
   ptyProcess.onExit(({ exitCode }) => {
-    session.ended = true;
+    tab.ended = true;
     const msg = `\r\n\x1b[33mShell exited (code: ${exitCode})\x1b[0m\r\n`;
-    for (const ws of session.clients) {
+    for (const ws of tab.clients) {
       if (ws.readyState === ws.OPEN) ws.send(msg);
     }
-    broadcastSessionList();
+    broadcastState();
   });
 
+  session.tabs.push(tab);
+  console.log(`[tab] created id=${id} in session "${session.name}" (pid=${ptyProcess.pid})`);
+  return tab;
+}
+
+const sessionMap = new Map();
+
+function createSession(name) {
+  if (sessionMap.has(name)) return sessionMap.get(name);
+  const session = { name, tabs: [], createdAt: Date.now() };
   sessionMap.set(name, session);
-  console.log(`[session] created "${name}" (pid=${ptyProcess.pid})`);
+  console.log(`[session] created "${name}"`);
   return session;
 }
 
 function deleteSession(name) {
   const session = sessionMap.get(name);
   if (!session) return;
-  if (!session.ended) session.pty.kill();
+  for (const tab of session.tabs) {
+    if (!tab.ended) tab.pty.kill();
+  }
   sessionMap.delete(name);
   console.log(`[session] deleted "${name}"`);
 }
 
-function getSessionList() {
-  return [...sessionMap.entries()].map(([name, s]) => ({
-    name,
-    clients: s.clients.size,
-    ended: s.ended,
+function getState() {
+  return [...sessionMap.values()].map(s => ({
+    name: s.name,
+    tabs: s.tabs.map(t => ({
+      id: t.id,
+      title: t.title,
+      ended: t.ended,
+      clients: t.clients.size,
+    })),
     createdAt: s.createdAt,
   }));
 }
 
-function attachClient(session, ws, cols, rows) {
-  // Send scrollback history to new client
-  const history = session.scrollback.read();
+// Attach ws to a specific tab — detach from previous first
+function attachToTab(tab, ws, cols, rows) {
+  detachFromTab(ws);
+  const history = tab.scrollback.read();
   if (history.length > 0 && ws.readyState === ws.OPEN) {
     ws.send(history.toString("utf8"));
   }
-  session.clients.add(ws);
-  // Resize to smallest client (tsm pattern)
-  recalcSize(session);
+  tab.clients.add(ws);
+  ws._remuxTabId = tab.id;
+  ws._remuxCols = cols;
+  ws._remuxRows = rows;
+  recalcTabSize(tab);
 }
 
-function detachClient(ws) {
-  const sessionName = ws._remuxSession;
-  if (!sessionName) return;
-  const session = sessionMap.get(sessionName);
-  if (!session) return;
-  session.clients.delete(ws);
-  if (session.clients.size > 0) recalcSize(session);
+function detachFromTab(ws) {
+  const prevId = ws._remuxTabId;
+  if (prevId == null) return;
+  // find tab across all sessions
+  for (const session of sessionMap.values()) {
+    const tab = session.tabs.find(t => t.id === prevId);
+    if (tab) {
+      tab.clients.delete(ws);
+      if (tab.clients.size > 0) recalcTabSize(tab);
+      break;
+    }
+  }
+  ws._remuxTabId = null;
 }
 
-function recalcSize(session) {
+function findTab(tabId) {
+  for (const session of sessionMap.values()) {
+    const tab = session.tabs.find(t => t.id === tabId);
+    if (tab) return { session, tab };
+  }
+  return null;
+}
+
+function recalcTabSize(tab) {
   let minCols = Infinity, minRows = Infinity;
-  for (const ws of session.clients) {
+  for (const ws of tab.clients) {
     if (ws._remuxCols) minCols = Math.min(minCols, ws._remuxCols);
     if (ws._remuxRows) minRows = Math.min(minRows, ws._remuxRows);
   }
-  if (minCols < Infinity && minRows < Infinity && !session.ended) {
-    session.cols = minCols;
-    session.rows = minRows;
-    session.pty.resize(minCols, minRows);
+  if (minCols < Infinity && minRows < Infinity && !tab.ended) {
+    tab.cols = minCols;
+    tab.rows = minRows;
+    tab.pty.resize(minCols, minRows);
   }
 }
 
-// Track control clients for session list broadcasts
 const controlClients = new Set();
 
-function broadcastSessionList() {
-  const list = getSessionList();
-  const msg = JSON.stringify({ type: "session_list", sessions: list });
+function broadcastState() {
+  const state = getState();
+  const msg = JSON.stringify({ type: "state", sessions: state });
   for (const ws of controlClients) {
     if (ws.readyState === ws.OPEN) ws.send(msg);
   }
 }
 
-// Create default session
-createSession("main");
+// Default session with one tab
+const defaultSession = createSession("main");
+createTab(defaultSession);
 
 // ── HTML Template ──────────────────────────────────────────────────
 
@@ -303,6 +343,12 @@ const HTML_TEMPLATE = `<!doctype html>
       }
       .tab:hover { color: #ccc; background: #2a2d2e; }
       .tab.active { color: #e5e5e5; border-bottom-color: #007acc; background: #1e1e1e; }
+      .tab .tab-close {
+        margin-left: 6px; font-size: 10px; opacity: 0;
+        padding: 1px 3px; border-radius: 3px;
+      }
+      .tab:hover .tab-close { opacity: .5; }
+      .tab .tab-close:hover { opacity: 1; background: #555; }
       .tab-new {
         padding: 6px 10px; font-size: 14px; color: #666;
         background: none; border: none; cursor: pointer;
@@ -408,21 +454,21 @@ const HTML_TEMPLATE = `<!doctype html>
       window.addEventListener('resize', () => fitAddon.fit());
 
       // ── State ──
-      let currentSession = 'main';
+      // sessions = [{ name, tabs: [{ id, title, ended }] }]
       let sessions = [];
-      let openTabs = ['main'];
+      let currentSession = 'main';
+      let currentTabId = null;
       let ws = null;
       let ctrlActive = false;
 
       const $ = (s) => document.getElementById(s);
       function setStatus(s, t) { $('status-dot').className = 'status-dot ' + s; $('status-text').textContent = t; }
 
-      // ── Sidebar ──
+      // ── Sidebar toggle ──
       const sidebar = $('sidebar');
       const overlay = $('sidebar-overlay');
       function toggleSidebar() {
-        const isMobile = window.innerWidth <= 768;
-        if (isMobile) {
+        if (window.innerWidth <= 768) {
           sidebar.classList.toggle('open');
           overlay.classList.toggle('visible', sidebar.classList.contains('open'));
         } else {
@@ -430,71 +476,92 @@ const HTML_TEMPLATE = `<!doctype html>
         }
         setTimeout(() => fitAddon.fit(), 250);
       }
-      $('btn-sidebar').addEventListener('click', toggleSidebar);
-      overlay.addEventListener('click', () => {
-        sidebar.classList.remove('open');
-        overlay.classList.remove('visible');
-      });
+      $('btn-sidebar').addEventListener('pointerdown', (e) => { e.preventDefault(); toggleSidebar(); });
+      overlay.addEventListener('pointerdown', () => { sidebar.classList.remove('open'); overlay.classList.remove('visible'); });
 
-      // ── Render sessions sidebar ──
+      // ── Render sidebar (sessions) ──
       function renderSessions() {
         const list = $('session-list');
         list.innerHTML = '';
         sessions.forEach(s => {
           const el = document.createElement('button');
           el.className = 'session-item' + (s.name === currentSession ? ' active' : '');
-          el.innerHTML = '<span class="dot' + (s.ended ? ' ended' : '') + '"></span>'
+          const tabCount = s.tabs.filter(t => !t.ended).length;
+          el.innerHTML = '<span class="dot"></span>'
             + '<span class="name">' + s.name + '</span>'
-            + (s.clients > 0 ? '<span class="clients">' + s.clients + '</span>' : '')
+            + '<span class="clients">' + tabCount + '</span>'
             + '<button class="del" data-del="' + s.name + '">×</button>';
-          el.addEventListener('click', (e) => {
+          el.addEventListener('pointerdown', (e) => {
             if (e.target.dataset.del) {
-              e.stopPropagation();
-              sendControl({ type: 'delete_session', name: e.target.dataset.del });
+              e.stopPropagation(); e.preventDefault();
+              sendCtrl({ type: 'delete_session', name: e.target.dataset.del });
               return;
             }
-            switchSession(s.name);
+            e.preventDefault();
+            selectSession(s.name);
             if (window.innerWidth <= 768) { sidebar.classList.remove('open'); overlay.classList.remove('visible'); }
           });
           list.appendChild(el);
         });
       }
 
-      // ── Render tab bar ──
+      // ── Render tab bar (tabs of current session) ──
       function renderTabs() {
-        // Ensure current session has a tab
-        if (!openTabs.includes(currentSession)) openTabs.push(currentSession);
-        // Remove tabs for deleted sessions
-        openTabs = openTabs.filter(t => sessions.some(s => s.name === t) || t === currentSession);
-
         const list = $('tab-list');
         list.innerHTML = '';
-        openTabs.forEach(name => {
+        const sess = sessions.find(s => s.name === currentSession);
+        if (!sess) return;
+        sess.tabs.forEach(t => {
           const btn = document.createElement('button');
-          btn.className = 'tab' + (name === currentSession ? ' active' : '');
-          btn.textContent = name;
-          btn.addEventListener('click', () => switchSession(name));
+          btn.className = 'tab' + (t.id === currentTabId ? ' active' : '');
+          btn.innerHTML = '<span>' + t.title + (t.ended ? ' ✕' : '') + '</span>'
+            + '<span class="tab-close" data-close="' + t.id + '">×</span>';
+          btn.addEventListener('pointerdown', (e) => {
+            if (e.target.dataset.close != null) {
+              e.stopPropagation(); e.preventDefault();
+              sendCtrl({ type: 'close_tab', tabId: Number(e.target.dataset.close) });
+              return;
+            }
+            e.preventDefault();
+            attachTab(t.id);
+          });
           list.appendChild(btn);
         });
       }
 
-      $('btn-new-session').addEventListener('click', () => {
-        const name = prompt('Session name:');
-        if (name && name.trim()) switchSession(name.trim());
-      });
-      $('btn-new-tab').addEventListener('click', () => {
-        const name = prompt('Session name:');
-        if (name && name.trim()) switchSession(name.trim());
+      // Select a session → attach to its first tab
+      function selectSession(name) {
+        currentSession = name;
+        const sess = sessions.find(s => s.name === name);
+        if (sess && sess.tabs.length > 0) {
+          attachTab(sess.tabs[0].id);
+        }
+        renderSessions();
+        renderTabs();
+      }
+
+      // Attach to a specific tab
+      function attachTab(tabId) {
+        currentTabId = tabId;
+        term.clear();
+        sendCtrl({ type: 'attach_tab', tabId, cols: term.cols, rows: term.rows });
+        renderTabs();
+      }
+
+      // New tab in current session
+      $('btn-new-tab').addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        sendCtrl({ type: 'new_tab', session: currentSession, cols: term.cols, rows: term.rows });
       });
 
-      function switchSession(name) {
-        currentSession = name;
-        if (!openTabs.includes(name)) openTabs.push(name);
-        sendControl({ type: 'attach', session: name, cols: term.cols, rows: term.rows });
-        term.clear();
-        renderTabs();
-        renderSessions();
-      }
+      // New session
+      $('btn-new-session').addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        const name = prompt('Session name:');
+        if (name && name.trim()) {
+          sendCtrl({ type: 'new_session', name: name.trim(), cols: term.cols, rows: term.rows });
+        }
+      });
 
       // ── WebSocket ──
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -505,7 +572,8 @@ const HTML_TEMPLATE = `<!doctype html>
         ws = new WebSocket(proto + '//' + location.host + '/ws');
         ws.onopen = () => {
           if (urlToken) ws.send(JSON.stringify({ type: 'auth', token: urlToken }));
-          sendControl({ type: 'attach', session: currentSession, cols: term.cols, rows: term.rows });
+          // Attach to first tab of default session (server creates it on startup)
+          sendCtrl({ type: 'attach_first', session: 'main', cols: term.cols, rows: term.rows });
         };
         ws.onmessage = (e) => {
           if (typeof e.data === 'string' && e.data[0] === '{') {
@@ -513,8 +581,20 @@ const HTML_TEMPLATE = `<!doctype html>
               const msg = JSON.parse(e.data);
               if (msg.type === 'auth_ok') return;
               if (msg.type === 'auth_error') { setStatus('disconnected', 'Auth failed'); ws.close(); return; }
-              if (msg.type === 'session_list') { sessions = msg.sessions; renderSessions(); renderTabs(); return; }
-              if (msg.type === 'attached') { currentSession = msg.session; setStatus('connected', msg.session); renderSessions(); renderTabs(); return; }
+              if (msg.type === 'state') {
+                sessions = msg.sessions;
+                renderSessions();
+                renderTabs();
+                return;
+              }
+              if (msg.type === 'attached') {
+                currentTabId = msg.tabId;
+                currentSession = msg.session;
+                setStatus('connected', msg.session);
+                renderSessions();
+                renderTabs();
+                return;
+              }
             } catch {}
           }
           term.write(e.data);
@@ -524,7 +604,7 @@ const HTML_TEMPLATE = `<!doctype html>
       }
       connect();
 
-      function sendControl(msg) {
+      function sendCtrl(msg) {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
       }
 
@@ -540,9 +620,9 @@ const HTML_TEMPLATE = `<!doctype html>
         ws.send(data);
       });
 
-      term.onResize(({ cols, rows }) => sendControl({ type: 'resize', cols, rows }));
+      term.onResize(({ cols, rows }) => sendCtrl({ type: 'resize', cols, rows }));
 
-      // ── Compose bar (use pointerdown for reliable mobile) ──
+      // ── Compose bar ──
       const SEQ = { esc: '\\x1b', tab: '\\t', up: '\\x1b[A', down: '\\x1b[B', left: '\\x1b[D', right: '\\x1b[C' };
 
       $('compose-bar').addEventListener('pointerdown', (e) => {
@@ -634,15 +714,16 @@ httpServer.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", (ws) => {
-  ws._remuxSession = null;
+  ws._remuxTabId = null;
   ws._remuxCols = 80;
   ws._remuxRows = 24;
-  ws._remuxAuthed = !TOKEN; // auto-auth if no token configured
+  ws._remuxAuthed = !TOKEN;
+  if (!TOKEN) controlClients.add(ws); // auto-auth: register for broadcasts immediately
 
   ws.on("message", (raw) => {
     const msg = raw.toString("utf8");
 
-    // ── Auth gate: first message must be auth if token is set ──
+    // ── Auth gate ──
     if (!ws._remuxAuthed) {
       try {
         const parsed = JSON.parse(msg);
@@ -650,7 +731,7 @@ wss.on("connection", (ws) => {
           ws._remuxAuthed = true;
           controlClients.add(ws);
           ws.send(JSON.stringify({ type: "auth_ok" }));
-          ws.send(JSON.stringify({ type: "session_list", sessions: getSessionList() }));
+          ws.send(JSON.stringify({ type: "state", sessions: getState() }));
           return;
         }
       } catch {}
@@ -659,61 +740,99 @@ wss.on("connection", (ws) => {
       return;
     }
 
-    // Try JSON control message
+    // ── JSON control messages ──
     if (msg.startsWith("{")) {
       try {
-        const parsed = JSON.parse(msg);
+        const p = JSON.parse(msg);
 
-        if (parsed.type === "attach") {
-          // Detach from current session
-          detachClient(ws);
-
-          // Create or get session
-          const name = parsed.session || "main";
-          const cols = parsed.cols || 80;
-          const rows = parsed.rows || 24;
-          ws._remuxCols = cols;
-          ws._remuxRows = rows;
-
-          const session = createSession(name, cols, rows);
-          ws._remuxSession = name;
-          attachClient(session, ws, cols, rows);
-
-          ws.send(JSON.stringify({ type: "attached", session: name }));
-          broadcastSessionList();
+        // Attach to first tab of a session (or create one)
+        if (p.type === "attach_first") {
+          const name = p.session || "main";
+          const session = createSession(name);
+          let tab = session.tabs.find(t => !t.ended);
+          if (!tab) tab = createTab(session, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          attachToTab(tab, ws, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          // Send state BEFORE attached so client has session/tab data when processing attached
+          broadcastState();
+          ws.send(JSON.stringify({ type: "attached", tabId: tab.id, session: name }));
           return;
         }
 
-        if (parsed.type === "resize") {
-          ws._remuxCols = parsed.cols;
-          ws._remuxRows = parsed.rows;
-          const session = sessionMap.get(ws._remuxSession);
-          if (session) recalcSize(session);
-          return;
-        }
-
-        if (parsed.type === "delete_session") {
-          const name = parsed.name;
-          if (name && name !== ws._remuxSession) {
-            deleteSession(name);
-            broadcastSessionList();
+        // Attach to an existing tab by id
+        if (p.type === "attach_tab") {
+          const found = findTab(p.tabId);
+          if (found) {
+            attachToTab(found.tab, ws, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+            broadcastState();
+            ws.send(JSON.stringify({ type: "attached", tabId: found.tab.id, session: found.session.name }));
           }
           return;
         }
 
+        // Create a new tab in a session (creates session if needed)
+        if (p.type === "new_tab") {
+          const session = createSession(p.session || "main");
+          const tab = createTab(session, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          attachToTab(tab, ws, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          broadcastState();
+          ws.send(JSON.stringify({ type: "attached", tabId: tab.id, session: session.name }));
+          return;
+        }
+
+        // Close a tab (kill its PTY)
+        if (p.type === "close_tab") {
+          const found = findTab(p.tabId);
+          if (found) {
+            if (!found.tab.ended) found.tab.pty.kill();
+            found.session.tabs = found.session.tabs.filter(t => t.id !== p.tabId);
+            // If session has no tabs left, remove it (unless it's "main")
+            if (found.session.tabs.length === 0 && found.session.name !== "main") {
+              sessionMap.delete(found.session.name);
+            }
+          }
+          broadcastState();
+          return;
+        }
+
+        // Create a new session (with one default tab)
+        if (p.type === "new_session") {
+          const name = p.name || "session-" + Date.now();
+          const session = createSession(name);
+          const tab = createTab(session, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          attachToTab(tab, ws, p.cols || ws._remuxCols, p.rows || ws._remuxRows);
+          broadcastState();
+          ws.send(JSON.stringify({ type: "attached", tabId: tab.id, session: name }));
+          return;
+        }
+
+        // Delete entire session
+        if (p.type === "delete_session") {
+          if (p.name) { deleteSession(p.name); broadcastState(); }
+          return;
+        }
+
+        // Resize current tab
+        if (p.type === "resize") {
+          ws._remuxCols = p.cols;
+          ws._remuxRows = p.rows;
+          const found = findTab(ws._remuxTabId);
+          if (found) recalcTabSize(found.tab);
+          return;
+        }
+
         return;
-      } catch { /* not JSON, fall through to PTY write */ }
+      } catch { /* not JSON */ }
     }
 
-    // Raw terminal input → PTY
-    const session = sessionMap.get(ws._remuxSession);
-    if (session && !session.ended) {
-      session.pty.write(msg);
+    // ── Raw terminal input → current tab's PTY ──
+    const found = findTab(ws._remuxTabId);
+    if (found && !found.tab.ended) {
+      found.tab.pty.write(msg);
     }
   });
 
   ws.on("close", () => {
-    detachClient(ws);
+    detachFromTab(ws);
     controlClients.delete(ws);
   });
 
@@ -727,8 +846,10 @@ httpServer.listen(PORT, () => {
 });
 
 process.on("SIGINT", () => {
-  for (const [, session] of sessionMap) {
-    if (!session.ended) session.pty.kill();
+  for (const session of sessionMap.values()) {
+    for (const tab of session.tabs) {
+      if (!tab.ended) tab.pty.kill();
+    }
   }
   process.exit(0);
 });
