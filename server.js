@@ -18,6 +18,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const PORT = process.env.PORT || 8767;
+const TOKEN = process.env.REMUX_TOKEN || null;
 
 // ── Locate ghostty-web assets ──────────────────────────────────────
 
@@ -415,13 +416,17 @@ const HTML_TEMPLATE = `<!doctype html>
 
       // ── WebSocket ──
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const urlToken = new URLSearchParams(location.search).get('token');
 
       function connect() {
         setStatus('connecting', '...');
         ws = new WebSocket(proto + '//' + location.host + '/ws');
 
         ws.onopen = () => {
-          setStatus('connected', currentSession);
+          // Auth first, then attach
+          if (urlToken) {
+            ws.send(JSON.stringify({ type: 'auth', token: urlToken }));
+          }
           sendControl({ type: 'attach', session: currentSession, cols: term.cols, rows: term.rows });
         };
 
@@ -429,6 +434,12 @@ const HTML_TEMPLATE = `<!doctype html>
           if (typeof e.data === 'string' && e.data[0] === '{') {
             try {
               const msg = JSON.parse(e.data);
+              if (msg.type === 'auth_ok') return;
+              if (msg.type === 'auth_error') {
+                setStatus('disconnected', 'Auth failed');
+                ws.close();
+                return;
+              }
               if (msg.type === 'session_list') {
                 sessions = msg.sessions;
                 renderTabs();
@@ -540,6 +551,12 @@ const httpServer = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
   if (url.pathname === "/" || url.pathname === "/index.html") {
+    // If token is configured, require it in query string to serve the page
+    if (TOKEN && url.searchParams.get("token") !== TOKEN) {
+      res.writeHead(403, { "Content-Type": "text/plain" });
+      res.end("Forbidden: invalid or missing token");
+      return;
+    }
     res.writeHead(200, { "Content-Type": "text/html" });
     res.end(HTML_TEMPLATE);
     return;
@@ -583,13 +600,27 @@ wss.on("connection", (ws) => {
   ws._remuxSession = null;
   ws._remuxCols = 80;
   ws._remuxRows = 24;
-  controlClients.add(ws);
-
-  // Send session list on connect
-  ws.send(JSON.stringify({ type: "session_list", sessions: getSessionList() }));
+  ws._remuxAuthed = !TOKEN; // auto-auth if no token configured
 
   ws.on("message", (raw) => {
     const msg = raw.toString("utf8");
+
+    // ── Auth gate: first message must be auth if token is set ──
+    if (!ws._remuxAuthed) {
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed.type === "auth" && parsed.token === TOKEN) {
+          ws._remuxAuthed = true;
+          controlClients.add(ws);
+          ws.send(JSON.stringify({ type: "auth_ok" }));
+          ws.send(JSON.stringify({ type: "session_list", sessions: getSessionList() }));
+          return;
+        }
+      } catch {}
+      ws.send(JSON.stringify({ type: "auth_error", reason: "invalid token" }));
+      ws.close(4001, "unauthorized");
+      return;
+    }
 
     // Try JSON control message
     if (msg.startsWith("{")) {
