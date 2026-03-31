@@ -191,9 +191,10 @@ function restoreSessions() {
 //  └── Tab 0  (PTY: tail)
 
 function getShell() {
-  return process.platform === "win32"
-    ? (process.env.COMSPEC || "cmd.exe")
-    : (process.env.SHELL || "/bin/bash");
+  if (process.platform === "win32") return process.env.COMSPEC || "cmd.exe";
+  if (process.env.SHELL) return process.env.SHELL;
+  try { fs.accessSync("/bin/zsh", fs.constants.X_OK); return "/bin/zsh"; } catch {}
+  return "/bin/bash";
 }
 
 class RingBuffer {
