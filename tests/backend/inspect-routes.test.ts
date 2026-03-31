@@ -4,6 +4,7 @@ import path from "node:path";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
 import { createExtensions, type Extensions } from "../../src/backend/extensions.js";
+import { createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 const TEST_PORT = 19878;
 const SESSION = `test-inspect-${Date.now()}`;
@@ -51,7 +52,10 @@ describe("inspect history routes", () => {
         zellijSession: SESSION,
       },
       {
-        authService: new AuthService({ token: TOKEN }),
+        authService: new AuthService({
+          token: TOKEN,
+          deviceStore: createMemoryDeviceStore("inspect-routes") as never,
+        }),
         logger: { log: () => {}, error: () => {} },
         extensions,
       },

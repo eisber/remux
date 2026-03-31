@@ -5,6 +5,7 @@ import path from "node:path";
 import http from "node:http";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
+import { createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 const TEST_PORT = 19877;
 const TOKEN = "upload-test-token";
@@ -20,7 +21,10 @@ const TINY_PNG = Buffer.from(
 );
 
 beforeAll(async () => {
-  authService = new AuthService({ token: TOKEN });
+  authService = new AuthService({
+    token: TOKEN,
+    deviceStore: createMemoryDeviceStore("upload") as never,
+  });
   server = createZellijServer(
     {
       port: TEST_PORT,

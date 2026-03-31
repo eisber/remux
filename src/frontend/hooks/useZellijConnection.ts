@@ -27,6 +27,8 @@ export interface UseZellijConnectionResult {
   sendRaw: (data: string) => void;
   /** Send a resize event to the server. */
   sendResize: (cols: number, rows: number) => void;
+  /** Switch the current terminal websocket to another zellij session. */
+  sendSessionSwitch: (session: string) => void;
 
   socketRef: React.MutableRefObject<WebSocket | null>;
 
@@ -44,6 +46,7 @@ interface ServerConfig {
 
 export const useZellijConnection = (
   writeToTerminal: (data: string | Uint8Array) => void,
+  desiredSession?: string | null,
 ): UseZellijConnectionResult => {
   const socketRef = useRef<WebSocket | null>(null);
   const stopKeepAliveRef = useRef<(() => void) | null>(null);
@@ -88,6 +91,7 @@ export const useZellijConnection = (
       const authMsg: Record<string, unknown> = { type: "auth", token };
       const pw = passwordOverride ?? passwordRef.current;
       if (pw) authMsg.password = pw;
+      if (desiredSession) authMsg.session = desiredSession;
 
       ws.send(JSON.stringify(authMsg));
     };
@@ -147,7 +151,7 @@ export const useZellijConnection = (
     ws.onerror = () => {
       // onclose will fire after this.
     };
-  }, [status]);
+  }, [desiredSession, status]);
 
   // Fetch config and initiate connection on mount.
   useEffect(() => {
@@ -200,6 +204,12 @@ export const useZellijConnection = (
     ws.send(JSON.stringify({ type: "resize", cols, rows }));
   }, []);
 
+  const sendSessionSwitch = useCallback((session: string) => {
+    const ws = socketRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: "switch_session", session }));
+  }, []);
+
   return {
     status,
     errorMessage,
@@ -212,6 +222,7 @@ export const useZellijConnection = (
     retryConnection,
     sendRaw,
     sendResize,
+    sendSessionSwitch,
     socketRef,
     serverVersion: serverConfig?.version ?? null,
     serverGitBranch: serverConfig?.gitBranch ?? null,

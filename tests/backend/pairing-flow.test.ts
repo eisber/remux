@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
-import { DeviceStore } from "../../src/backend/auth/device-store.js";
+import { clearMemoryDeviceStore, createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 const TOKEN = "pairing-flow-token";
 const ORIGINAL_HOME = process.env.HOME;
@@ -22,6 +22,7 @@ describe("device trust pairing flow", () => {
   afterEach(() => {
     process.env.HOME = ORIGINAL_HOME;
     if (tempHome) {
+      clearMemoryDeviceStore(tempHome);
       fs.rmSync(tempHome, { recursive: true, force: true });
       tempHome = "";
     }
@@ -129,7 +130,7 @@ describe("device trust pairing flow", () => {
   it("marks expired pairing sessions unusable after cleanup", async () => {
     const authService = new AuthService({
       token: TOKEN,
-      deviceStore: new DeviceStore({ dbPath: path.join(tempHome, "devices.db") }),
+      deviceStore: createMemoryDeviceStore(tempHome) as never,
     });
     const pairing = authService.createPairingSession({ ttlMs: -1_000, baseUrl: "http://127.0.0.1:9999" });
 
@@ -182,7 +183,7 @@ const startServer = async (tempHome: string): Promise<{ server: RunningServer; b
     {
       authService: new AuthService({
         token: TOKEN,
-        deviceStore: new DeviceStore({ dbPath: path.join(tempHome, "devices.db") }),
+        deviceStore: createMemoryDeviceStore(tempHome) as never,
       }),
       logger: { log: () => undefined, error: () => undefined },
       createController: () => controller,

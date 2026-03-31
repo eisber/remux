@@ -5,6 +5,7 @@ import type { AddressInfo } from "node:net";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
 import { createEnvelope } from "../../src/backend/protocol/envelope.js";
+import { createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 const TOKEN = "protocol-compat-token";
 type BufferedWebSocket = WebSocket & {
@@ -69,7 +70,10 @@ describe("control protocol compatibility", () => {
         zellijSession: "protocol-compat",
       },
       {
-        authService: new AuthService({ token: TOKEN }),
+        authService: new AuthService({
+          token: TOKEN,
+          deviceStore: createMemoryDeviceStore("control-protocol-compat") as never,
+        }),
         logger: { log: () => {}, error: () => {} },
         createController: () => controller,
       },

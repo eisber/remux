@@ -3699,6 +3699,106 @@ body {
   color: var(--text-muted);
 }
 
+.sidebar-section-label--sessions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sidebar-session-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-session-add:hover {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.sidebar-create-session {
+  padding: 0 0.6rem 0.5rem;
+}
+
+.sidebar-session-list {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0 0.35rem 0.55rem;
+}
+
+.sidebar-session-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-session-item:hover {
+  background: var(--bg-hover);
+}
+
+.sidebar-session-item.is-active {
+  background: var(--accent-subtle);
+  border-color: var(--accent-glow);
+  color: var(--text-primary);
+}
+
+.sidebar-session-item-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.sidebar-session-item-meta {
+  font-size: 0.64rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sidebar-session-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.sidebar-session-item:hover .sidebar-session-delete,
+.sidebar-session-item:focus-visible .sidebar-session-delete {
+  opacity: 1;
+}
+
+.sidebar-session-delete:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--status-error);
+}
+
 .sidebar-session-header {
   display: flex;
   align-items: center;
