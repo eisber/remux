@@ -1,0 +1,57 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy (main or dev)"
+        required: true
+        default: "dev"
+        type: choice
+        options: [main, dev]
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, remux-deploy]
+    timeout-minutes: 10
+
+    steps:
+      - name: Resolve target
+        id: target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            BRANCH="${{ inputs.branch }}"
+          else
+            BRANCH="${GITHUB_REF#refs/heads/}"
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          if [ "$BRANCH" = "main" ]; then
+            echo "app=remux-main" >> "$GITHUB_OUTPUT"
+            echo "worktree=$HOME/.remux/runtime-worktrees/runtime-main" >> "$GITHUB_OUTPUT"
+          else
+            echo "app=remux-dev" >> "$GITHUB_OUTPUT"
+            echo "worktree=$HOME/.remux/runtime-worktrees/runtime-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull latest code
+        working-directory: ${{ steps.target.outputs.worktree }}
+        run: |
+          git fetch origin ${{ steps.target.outputs.branch }}
+          git checkout --detach origin/${{ steps.target.outputs.branch }}
+
+      - name: Install dependencies
+        working-directory: ${{ steps.target.outputs.worktree }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: ${{ steps.target.outputs.worktree }}
+        run: pnpm run build
+
+      - name: Restart launchd service
+        run: |
+          SERVICE="com.remux.${{ steps.target.outputs.branch }}"
+          launchctl kickstart -k "gui/$(id -u)/${SERVICE}"
+          sleep 2
+          launchctl print "gui/$(id -u)/${SERVICE}" 2>&1 | head -5
