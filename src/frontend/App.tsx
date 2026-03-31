@@ -211,7 +211,8 @@ export const App = () => {
   // --- Derived state ---
   const showPassword = connection.needsPassword || control.needsPassword;
   const isConnected = connection.status === "connected";
-  const sessionName = ws?.session ?? "remux";
+  const activeSessionName = control.currentSession ?? ws?.session ?? connection.serverDefaultSession ?? "remux";
+  const sessionName = ws?.session ?? activeSessionName;
   const connectionStatus = connection.status;
 
   const terminalStatusMessage =
@@ -284,7 +285,7 @@ export const App = () => {
 
       <div className="sidebar-session-list">
         {control.sessions.map((session) => {
-          const active = session.name === control.currentSession;
+          const active = session.name === activeSessionName;
           return (
             <button
               key={session.name}

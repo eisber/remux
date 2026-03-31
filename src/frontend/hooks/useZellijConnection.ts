@@ -35,10 +35,12 @@ export interface UseZellijConnectionResult {
   serverVersion: string | null;
   serverGitBranch: string | null;
   serverGitCommitSha: string | null;
+  serverDefaultSession: string | null;
 }
 
 interface ServerConfig {
   passwordRequired: boolean;
+  defaultSession?: string;
   version?: string;
   gitBranch?: string;
   gitCommitSha?: string;
@@ -227,5 +229,6 @@ export const useZellijConnection = (
     serverVersion: serverConfig?.version ?? null,
     serverGitBranch: serverConfig?.gitBranch ?? null,
     serverGitCommitSha: serverConfig?.gitCommitSha ?? null,
+    serverDefaultSession: serverConfig?.defaultSession ?? null,
   };
 };

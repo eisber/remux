@@ -177,6 +177,7 @@ export const createZellijServer = (
   app.get("/api/config", (_req, res) => {
     res.json({
       passwordRequired: authService.requiresPassword(),
+      defaultSession: config.zellijSession,
       version: resolveServerVersion(),
       gitBranch: runtimeMeta.gitBranch,
       gitCommitSha: runtimeMeta.gitCommitSha,
