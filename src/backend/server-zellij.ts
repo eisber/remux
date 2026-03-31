@@ -8,7 +8,11 @@ import { WebSocketServer, WebSocket } from "ws";
 import { AuthService, DeviceTrustError } from "./auth/auth-service.js";
 import { createZellijPty, type ZellijPty } from "./pty/zellij-pty.js";
 import { InspectBadRequestError, InspectService } from "./inspect/index.js";
-import { ZellijController, type ZellijControllerApi } from "./zellij-controller.js";
+import {
+  ZellijController,
+  type ZellijControllerApi,
+  type ZellijSessionInfo,
+} from "./zellij-controller.js";
 import type { Extensions } from "./extensions.js";
 import { readRuntimeMetadata } from "./util/runtime-metadata.js";
 import {
@@ -39,7 +43,12 @@ export interface ZellijServerDeps {
   authService: AuthService;
   logger: Pick<Console, "log" | "error">;
   extensions?: Extensions;
-  createController?: () => ZellijControllerApi;
+  createController?: (session: string) => ZellijControllerApi;
+  createPty?: (options: {
+    session: string;
+    cols: number;
+    rows: number;
+  }) => ZellijPty;
 }
 
 export interface RunningServer {
@@ -54,6 +63,10 @@ interface TerminalClient {
   authenticated: boolean;
   /** Per-client PTY — each browser gets its own zellij attach process. */
   pty: ZellijPty | null;
+  currentSession: string;
+  lastCols: number;
+  lastRows: number;
+  switchingPty: boolean;
 }
 
 interface ControlClient {
@@ -62,6 +75,7 @@ interface ControlClient {
   capabilities: ProtocolCapabilities;
   clientId: string;
   connectTime: string;
+  currentSession: string;
 }
 
 export const createZellijServer = (
@@ -347,10 +361,10 @@ export const createZellijServer = (
   const connectedClients = new Map<string, ConnectedClientInfo>();
   let clientsChangedTimer: ReturnType<typeof setTimeout> | null = null;
   let pairingCleanupTimer: ReturnType<typeof setInterval> | null = null;
-  let controller: ZellijControllerApi | null = null;
-  let inspectService: InspectService | null = null;
-  /** Whether the Zellij session has been bootstrapped (first client created it). */
-  let sessionBootstrapped = false;
+  let bandwidthStatsTimer: ReturnType<typeof setInterval> | null = null;
+  const controllers = new Map<string, ZellijControllerApi>();
+  let sessionListCache: { data: ZellijSessionInfo[]; at: number } | null = null;
+  const SESSION_LIST_CACHE_MS = 2_000;
 
   server.on("upgrade", (request, socket, head) => {
     const url = new URL(request.url ?? "/", "http://localhost");
@@ -372,34 +386,47 @@ export const createZellijServer = (
     socket.setNoDelay(true);
   });
 
-  /** Ensure the ZellijController is initialized. */
-  const ensureController = (): void => {
-    if (controller) return;
-    controller = deps.createController?.() ?? new ZellijController({
-      session: config.zellijSession,
+  const getController = (session: string): ZellijControllerApi => {
+    const existing = controllers.get(session);
+    if (existing) {
+      return existing;
+    }
+
+    const controller = deps.createController?.(session) ?? new ZellijController({
+      session,
       zellijBin: config.zellijBin,
       logger,
     });
+    controllers.set(session, controller);
+    return controller;
   };
 
-  const ensureInspectService = (): InspectService => {
-    if (inspectService) {
-      return inspectService;
-    }
-    ensureController();
-    inspectService = new InspectService({
-      controller: controller ?? undefined,
+  const createInspectService = (session: string): InspectService => {
+    return new InspectService({
+      controller: getController(session),
       tracker: null,
     });
-    return inspectService;
   };
 
-  const resolveFocusedPaneId = async (): Promise<string | null> => {
-    ensureController();
-    if (!controller) {
-      return null;
+  const listSessions = async (): Promise<ZellijSessionInfo[]> => {
+    if (sessionListCache && Date.now() - sessionListCache.at < SESSION_LIST_CACHE_MS) {
+      return sessionListCache.data;
     }
-    const workspace = await controller.queryWorkspaceState();
+
+    const sessions = await getController(config.zellijSession).listSessionsStructured();
+    sessionListCache = { data: sessions, at: Date.now() };
+    return sessions;
+  };
+
+  const isValidSessionName = (name: unknown): name is string => {
+    return typeof name === "string"
+      && name.length > 0
+      && name.length <= 64
+      && /^[a-zA-Z0-9_-]+$/.test(name);
+  };
+
+  const resolveFocusedPaneId = async (session: string): Promise<string | null> => {
+    const workspace = await getController(session).queryWorkspaceState();
     const activeTab = workspace.tabs.find((tab) => tab.index === workspace.activeTabIndex);
     return activeTab?.panes.find((pane) => pane.focused)?.id ?? activeTab?.panes[0]?.id ?? null;
   };
@@ -410,9 +437,14 @@ export const createZellijServer = (
    * attach to the existing session.  Each PTY is sized to that client's
    * terminal dimensions, and Zellij handles multi-client size negotiation.
    */
-  const createClientPty = (client: TerminalClient, cols: number, rows: number): ZellijPty => {
-    const pty = createZellijPty({
-      session: config.zellijSession,
+  const createClientPty = (
+    client: TerminalClient,
+    cols: number,
+    rows: number,
+    session = client.currentSession,
+  ): ZellijPty => {
+    const pty = deps.createPty?.({ session, cols, rows }) ?? createZellijPty({
+      session,
       zellijBin: config.zellijBin,
       cols,
       rows,
@@ -423,35 +455,53 @@ export const createZellijServer = (
         client.ws.send(data);
       }
       // Feed into extensions (state tracker + notifications).
-      extensions?.onTerminalData(config.zellijSession, data);
+      extensions?.onTerminalData(session, data);
     });
 
     pty.onExit(({ exitCode }) => {
       logger.log(`Client PTY exited (pid=${pty.pid}, code=${exitCode})`);
-      extensions?.onSessionExit(config.zellijSession, exitCode);
-      client.pty = null;
+      extensions?.onSessionExit(session, exitCode);
+      if (client.pty === pty) {
+        client.pty = null;
+      }
+      if (client.switchingPty) {
+        client.switchingPty = false;
+        return;
+      }
       if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.close(1001, "zellij exited");
       }
     });
 
-    sessionBootstrapped = true;
-    ensureController();
-    extensions?.onSessionCreated(config.zellijSession, cols, rows);
-    logger.log(`Client PTY started (pid=${pty.pid}, session=${config.zellijSession}, ${cols}x${rows})`);
+    getController(session);
+    extensions?.onSessionCreated(session, cols, rows);
+    logger.log(`Client PTY started (pid=${pty.pid}, session=${session}, ${cols}x${rows})`);
     return pty;
   };
 
-  /** Broadcast workspace state to all authenticated control clients. */
-  const broadcastWorkspaceState = async (): Promise<void> => {
-    if (!controller) return;
+  const sendWorkspaceState = async (
+    client: ControlClient,
+    session = client.currentSession,
+  ): Promise<void> => {
     try {
-      const state = await controller.queryWorkspaceState();
-      const legacyMessage = JSON.stringify({ type: "workspace_state", ...state });
-      const envelopeMessage = JSON.stringify(createEnvelope("runtime", "workspace_state", state));
+      const state = await getController(session).queryWorkspaceState();
+      sendProtocolMessage(client, "runtime", "workspace_state", state);
+    } catch (err) {
+      logger.error("Failed to query workspace state:", err);
+    }
+  };
+
+  /** Broadcast workspace state to all authenticated control clients on the same session. */
+  const broadcastWorkspaceState = async (session: string): Promise<void> => {
+    try {
+      const state = await getController(session).queryWorkspaceState();
       for (const client of controlClients) {
-        if (client.authenticated && client.ws.readyState === WebSocket.OPEN) {
-          client.ws.send(client.capabilities.envelope ? envelopeMessage : legacyMessage);
+        if (
+          client.authenticated
+          && client.currentSession === session
+          && client.ws.readyState === WebSocket.OPEN
+        ) {
+          sendProtocolMessage(client, "runtime", "workspace_state", state);
         }
       }
     } catch (err) {
@@ -549,7 +599,15 @@ export const createZellijServer = (
   };
 
   terminalWss.on("connection", (ws: WebSocket) => {
-    const client: TerminalClient = { ws, authenticated: false, pty: null };
+    const client: TerminalClient = {
+      ws,
+      authenticated: false,
+      pty: null,
+      currentSession: config.zellijSession,
+      lastCols: 120,
+      lastRows: 30,
+      switchingPty: false,
+    };
     terminalClients.add(client);
 
     ws.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
@@ -563,12 +621,30 @@ export const createZellijServer = (
             const msg = JSON.parse(data.toString("utf8"));
             if (msg.type === "resize" && typeof msg.cols === "number" && typeof msg.rows === "number") {
               // Resize THIS client's PTY only — Zellij handles multi-client negotiation.
+              client.lastCols = msg.cols;
+              client.lastRows = msg.rows;
               client.pty.resize(msg.cols, msg.rows);
-              extensions?.onSessionResize(config.zellijSession, msg.cols, msg.rows);
+              extensions?.onSessionResize(client.currentSession, msg.cols, msg.rows);
               return;
             }
             if (msg.type === "ping") {
               ws.send(JSON.stringify({ type: "pong", timestamp: msg.timestamp }));
+              return;
+            }
+            if (msg.type === "switch_session") {
+              if (!isValidSessionName(msg.session)) {
+                ws.send(JSON.stringify({ type: "error", message: "invalid session name" }));
+                return;
+              }
+
+              client.currentSession = msg.session;
+              const oldPty = client.pty;
+              client.pty = null;
+              if (oldPty) {
+                client.switchingPty = true;
+                oldPty.kill();
+              }
+              client.pty = createClientPty(client, client.lastCols, client.lastRows, client.currentSession);
               return;
             }
           } catch {
@@ -576,7 +652,11 @@ export const createZellijServer = (
           }
         }
 
-        client.pty.write(data.toString("utf8"));
+        const activePty = client.pty;
+        if (!activePty) {
+          return;
+        }
+        activePty.write(data.toString("utf8"));
         return;
       }
 
@@ -608,12 +688,17 @@ export const createZellijServer = (
       }
 
       client.authenticated = true;
+      if (isValidSessionName(msg.session)) {
+        client.currentSession = msg.session;
+      }
 
-      const cols = typeof msg.cols === "number" ? msg.cols : 120;
-      const rows = typeof msg.rows === "number" ? msg.rows : 30;
+      const cols = typeof msg.cols === "number" ? msg.cols : client.lastCols;
+      const rows = typeof msg.rows === "number" ? msg.rows : client.lastRows;
+      client.lastCols = cols;
+      client.lastRows = rows;
 
       try {
-        client.pty = createClientPty(client, cols, rows);
+        client.pty = createClientPty(client, cols, rows, client.currentSession);
       } catch (err) {
         logger.error("Failed to start client PTY:", err);
         ws.send(JSON.stringify({ type: "auth_error", reason: "failed to start terminal" }));
@@ -653,6 +738,7 @@ export const createZellijServer = (
       capabilities: { ...EMPTY_PROTOCOL_CAPABILITIES },
       clientId: crypto.randomUUID(),
       connectTime: new Date().toISOString(),
+      currentSession: config.zellijSession,
     };
     controlClients.add(client);
 
@@ -711,7 +797,6 @@ export const createZellijServer = (
           lastActivityAt: new Date().toISOString(),
           mode: "active",
         });
-        ensureController();
         setTimeout(() => {
           if (ws.readyState !== WebSocket.OPEN) {
             return;
@@ -726,11 +811,6 @@ export const createZellijServer = (
       }
 
       // Authenticated commands.
-      if (!controller) {
-        ws.send(JSON.stringify({ type: "error", message: "zellij not started" }));
-        return;
-      }
-
       try {
         markControlClientActive(client);
         const envelope = parseEnvelope(msg, { allowLegacyFallback: false, source: "client" });
@@ -740,7 +820,8 @@ export const createZellijServer = (
           const cursor = typeof inspectRequest.cursor === "string" ? inspectRequest.cursor : null;
           const query = typeof inspectRequest.query === "string" ? inspectRequest.query : undefined;
           const limit = typeof inspectRequest.limit === "number" ? inspectRequest.limit : undefined;
-          const service = ensureInspectService();
+          const service = createInspectService(client.currentSession);
+          const controller = getController(client.currentSession);
 
           if (scope === "tab") {
             const tabIndex = typeof inspectRequest.tabIndex === "number"
@@ -756,7 +837,7 @@ export const createZellijServer = (
           if (scope === "pane") {
             const paneId = typeof inspectRequest.paneId === "string"
               ? inspectRequest.paneId
-              : await resolveFocusedPaneId();
+              : await resolveFocusedPaneId(client.currentSession);
             if (!paneId) {
               throw new InspectBadRequestError("missing paneId for inspect request");
             }
@@ -772,38 +853,99 @@ export const createZellijServer = (
 
         switch (msg.type) {
           case "subscribe_workspace":
-            await broadcastWorkspaceState();
+            await broadcastWorkspaceState(client.currentSession);
             break;
+          case "list_sessions":
+            sendProtocolMessage(client, "runtime", "session_list", {
+              sessions: await listSessions(),
+            });
+            break;
+          case "switch_session":
+            if (!isValidSessionName(msg.session)) {
+              ws.send(JSON.stringify({ type: "error", message: "invalid session name" }));
+              break;
+            }
+            client.currentSession = msg.session;
+            sendProtocolMessage(client, "runtime", "session_switched", {
+              session: client.currentSession,
+            });
+            await sendWorkspaceState(client);
+            break;
+          case "create_session":
+            if (!isValidSessionName(msg.name)) {
+              ws.send(JSON.stringify({ type: "error", message: "invalid session name" }));
+              break;
+            }
+            client.currentSession = msg.name;
+            getController(client.currentSession);
+            sessionListCache = null;
+            sendProtocolMessage(client, "runtime", "session_switched", {
+              session: client.currentSession,
+            });
+            await sendWorkspaceState(client);
+            break;
+          case "delete_session": {
+            if (!isValidSessionName(msg.session)) {
+              ws.send(JSON.stringify({ type: "error", message: "invalid session name" }));
+              break;
+            }
+            if (msg.session === client.currentSession) {
+              ws.send(JSON.stringify({ type: "error", message: "cannot delete current session" }));
+              break;
+            }
+            const sessionInUse = [...terminalClients].some((terminalClient) => terminalClient.currentSession === msg.session)
+              || [...controlClients].some((controlClient) =>
+                controlClient !== client
+                && controlClient.authenticated
+                && controlClient.currentSession === msg.session
+              );
+            if (sessionInUse) {
+              ws.send(JSON.stringify({ type: "error", message: "session in use by another client" }));
+              break;
+            }
+
+            const targetController = getController(msg.session);
+            try {
+              await targetController.killSession(msg.session);
+            } catch {}
+            await targetController.deleteSession(msg.session);
+            controllers.delete(msg.session);
+            sessionListCache = null;
+            sendProtocolMessage(client, "runtime", "session_deleted", {
+              session: msg.session,
+            });
+            break;
+          }
           case "new_tab":
-            await controller.newTab(msg.name as string | undefined);
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).newTab(msg.name as string | undefined);
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "close_tab":
-            await controller.closeTab(msg.tabIndex as number);
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).closeTab(msg.tabIndex as number);
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "select_tab":
-            await controller.goToTab(msg.tabIndex as number);
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).goToTab(msg.tabIndex as number);
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "rename_tab":
-            await controller.renameTab(msg.tabIndex as number, msg.name as string);
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).renameTab(msg.tabIndex as number, msg.name as string);
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "new_pane":
-            await controller.newPane(msg.direction as "right" | "down");
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).newPane(msg.direction as "right" | "down");
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "close_pane":
-            await controller.closePane();
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).closePane();
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "toggle_fullscreen":
-            await controller.toggleFullscreen();
-            await broadcastWorkspaceState();
+            await getController(client.currentSession).toggleFullscreen();
+            await broadcastWorkspaceState(client.currentSession);
             break;
           case "capture_inspect": {
-            const content = await controller.dumpScreen(msg.full as boolean ?? true);
+            const content = await getController(client.currentSession).dumpScreen(msg.full as boolean ?? true);
             sendProtocolMessage(client, "core", "inspect_content", { content });
             break;
           }
@@ -814,7 +956,8 @@ export const createZellijServer = (
             break;
           }
           case "request_inspect": {
-            const service = ensureInspectService();
+            const service = createInspectService(client.currentSession);
+            const controller = getController(client.currentSession);
             const scope = msg.scope;
             const cursor = typeof msg.cursor === "string" ? msg.cursor : null;
             const query = typeof msg.query === "string" ? msg.query : undefined;
@@ -830,7 +973,7 @@ export const createZellijServer = (
             }
 
             if (scope === "pane") {
-              const paneId = typeof msg.paneId === "string" ? msg.paneId : await resolveFocusedPaneId();
+              const paneId = typeof msg.paneId === "string" ? msg.paneId : await resolveFocusedPaneId(client.currentSession);
               if (!paneId) {
                 throw new InspectBadRequestError("missing paneId for inspect request");
               }
@@ -841,10 +984,30 @@ export const createZellijServer = (
 
             throw new InspectBadRequestError("invalid inspect scope");
           }
-          case "rename_session":
-            await controller.renameSession(msg.name as string);
-            await broadcastWorkspaceState();
+          case "rename_session": {
+            if (!isValidSessionName(msg.name)) {
+              ws.send(JSON.stringify({ type: "error", message: "invalid session name" }));
+              break;
+            }
+            const previousSession = client.currentSession;
+            const controller = getController(previousSession);
+            await controller.renameSession(msg.name);
+            controllers.delete(previousSession);
+            controllers.set(msg.name, controller);
+            sessionListCache = null;
+            for (const terminalClient of terminalClients) {
+              if (terminalClient.currentSession === previousSession) {
+                terminalClient.currentSession = msg.name;
+              }
+            }
+            for (const controlClient of controlClients) {
+              if (controlClient.currentSession === previousSession) {
+                controlClient.currentSession = msg.name;
+              }
+            }
+            await broadcastWorkspaceState(msg.name);
             break;
+          }
           default:
             ws.send(JSON.stringify({ type: "error", message: `unknown command: ${msg.type}` }));
         }
@@ -895,7 +1058,7 @@ export const createZellijServer = (
 
         // Broadcast bandwidth stats every 5 seconds to all authed control clients.
         if (extensions) {
-          setInterval(() => {
+          bandwidthStatsTimer = setInterval(() => {
             const stats = extensions.getBandwidthStats();
             const legacyMessage = JSON.stringify({ type: "bandwidth_stats", stats });
             const envelopeMessage = JSON.stringify(createEnvelope("admin", "bandwidth_stats", { stats }));
@@ -930,6 +1093,10 @@ export const createZellijServer = (
       if (pairingCleanupTimer) {
         clearInterval(pairingCleanupTimer);
         pairingCleanupTimer = null;
+      }
+      if (bandwidthStatsTimer) {
+        clearInterval(bandwidthStatsTimer);
+        bandwidthStatsTimer = null;
       }
       terminalWss.close();
       controlWss.close();

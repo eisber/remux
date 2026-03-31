@@ -4,6 +4,7 @@ import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
+import { createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 const TOKEN = "inspect-control-token";
 
@@ -65,7 +66,10 @@ describe("inspect control channel", () => {
         zellijSession: "inspect-control",
       },
       {
-        authService: new AuthService({ token: TOKEN }),
+        authService: new AuthService({
+          token: TOKEN,
+          deviceStore: createMemoryDeviceStore("inspect-control") as never,
+        }),
         logger: { log: () => {}, error: () => {} },
         createController: () => controller,
       },

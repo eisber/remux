@@ -3,6 +3,7 @@ import { WebSocket } from "ws";
 import http from "node:http";
 import { createZellijServer, type RunningServer } from "../../src/backend/server-zellij.js";
 import { AuthService } from "../../src/backend/auth/auth-service.js";
+import { createMemoryDeviceStore } from "../helpers/memory-device-store.js";
 
 /**
  * Multi-client resize and lifecycle tests for the per-client PTY architecture.
@@ -114,7 +115,10 @@ describeIfZellij("Zellij server multi-client PTY", () => {
   let server: RunningServer;
 
   beforeAll(async () => {
-    const authService = new AuthService({ token: TOKEN });
+    const authService = new AuthService({
+      token: TOKEN,
+      deviceStore: createMemoryDeviceStore("zellij-server-multiclient") as never,
+    });
     server = createZellijServer(
       {
         port: TEST_PORT,

@@ -74,6 +74,12 @@ export interface WorkspaceState {
   activeTabIndex: number;
 }
 
+export interface ZellijSessionInfo {
+  name: string;
+  createdAgo: string;
+  isActive: boolean;
+}
+
 export interface ZellijControllerApi {
   queryWorkspaceState(): Promise<WorkspaceState>;
   newTab(name?: string): Promise<void>;
@@ -86,6 +92,9 @@ export interface ZellijControllerApi {
   dumpScreen(full?: boolean): Promise<string>;
   dumpPaneScreen(paneId: string, full?: boolean): Promise<string>;
   renameSession(name: string): Promise<void>;
+  listSessionsStructured(): Promise<ZellijSessionInfo[]>;
+  killSession(name: string): Promise<void>;
+  deleteSession(name: string): Promise<void>;
 }
 
 export interface ZellijControllerOptions {
@@ -225,6 +234,34 @@ export class ZellijController implements ZellijControllerApi {
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
+  }
+
+  async listSessionsStructured(): Promise<ZellijSessionInfo[]> {
+    const sessions = await this.listSessions();
+    return sessions.map((line) => {
+      const match = line.match(/^(.*?)\s+\[Created\s+(.+?)\s+ago\](?:\s+\(EXITED.*\))?$/);
+      if (!match) {
+        return {
+          name: line,
+          createdAgo: "",
+          isActive: !line.includes("(EXITED"),
+        };
+      }
+
+      return {
+        name: match[1].trim(),
+        createdAgo: match[2].trim(),
+        isActive: !line.includes("(EXITED"),
+      };
+    });
+  }
+
+  async killSession(name: string): Promise<void> {
+    await this.runGlobal(["kill-session", name]);
+  }
+
+  async deleteSession(name: string): Promise<void> {
+    await this.runGlobal(["delete-session", name]);
   }
 
   // --- Internal ---

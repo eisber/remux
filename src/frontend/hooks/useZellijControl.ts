@@ -51,6 +51,12 @@ export interface WorkspaceState {
   activeTabIndex: number;
 }
 
+export interface ZellijSessionInfo {
+  name: string;
+  createdAgo: string;
+  isActive: boolean;
+}
+
 export interface BandwidthStats {
   rawBytesPerSec: number;
   compressedBytesPerSec: number;
@@ -76,6 +82,8 @@ export interface UseZellijControlResult {
 
   // Workspace state
   workspace: WorkspaceState | null;
+  sessions: ZellijSessionInfo[];
+  currentSession: string | null;
   selfClientId: string | null;
   connectedClients: ConnectedClientInfo[];
   clientMode: ClientMode;
@@ -97,6 +105,10 @@ export interface UseZellijControlResult {
   newPane: (direction: "right" | "down") => void;
   closePane: () => void;
   toggleFullscreen: () => void;
+  listSessions: () => void;
+  switchSession: (session: string) => void;
+  createSession: (name: string) => void;
+  deleteSession: (session: string) => void;
   requestInspect: (
     request?: Partial<InspectRequest>,
     options?: { append?: boolean; preferCache?: boolean },
@@ -124,6 +136,8 @@ export const useZellijControl = (): UseZellijControlResult => {
   const [password, setPassword] = useState("");
   const [passwordErrorMessage, setPasswordErrorMessage] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
+  const [sessions, setSessions] = useState<ZellijSessionInfo[]>([]);
+  const [currentSession, setCurrentSession] = useState<string | null>(null);
   const [selfClientId, setSelfClientId] = useState<string | null>(null);
   const [connectedClients, setConnectedClients] = useState<ConnectedClientInfo[]>([]);
   const [clientMode, setClientModeState] = useState<ClientMode>("active");
@@ -169,6 +183,22 @@ export const useZellijControl = (): UseZellijControlResult => {
 
   const setClientMode = useCallback((mode: ClientMode) => {
     send({ type: "set_client_mode", mode });
+  }, [send]);
+
+  const listSessions = useCallback(() => {
+    send({ type: "list_sessions" });
+  }, [send]);
+
+  const switchSession = useCallback((session: string) => {
+    send({ type: "switch_session", session });
+  }, [send]);
+
+  const createSession = useCallback((name: string) => {
+    send({ type: "create_session", name });
+  }, [send]);
+
+  const deleteSession = useCallback((session: string) => {
+    send({ type: "delete_session", session });
   }, [send]);
 
   const resolveInspectRequest = useCallback((request: Partial<InspectRequest> = {}): InspectRequest | null => {
@@ -338,6 +368,23 @@ export const useZellijControl = (): UseZellijControlResult => {
             tabs: msg.tabs as WorkspaceTab[],
             activeTabIndex: msg.activeTabIndex as number,
           });
+          setCurrentSession(msg.session as string);
+          return;
+        }
+
+        if (messageType === "session_list" && Array.isArray(msg.sessions)) {
+          setSessions(msg.sessions as ZellijSessionInfo[]);
+          return;
+        }
+
+        if (messageType === "session_switched" && typeof msg.session === "string") {
+          setCurrentSession(msg.session);
+          return;
+        }
+
+        if (messageType === "session_deleted" && typeof msg.session === "string") {
+          setSessions((current) => current.filter((session) => session.name !== msg.session));
+          listSessions();
           return;
         }
 
@@ -413,6 +460,8 @@ export const useZellijControl = (): UseZellijControlResult => {
       }
       setConnected(false);
       serverCapabilitiesRef.current = { ...EMPTY_PROTOCOL_CAPABILITIES };
+      setSessions([]);
+      setCurrentSession(null);
       setSelfClientId(null);
       setConnectedClients([]);
       setClientModeState("active");
@@ -430,7 +479,7 @@ export const useZellijControl = (): UseZellijControlResult => {
     };
 
     ws.onerror = () => {};
-  }, [markInspectSnapshot, sendInspectRequestMessage]);
+  }, [listSessions, markInspectSnapshot, sendInspectRequestMessage]);
   connectRef.current = connect;
 
   useEffect(() => {
@@ -457,6 +506,18 @@ export const useZellijControl = (): UseZellijControlResult => {
       socketRef.current?.close();
     };
   }, [connect]);
+
+  useEffect(() => {
+    if (!connected) {
+      return;
+    }
+
+    listSessions();
+    const timer = setInterval(() => {
+      listSessions();
+    }, 10_000);
+    return () => clearInterval(timer);
+  }, [connected, listSessions]);
 
   const submitPassword = useCallback(() => {
     setPasswordErrorMessage("");
@@ -488,6 +549,8 @@ export const useZellijControl = (): UseZellijControlResult => {
     setPassword,
     submitPassword,
     workspace,
+    sessions,
+    currentSession,
     selfClientId,
     connectedClients,
     clientMode,
@@ -503,6 +566,10 @@ export const useZellijControl = (): UseZellijControlResult => {
     newPane: useCallback((direction: "right" | "down") => send({ type: "new_pane", direction }), [send]),
     closePane: useCallback(() => send({ type: "close_pane" }), [send]),
     toggleFullscreen: useCallback(() => send({ type: "toggle_fullscreen" }), [send]),
+    listSessions,
+    switchSession,
+    createSession,
+    deleteSession,
     requestInspect,
     loadMoreInspect,
     renameSession: useCallback((name: string) => send({ type: "rename_session", name }), [send]),

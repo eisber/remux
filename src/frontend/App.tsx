@@ -41,6 +41,7 @@ export const App = () => {
   const [inspectSearchInput, setInspectSearchInput] = useState("");
   const [debouncedInspectSearch, setDebouncedInspectSearch] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [creatingSession, setCreatingSession] = useState(false);
 
   // --- Theme ---
   const [theme, setTheme] = useState<"dark" | "light">(() => {
@@ -67,6 +68,7 @@ export const App = () => {
   // --- Terminal I/O connection ---
   const connection = useZellijConnection(
     useCallback((data: string | Uint8Array) => writeRef.current(data), []),
+    control.currentSession,
   );
 
   // --- Terminal runtime ---
@@ -99,6 +101,19 @@ export const App = () => {
       terminal.focusTerminal();
     }
   }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lastSyncedTerminalSessionRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (connection.status !== "connected" || !control.currentSession) {
+      return;
+    }
+    if (lastSyncedTerminalSessionRef.current === control.currentSession) {
+      return;
+    }
+    connection.sendSessionSwitch(control.currentSession);
+    lastSyncedTerminalSessionRef.current = control.currentSession;
+  }, [connection.sendSessionSwitch, connection.status, control.currentSession]);
 
   // Request inspect content when switching to inspect mode.
   const ws = control.workspace;
@@ -216,45 +231,78 @@ export const App = () => {
 
   const clientCount = control.connectedClients.length;
   const [clientsExpanded, setClientsExpanded] = useState(false);
-  const [editingSession, setEditingSession] = useState(false);
-  const sessionInputRef = useRef<HTMLInputElement>(null);
-
-  const commitSessionRename = useCallback(() => {
-    const value = sessionInputRef.current?.value.trim();
-    if (value && value !== sessionName) control.renameSession(value);
-    setEditingSession(false);
-  }, [sessionName, control.renameSession]);
 
   const sidebar = (
     <aside className={`sidebar${drawerOpen ? " drawer-open" : ""}`} data-testid="sidebar">
-      {/* Session section */}
-      <div className="sidebar-section-label">SESSION</div>
-      <div className="sidebar-session-header">
-        <span className={`sidebar-status-dot status-${connectionStatus}`} />
-        {editingSession ? (
+      <div className="sidebar-section-label sidebar-section-label--sessions">
+        <span>Sessions</span>
+        <button
+          className="sidebar-session-add"
+          onClick={() => setCreatingSession((value) => !value)}
+          title="New session"
+          type="button"
+        >
+          +
+        </button>
+      </div>
+
+      {creatingSession && (
+        <div className="sidebar-create-session">
           <input
-            ref={sessionInputRef}
             className="sidebar-session-input"
-            defaultValue={sessionName}
+            placeholder="Session name"
             autoFocus
-            onBlur={commitSessionRename}
             onKeyDown={(e) => {
-              if (e.key === "Enter") commitSessionRename();
-              if (e.key === "Escape") setEditingSession(false);
+              if (e.key === "Enter") {
+                const value = e.currentTarget.value.trim();
+                if (value) {
+                  control.createSession(value);
+                }
+                setCreatingSession(false);
+              }
+              if (e.key === "Escape") {
+                setCreatingSession(false);
+              }
             }}
           />
-        ) : (
-          <span
-            className="sidebar-session-name"
-            title="Double-click to rename"
-            onDoubleClick={() => {
-              setEditingSession(true);
-              requestAnimationFrame(() => sessionInputRef.current?.select());
-            }}
-          >
-            {sessionName}
-          </span>
-        )}
+        </div>
+      )}
+
+      <div className="sidebar-session-list">
+        {control.sessions.map((session) => {
+          const active = session.name === control.currentSession;
+          return (
+            <button
+              key={session.name}
+              className={`sidebar-session-item${active ? " is-active" : ""}`}
+              onClick={() => control.switchSession(session.name)}
+              type="button"
+            >
+              <span className={`sidebar-status-dot ${session.isActive ? "status-connected" : "status-disconnected"}`} />
+              <span className="sidebar-session-item-name">{session.name}</span>
+              <span className="sidebar-session-item-meta">{session.createdAgo}</span>
+              {!active && (
+                <span
+                  className="sidebar-session-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    control.deleteSession(session.name);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  title="Delete session"
+                >
+                  ×
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="sidebar-session-header">
+        <span className={`sidebar-status-dot status-${connectionStatus}`} />
+        <span className="sidebar-session-name">{sessionName}</span>
         <span className="sidebar-state-label">{connectionStateLabel}</span>
       </div>
 
