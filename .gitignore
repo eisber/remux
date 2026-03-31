@@ -1,4 +1,5 @@
 node_modules
+package-lock.json
 dist
 .vite
 coverage
@@ -27,6 +28,7 @@ AGENTS.md
 # Snapshot/config artifacts from playwright-cli or debug sessions
 *.yaml
 *.yml
+!pnpm-lock.yaml
 
 # Build artifacts
 src/backend/zellij/plugin/target/

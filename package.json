@@ -35,23 +35,31 @@
     "remux-tmux": "dist/backend/cli-tmux-compat.js"
   },
   "scripts": {
-    "dev": "concurrently \"npm:dev:backend\" \"npm:dev:frontend\"",
+    "dev": "concurrently \"pnpm:dev:backend\" \"pnpm:dev:frontend\"",
     "dev:backend": "VITE_DEV_MODE=1 tsx watch src/backend/cli-zellij.ts",
     "dev:frontend": "vite --config vite.config.ts",
-    "build": "npm run build:frontend && npm run build:backend",
+    "build": "pnpm run build:frontend && pnpm run build:backend",
     "build:backend": "tsc -p tsconfig.backend.json",
     "build:frontend": "vite build --config vite.config.ts",
-    "start": "npm run build && node dist/backend/cli-zellij.js",
+    "start": "pnpm run build && node dist/backend/cli-zellij.js",
     "check:terminology": "node scripts/check-active-terminology.mjs",
     "typecheck": "tsc -p tsconfig.backend.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest --config vitest.config.ts",
-    "test:e2e": "npx playwright test",
-    "test:gate": "npm run typecheck && npm run check:terminology && npm test && npm run build",
-    "prepack": "npm run build"
+    "test:e2e": "playwright test",
+    "test:gate": "pnpm run typecheck && pnpm run check:terminology && pnpm test && pnpm run build",
+    "postinstall": "node --input-type=commonjs -e \"var fs=require('fs'),p=require('path');['darwin-arm64','darwin-x64'].forEach(function(d){var f=p.join('node_modules','node-pty','prebuilds',d,'spawn-helper');try{fs.chmodSync(f,0o755)}catch(e){}})\"",
+    "prepack": "pnpm run build"
   },
   "engines": {
     "node": ">=20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild",
+      "node-pty"
+    ]
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
@@ -61,7 +69,7 @@
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^12.8.0",
     "express": "^5.2.1",
-    "node-pty": "^1.0.0",
+    "node-pty": "^1.1.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
     "react": "^19.2.4",
@@ -71,7 +79,7 @@
     "yargs": "^18.0.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.51.1",
+    "@playwright/test": "^1.58.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^25.5.0",
@@ -80,15 +88,15 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/web-push": "^3.6.4",
-    "@types/ws": "^8.5.13",
+    "@types/ws": "^8.18.1",
     "@types/yargs": "^17.0.35",
     "@vitejs/plugin-react": "^6.0.1",
     "ajv": "^8.18.0",
-    "concurrently": "^9.1.2",
+    "concurrently": "^9.2.1",
     "jsdom": "^29.0.1",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vite": "^8.0.1",
-    "vitest": "^4.1.0"
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3",
+    "vitest": "^4.1.2"
   }
 }
