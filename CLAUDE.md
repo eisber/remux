@@ -81,6 +81,15 @@ pnpm run typecheck && pnpm test && pnpm run build
 - 用实际失败驱动测试覆盖扩展，不靠猜测穷举
 - 完整方法论参见 skill `eval-driven-development`
 
+### 开源复用优先（强制）
+
+- **优先寻找并复用成熟开源项目的代码、库或设计**，而非从零实现
+- 实现新功能前，先调研是否有质量可靠的 npm 包、开源库或可参考的开源项目实现
+- 可以直接引入的依赖就引入依赖；不能直接引入但思路成熟的，参考其架构和接口设计再实现
+- 参考来源必须在 commit message 或代码注释中标注（例如 `// Adapted from vercel-labs/agent-browser`）
+- 自造轮子仅在以下情况允许：无合适开源方案、现有方案与项目架构严重不兼容、许可证不兼容（GPL 等）
+- 定期关注同领域项目（cmux、warp、wave-terminal 等）的新特性和技术选型
+
 ### 安全要点
 
 - 两个 WebSocket 端点独立认证，修改 `server-zellij.ts` 或 `auth-service.ts` 时必须保持此特性
