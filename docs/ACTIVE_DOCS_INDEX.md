@@ -22,7 +22,7 @@ This index classifies repository documents by authority level so implementation 
 | `docs/ROADMAP_SCOPE.md` | Active | Scope boundaries for v1, v1.5, and research work |
 | `docs/REPO_EVOLUTION_PLAN.md` | Active | Incremental repo evolution path |
 | `docs/decisions/ADR-0001-zellij-era.md` | Active | Runtime substrate decision |
-| `docs/decisions/ADR-0002-desktop-host.md` | Active | Desktop host decision and reevaluation trigger |
+| `docs/decisions/ADR-0003-tauri-shell-alpha.md` | Active | Desktop shell alpha direction on top of the current gateway |
 
 ## Draft
 
@@ -38,6 +38,7 @@ This index classifies repository documents by authority level so implementation 
 | --- | --- | --- |
 | `docs/archive/README.md` | Archive | Archive index and navigation |
 | `docs/archive/runtime-v2/` | Archive | Historical plans, guides, and transition documents |
+| `docs/decisions/ADR-0002-desktop-host.md` | Archive | Superseded desktop-host evaluation kept for decision history |
 
 ## How To Use This Index
 
