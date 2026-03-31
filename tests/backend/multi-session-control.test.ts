@@ -30,11 +30,13 @@ describe("multi-session control and terminal flow", () => {
     deleteSessionCalls: string[];
   }>();
   let createdPtys: MockPty[] = [];
+  const attachedSessions = new Set<string>();
 
   beforeAll(async () => {
     const sessionList = [
       { name: "alpha", createdAgo: "1h", isActive: true },
       { name: "beta", createdAgo: "2h", isActive: true },
+      { name: "gamma", createdAgo: "3h", isActive: false },
       { name: "old-project", createdAgo: "4d", isActive: false },
     ];
 
@@ -65,6 +67,9 @@ describe("multi-session control and terminal flow", () => {
           const stats = getControllerStats(session);
           return {
             async queryWorkspaceState() {
+              if (session === "gamma" && !attachedSessions.has(session)) {
+                throw new Error("session not attached");
+              }
               return {
                 session,
                 activeTabIndex: 0,
@@ -121,6 +126,7 @@ describe("multi-session control and terminal flow", () => {
         },
         createPty: ({ session, cols, rows }) => {
           let exitHandler: ((info: { exitCode: number; signal?: number }) => void) | null = null;
+          attachedSessions.add(session);
           const pty: MockPty = {
             pid: createdPtys.length + 1,
             session,
@@ -187,6 +193,7 @@ describe("multi-session control and terminal flow", () => {
       sessions: [
         { name: "alpha", createdAgo: "1h", isActive: true },
         { name: "beta", createdAgo: "2h", isActive: true },
+        { name: "gamma", createdAgo: "3h", isActive: false },
         { name: "old-project", createdAgo: "4d", isActive: false },
       ],
     });
@@ -232,6 +239,32 @@ describe("multi-session control and terminal flow", () => {
     });
 
     ws.close();
+  });
+
+  it("publishes workspace state after terminal attach resurrects the target session", async () => {
+    const control = await connectControlClient(baseWsUrl, { type: "auth", token: TOKEN });
+    const terminal = await connectTerminalClient(baseWsUrl, {
+      type: "auth",
+      token: TOKEN,
+      cols: 80,
+      rows: 24,
+    });
+
+    await expectMessage(control, (payload) => payload.type === "auth_ok");
+    control.send(JSON.stringify({ type: "subscribe_workspace" }));
+    await expectWorkspace(control, "alpha");
+    control.__messageQueue.length = 0;
+
+    control.send(JSON.stringify({ type: "switch_session", session: "gamma" }));
+    await expectMessage(control, (payload) => payload.type === "session_switched" && payload.session === "gamma");
+    await expectNoMessage(control, (payload) => payload.type === "workspace_state" && payload.session === "gamma");
+
+    terminal.send(JSON.stringify({ type: "switch_session", session: "gamma" }));
+
+    expect(await expectWorkspace(control, "gamma")).toMatchObject({ session: "gamma" });
+
+    control.close();
+    terminal.close();
   });
 });
 

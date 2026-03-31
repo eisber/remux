@@ -476,6 +476,9 @@ export const createZellijServer = (
     getController(session);
     extensions?.onSessionCreated(session, cols, rows);
     logger.log(`Client PTY started (pid=${pty.pid}, session=${session}, ${cols}x${rows})`);
+    queueMicrotask(() => {
+      void broadcastWorkspaceState(session);
+    });
     return pty;
   };
 
