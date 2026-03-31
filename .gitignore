@@ -1,16 +1,18 @@
 node_modules
+package-lock.json
 dist
 .vite
 coverage
+target
 *.log
 test-results
 playwright-report
 screenshots
 .playwright-mcp/
+.playwright-cli/
 .worktrees/
 
-# AI agent 本地指令文件（不入库）
-CLAUDE.md
+# AI agent local instruction files (CLAUDE.md is tracked as project config)
 AGENTS.md
 
 # Temp uploads from Claude Code / CleanShot
@@ -22,3 +24,16 @@ AGENTS.md
 /*.jpg
 /*.jpeg
 /*.gif
+
+# Snapshot/config artifacts from playwright-cli or debug sessions
+*.yaml
+*.yml
+!pnpm-lock.yaml
+
+# Build artifacts
+src/backend/zellij/plugin/target/
+native/zellij-bridge/target/
+
+# Go TUI binary
+remux-tui
+remux-tui.exe

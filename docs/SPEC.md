@@ -2,266 +2,163 @@
 
 ## Overview
 
-A mobile-first web app that provides an opinionated tmux interface via cloudflared tunnel. Unlike generic web terminals, Remux is purpose-built for tmux: it always runs inside a tmux session and provides touch-friendly UI for tmux operations that are painful on mobile keyboards (window/pane switching, copy mode, split, etc.).
+Remux is a Zellij-backed remote workspace cockpit for terminal-first work. It helps users inspect, control, and intervene in a shared terminal workspace from another device without pretending the browser is a full desktop shell.
 
-**Distribution:** npm package, invoked via `npx remux`
-**Tech Stack:** Node.js backend (Express + node-pty + WebSocket), React frontend (Vite + xterm.js)
-**Origin:** Originally inspired by [porterminal](https://github.com/lyehe/porterminal) (generic web terminal) and [tmux-mobile](https://github.com/DagsHub/tmux-mobile). Remux has been substantially rewritten to offer a first-class web mobile experience for tmux specifically.
+The current public product path is:
 
----
+- Node.js CLI and web server
+- Zellij as the session backend
+- xterm.js in the browser for live terminal rendering
+- separate control and terminal WebSocket channels
 
-## Architecture
+Legacy planning material is archived under [docs/archive/README.md](./archive/README.md).
 
-### Backend (Node.js)
+## Product Shape
 
-- **Express** HTTP server serving the React frontend as static files
-- **node-pty** to spawn and manage the tmux PTY process
-- **ws** (or Express-ws) for WebSocket connections
-- Two WebSocket channels:
-  - **Data plane** (`/ws/terminal`): Binary terminal I/O between xterm.js and the tmux PTY
-  - **Control plane** (`/ws/control`): JSON messages for tmux state, commands, auth
-- **tmux CLI executor**: Runs `tmux` commands server-side (e.g., `tmux list-windows`, `tmux split-window`) and returns structured output
-- **tmux state monitor**: Event-driven monitoring of tmux state changes via periodic polling (every 2-3s) of `tmux list-sessions/windows/panes`, with change detection to only push updates when state changes
-- **Cloudflared manager**: Starts/stops a cloudflared quick tunnel, extracts and displays the public URL + QR code in the terminal
+Remux exposes three product surfaces:
 
-### Frontend (React + TypeScript)
+- `Inspect`: readable history and context for catch-up, copy, and diagnosis
+- `Live`: a real terminal stream for interactive shell I/O
+- `Control`: structured session, tab, and pane operations
 
-- **Vite** build tooling
-- **xterm.js** terminal emulator with FitAddon
-- **React** for all UI chrome (drawer, toolbar, overlays, session picker)
-- Single xterm.js instance attached to the tmux client PTY. Tmux handles rendering the active pane/window. The UI sends `tmux select-pane`/`tmux select-window` commands to switch context.
+The product is intentionally awareness-first. Zellij owns runtime truth; Remux makes that truth remotely accessible and easier to understand on mobile and secondary devices.
 
----
+## Current Architecture
 
-## Session Lifecycle
+### Backend
 
-### Connection Flow
+The backend is a Node.js service built around:
 
-1. User runs `npx remux` on their server
-2. Server starts Express on a local port
-3. Server starts cloudflared quick tunnel, prints public URL + QR code
-4. User scans QR code on phone, opens the URL
+- `src/backend/cli-zellij.ts`: CLI bootstrap, auth setup, tunnel startup, and Zellij-backed server startup
+- `src/backend/server-zellij.ts`: HTTP routes, `/ws/control`, `/ws/terminal`, auth gates, upload handling, and extension APIs
+- `src/backend/zellij-controller.ts`: Zellij JSON queries and structured tab/pane/session actions
+- `src/backend/pty/zellij-pty.ts`: per-client attach PTY wrapper around Zellij
+- `src/backend/extensions.ts`: optional terminal state tracking, notifications, bandwidth stats, file browsing, and Gastown enrichment
 
-### Authentication
+### Frontend
 
-- **Token-based URL**: Server generates a unique token on startup, embedded in the cloudflared URL (e.g., `https://xxx.trycloudflare.com/?token=abc123`)
-- **Optional password**: `-p` flag to require a password on top of the token
-- Password auth: first message on WebSocket is auth, saved in sessionStorage
+The frontend is a React app centered around:
 
-### Tmux Attach Flow
+- `src/frontend/App.tsx`: shell composition for Inspect, Live, Control, toolbar, and compose input
+- `src/frontend/hooks/useZellijConnection.ts`: terminal WebSocket lifecycle and resize/input flow
+- `src/frontend/hooks/useZellijControl.ts`: control WebSocket lifecycle, workspace state, inspect capture, and structured commands
+- `src/frontend/hooks/useTerminalRuntime.ts`: xterm.js setup, fit behavior, buffering, and theme application
 
-1. On authenticated WebSocket connection, server lists existing tmux sessions via `tmux list-sessions`
-2. **If 0 sessions**: Create a new session via `tmux new-session -d -s main`, then attach
-3. **If 1 session**: Auto-attach to it
-4. **If multiple sessions**: Send session list to client, client shows a session picker overlay
-5. Attachment: Server spawns PTY running `tmux attach-session -t <session-name>`. This PTY is the data plane source.
-6. The PTY process IS tmux. Server always knows which session it's attached to.
+## Session Model
 
----
+- The CLI targets one Zellij session, configured by `--zellij-session`
+- The first terminal client boots or attaches that session through Zellij
+- Each browser client gets its own attach PTY sized to that client's viewport
+- Zellij remains the shared source of truth for session, tab, pane, and fullscreen state
+- The browser control surface queries and mutates that shared state through `zellij action ...` commands
 
-## UI Layout
+## Transport Model
 
-### Main Screen (Portrait)
+Remux intentionally splits traffic into two channels.
 
-```
-+----------------------------------+
-|  [=] Session: main     [scroll]  |  <- Top bar (hamburger=drawer, session name, scroll=copy mode)
-|                                  |
-|                                  |
-|       xterm.js terminal          |
-|                                  |
-|                                  |
-|                                  |
-+----------------------------------+
-| Esc  1 2 3 Tab / Del [BS] Hm Up Ed Enter |  <- Toolbar row 1
-| Ctrl Alt Sft ^D ^C ^L ^R Paste  <- -> Dn  |  <- Toolbar row 2
-+----------------------------------+
-| [compose input field]    [Send]  |  <- Compose mode (toggleable)
-+----------------------------------+
-```
+### Terminal Plane
 
-### Main Screen (Landscape)
+`/ws/terminal`
 
-Same layout but terminal gets more columns, fewer rows. Toolbar may collapse to single row or use smaller buttons.
+Responsibilities:
 
-### Left Drawer
+- terminal auth handshake
+- raw terminal output streaming
+- raw keyboard input
+- resize messages
+- ping/pong keepalive
 
-Slide-in from left edge (swipe or hamburger button). Contains:
+Behavior:
 
-```
-+---------------------+
-| SESSIONS            |
-|  > main (attached)  |
-|    work              |
-|    dev               |
-|  [+ New Session]    |
-|---------------------|
-| WINDOWS (main)      |
-|  0: bash *          |
-|  1: vim             |
-|  2: htop            |
-|  [+ New Window]     |
-|---------------------|
-| PANES (window 0)    |
-|  %0: bash (active)  |
-|  %1: node           |
-|  [Split H] [Split V]|
-|---------------------|
-| [Close Pane]        |
-| [Kill Window]       |
-+---------------------+
-```
+- the first terminal message must be JSON auth
+- after auth, terminal input is sent as raw bytes or text
+- JSON messages are reserved for resize and ping/pong
 
-- Flat list for each level (sessions, windows, panes)
-- Each pane entry shows: pane index, running command (from `pane_current_command`), active indicator
-- Tapping a session switches to it (server runs `tmux switch-client`)
-- Tapping a window selects it (`tmux select-window`)
-- Tapping a pane selects it (`tmux select-pane`)
-- Action buttons: New Session, New Window, Split Horizontal, Split Vertical, Close Pane, Kill Window
+### Control Plane
 
----
+`/ws/control`
 
-## Toolbar Buttons
+Responsibilities:
 
-### Row 1 (Navigation & Editing)
-| Button | Key | Sequence | Notes |
-|--------|-----|----------|-------|
-| Esc | Escape | `\x1b` | Double-tap sends `\x1b\x1b` |
-| 1 | 1 | `1` | |
-| 2 | 2 | `2` | |
-| 3 | 3 | `3` | |
-| Tab | Tab | `\t` | |
-| / | / | `/` | |
-| Del | Delete | `\x1b[3~` | |
-| BS | Backspace | `\x7f` | Hold to repeat |
-| Hm | Home | `\x1b[H` | |
-| Up | Arrow Up | `\x1b[A` | |
-| Ed | End | `\x1b[F` | |
-| Enter | Enter | `\r` | |
+- control auth handshake
+- workspace state subscription
+- structured tab, pane, and session commands
+- inspect capture requests
+- bandwidth stats and keepalive
 
-### Row 2 (Modifiers & Shortcuts)
-| Button | Key | Sequence | Notes |
-|--------|-----|----------|-------|
-| Ctrl | Modifier | - | Tap=sticky, double-tap=locked |
-| Alt | Modifier | - | Tap=sticky, double-tap=locked |
-| Sft | Modifier | - | Tap=sticky, double-tap=locked |
-| ^D | Ctrl+D | `\x04` | EOF/exit |
-| ^C | Ctrl+C | `\x03` | Interrupt (red) |
-| ^L | Ctrl+L | `\x0c` | Clear screen |
-| ^R | Ctrl+R | `\x12` | Reverse search |
-| Paste | Clipboard | - | Async clipboard read |
-| Left | Arrow Left | `\x1b[D` | |
-| Down | Arrow Down | `\x1b[B` | |
-| Right | Arrow Right | `\x1b[C` | |
+Current command set includes:
 
-### Modifier Behavior
-- **Tap**: Sticky mode - modifier applies to next key only, then auto-clears
-- **Double-tap** (within 300ms): Locked mode - modifier stays on until tapped again
-- Visual indicator: highlight for sticky, strong highlight for locked
+- `subscribe_workspace`
+- `new_tab`
+- `close_tab`
+- `select_tab`
+- `rename_tab`
+- `new_pane`
+- `close_pane`
+- `toggle_fullscreen`
+- `capture_inspect`
+- `rename_session`
 
----
+Current server messages include:
 
-## Tmux Operations via Server CLI
+- `auth_ok`
+- `auth_error`
+- `workspace_state`
+- `inspect_content`
+- `bandwidth_stats`
+- `error`
+- `pong`
 
-All tmux structural operations are executed server-side via the `tmux` CLI, NOT through key sequences in the PTY.
+## HTTP API
 
-### State Queries (used for drawer, polling)
-```
-tmux list-sessions -F '#{session_name}:#{session_attached}:#{session_windows}'
-tmux list-windows -t <session> -F '#{window_index}:#{window_name}:#{window_active}:#{window_panes}'
-tmux list-panes -t <session>:<window> -F '#{pane_index}:#{pane_id}:#{pane_current_command}:#{pane_active}:#{pane_width}x#{pane_height}'
-```
+Current HTTP routes include:
 
-### Mutations (triggered by drawer actions)
-```
-tmux new-session -d -s <name>          # Create session
-tmux kill-session -t <name>            # Kill session
-tmux switch-client -t <session>        # Switch session
-tmux new-window -t <session>           # New window
-tmux kill-window -t <session>:<window> # Kill window
-tmux select-window -t <session>:<idx>  # Switch window
-tmux split-window -h -t <pane_id>      # Split horizontal
-tmux split-window -v -t <pane_id>      # Split vertical
-tmux kill-pane -t <pane_id>            # Close pane
-tmux select-pane -t <pane_id>          # Switch pane
-```
+- `GET /api/config`
+  - returns `passwordRequired` and server version
+- `POST /api/upload`
+  - accepts authenticated image uploads and stores them in the temporary upload directory
 
-### Scrollback Capture (for copy mode)
-```
-tmux capture-pane -t <pane_id> -p -S -<lines>  # Capture last N lines
-```
+When extensions are enabled, the server also exposes:
 
-### State Monitoring
-- Poll `tmux list-sessions`, `list-windows`, `list-panes` every 2-3 seconds
-- Diff against previous state, push changes to client via control plane WebSocket
-- Only send updates when state actually changes (session/window/pane added/removed, active changed, command changed)
+- `GET /api/state/:session`
+- `GET /api/inspect/:session`
+- `GET /api/scrollback/:session`
+- `GET /api/gastown/:session`
+- `GET /api/stats/bandwidth`
+- `GET /api/files`
+- `GET /api/files/*filePath`
 
----
+## Inspect and History
 
-## Custom Scrollback Viewer (Copy Mode)
+Remux currently exposes inspect data through two paths:
 
-Instead of fighting with tmux's native copy mode on mobile:
+- `capture_inspect` on the control socket, which uses `zellij action dump-screen --ansi`
+- extension-backed state tracking and inspect history APIs, which keep server-side terminal snapshots and derived history backed by the terminal buffer's technical scrollback state
 
-1. User taps "Scroll" button in top bar
-2. Client sends request to server via control plane
-3. Server runs `tmux capture-pane -t <pane_id> -p -S -1000` (default: last 1000 lines)
-4. Server sends captured text to client
-5. Client shows a full-screen overlay with:
-   - Native mobile scrolling (touch scroll, momentum)
-   - Native text selection (long-press to select, handles to adjust)
-   - "Copy" button that copies selection to clipboard
-   - "Load More" button to fetch additional history
-   - "Close" button to return to terminal
-6. Configurable default line count (1000 default, user can change)
+The inspect history HTTP API is:
 
----
+- `GET /api/inspect/:session`
+  - returns `{ from, count, lines }`
+  - reads inspect history lines from the extension-backed terminal state tracker
+- `GET /api/scrollback/:session`
+  - legacy compatibility route
+  - responds with `301` redirect to the matching `/api/inspect/:session` URL and preserves `from` and `count` query params
 
-## Compose Mode
+This lets the browser show a readable Inspect view while keeping Live tied to the raw terminal stream.
 
-Toggleable text input mode (on by default for mobile):
+## Security Constraints
 
-- Native text input field at bottom of screen, above or replacing toolbar
-- User types command using native mobile keyboard (with autocomplete, spell-check, etc.)
-- "Send" button or Enter key sends the text to the terminal + carriage return
-- Toggle button to switch between compose mode and direct terminal input
-- When compose mode is off, tapping the terminal area brings up the mobile keyboard for direct xterm.js input
+The following constraints are deliberate and should be preserved:
 
----
+- control and terminal sockets authenticate independently
+- Zellij and shell-adjacent commands must use argument arrays, not shell-string interpolation
+- session names in PTY paths must stay safely escaped
+- uploads and file-browsing APIs must remain authenticated
 
-## Cloudflared Integration
+## Non-Goals
 
-- On startup, check if `cloudflared` is in PATH
-- If not found, attempt auto-install (brew on macOS, direct download on Linux)
-- Start a quick tunnel: `cloudflared tunnel --url http://localhost:<port>`
-- Parse stdout for the tunnel URL
-- Display URL + QR code in the server terminal
-- Append auth token to URL as query parameter
-- On shutdown, kill the cloudflared process
+Remux is not trying to be:
 
----
-
-## Configuration
-
-### CLI Flags
-```
-npx remux [options]
-
-Options:
-  -p, --port <port>     Local port (default: 8767)
-  --password <pass>     Require password authentication
-  --no-tunnel           Don't start cloudflared tunnel (localhost only)
-  --session <name>      Default tmux session name (default: "main")
-  --scrollback <lines>  Default scrollback capture lines (default: 1000)
-```
-
----
-
-## Non-Goals (Explicitly Out of Scope for MVP)
-
-- Pane resize from UI (use tmux commands directly if needed)
-- Pane layout diagram / spatial visualization
-- Multiple simultaneous clients with conflict resolution
-- Custom themes / color schemes
-- File upload/download
-- SSH tunneling (cloudflared only)
-- Desktop-optimized layout (mobile-first, works on desktop but not optimized)
+- a replacement for Zellij
+- a generic browser SSH client
+- a revival of archived runtime plans as a second public product path

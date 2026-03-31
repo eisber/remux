@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/eisber/remux/tui/client"
+	"github.com/yaoshenwang/remux-tui/internal/client"
 )
 
 func findFreePort() (int, error) {
@@ -281,4 +281,3 @@ func TestIntegrationRawWebSocket(t *testing.T) {
 		t.Logf("received: type=%v", resp["type"])
 	}
 }
-

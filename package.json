@@ -1,85 +1,36 @@
 {
   "name": "remux",
-  "version": "0.1.21",
-  "description": "Remote tmux web client — monitor and control terminal sessions from any device",
+  "version": "0.3.0",
+  "description": "Remote terminal workspace — powered by ghostty-web",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/yaoshenwang/remux.git"
   },
-  "bugs": {
-    "url": "https://github.com/yaoshenwang/remux/issues"
-  },
-  "homepage": "https://github.com/yaoshenwang/remux#readme",
-  "keywords": [
-    "tmux",
-    "terminal",
-    "remote",
-    "mobile",
-    "websocket",
-    "cloudflared",
-    "web-terminal"
-  ],
   "type": "module",
-  "publishConfig": {
-    "access": "public"
-  },
-  "files": [
-    "dist",
-    "docs",
-    "README.md",
-    "LICENSE"
-  ],
   "bin": {
-    "remux": "dist/backend/cli.js"
+    "remux": "server.js"
   },
   "scripts": {
-    "dev": "concurrently -n back,vite -c blue,green \"npm:dev:backend\" \"npm:dev:frontend\"",
-    "dev:backend": "tsx watch src/backend/cli.ts --no-tunnel --no-require-password",
-    "dev:frontend": "vite --config vite.config.ts",
-    "build": "npm run build:frontend && npm run build:backend && node -e \"require('fs').utimesSync('dist/backend/cli.js',new Date(),new Date())\"",
-    "build:backend": "tsc -p tsconfig.backend.json",
-    "build:frontend": "vite build --config vite.config.ts",
-    "start": "npm run build && node dist/backend/cli.js",
-    "typecheck": "tsc -p tsconfig.backend.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
-    "test:smoke": "REAL_TMUX_SMOKE=1 vitest run tests/smoke/real-tmux.test.ts",
-    "test:e2e": "npm run build && playwright test",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "prepack": "npm run build"
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "vitest run"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-serialize": "^0.14.0",
-    "@xterm/headless": "^6.0.0",
-    "@xterm/xterm": "^6.0.0",
-    "express": "^5.2.1",
-    "node-pty": "^1.0.0",
-    "qrcode-terminal": "^0.12.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "ws": "^8.20.0",
-    "yargs": "^18.0.0",
-    "zod": "^4.3.6"
+    "ghostty-web": "^0.4.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.20.0"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "node-pty"
+    ]
+  },
+  "postinstall": "node --input-type=commonjs -e \"var fs=require('fs'),p=require('path');['darwin-arm64','darwin-x64'].forEach(function(d){var f=p.join('node_modules','node-pty','prebuilds',d,'spawn-helper');try{fs.chmodSync(f,0o755)}catch(e){}})\"",
   "devDependencies": {
-    "@playwright/test": "^1.51.1",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.5.0",
-    "@types/qrcode-terminal": "^0.12.2",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@types/ws": "^8.5.13",
-    "@types/yargs": "^17.0.35",
-    "@vitejs/plugin-react": "^5.1.4",
-    "concurrently": "^9.1.2",
-    "jsdom": "^29.0.1",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vite": "^7.3.1",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.2"
   }
 }

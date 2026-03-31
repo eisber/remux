@@ -1,49 +1,88 @@
 # Remux
 
-**Remote tmux, anywhere.** A web-based tmux client that lets you monitor and control terminal sessions from any device — phone, tablet, or another computer.
+![Remux hero](./docs/assets/hero.svg)
 
-Built for the age of AI coding agents: keep an eye on Claude Code, long-running builds, or any tmux workflow without being chained to your desk.
+**Runtime Cockpit now, Agentic Workstation next, Collaboration OS later.**
 
-## Features
+[![GitHub stars](https://img.shields.io/github/stars/yaoshenwang/remux?style=social)](https://github.com/yaoshenwang/remux/stargazers)
+![GitHub contributors](https://img.shields.io/github/contributors/yaoshenwang/remux)
 
-- **Web-based terminal access** — full tmux interaction through your browser, no app install needed
-- **Mobile-first UI** — touch-optimized interface designed for phones and tablets
-- **Secure remote access** — optional Cloudflare tunnel for access from anywhere, with password authentication enabled by default
-- **Multi-client support** — each connected client gets independent window focus via grouped tmux sessions
-- **Themes** — Amber and Midnight built-in themes
-- **Zero tmux knowledge required** — tap-friendly interface, no commands to memorize
+Remux is a remote workspace cockpit for terminal-first work. It uses Zellij as the shared session backend and adds Inspect, Live, and Control surfaces for catching up, intervening, and navigating from another device.
 
-## Screenshots
+The product roadmap is deliberately staged:
 
-### Amber theme
-![Remux screenshot - Amber](./docs/assets/screenshot.png)
+- `Runtime Cockpit`: today’s shipped path, centered on Zellij-backed Inspect, Live, and Control
+- `Agentic Workstation`: the next layer, where review, worktree, and agent-run workflows become first-class
+- `Collaboration OS`: the longer-horizon shell, where topics, artifacts, approvals, and handoff become durable workspace objects
 
-### Midnight theme
-![Remux screenshot - Midnight](./docs/assets/screenshot-midnight.png)
+Remux does not try to replace Zellij. Zellij owns session, tab, pane, and attach truth; Remux adds web access, authentication, mobile-friendly controls, inspect views, and optional tunnel exposure on top.
 
-## Prerequisites
+## Why Remux
 
-- **Node.js** 20 or newer
-- **tmux** installed on the host machine
+- Catch up on the current workspace without relying only on the visible terminal viewport
+- Read, copy, and inspect terminal history more comfortably on mobile
+- Jump into Live only when direct intervention is necessary
+- Navigate sessions, tabs, and panes through a structured Control surface
+- Reuse the same shared Zellij session from multiple browsers without rebuilding the runtime stack
+- Protect access with token auth, optional password auth, and HTTPS tunnel exposure
 
-```bash
-# macOS
-brew install tmux
+## Roadmap Arc
 
-# Ubuntu / Debian
-sudo apt install tmux
-```
+Remux is being built in three explicit phases so the product can ship continuously without blocking on a rewrite:
 
-Recommended: enable mouse mode for tap-to-switch-pane in the mobile UI:
+- `Runtime Cockpit`: harden the current Zellij + Node.js + Web stack and make Inspect the reliable catch-up surface
+- `Agentic Workstation`: add richer review, agent, worktree, and approval flows on top of the current runtime truth
+- `Collaboration OS`: grow from a terminal cockpit into a topic-first collaborative workspace shell
 
-```bash
-echo 'set -g mouse on' >> ~/.tmux.conf
-tmux source-file ~/.tmux.conf
-```
+## Product Surfaces
+
+![Remux surfaces](./docs/assets/surfaces.svg)
+
+- `Inspect`: readable history and context for catching up, copying, and understanding what happened
+- `Live`: direct terminal I/O for quick fixes, command entry, and interactive tools
+- `Control`: structured session, tab, and pane navigation plus workspace operations
+
+## Backend Model
+
+- The public and default backend is Zellij
+- `/ws/terminal` carries terminal I/O and resize messages
+- `/ws/control` carries workspace state, structured commands, inspect capture, and stats
+- Each browser client gets its own attach PTY, while Zellij remains the shared source of truth
+- Historical planning material is preserved under [docs/archive/README.md](./docs/archive/README.md)
 
 ## Quick Start
 
-### Run from source
+### 1. Install prerequisites
+
+- Node.js 20+
+- Zellij installed and available in `PATH`
+
+Verify Zellij first:
+
+```bash
+zellij --version
+```
+
+### 2. Run from npm
+
+```bash
+npx remux
+```
+
+Remux prints:
+
+- a local URL
+- a tunnel URL when tunnel mode is enabled
+- a password when password protection is enabled
+- a QR code for quick mobile access
+
+### 3. Open from another device
+
+- Browser: open the printed local or tunnel URL
+- Phone or tablet: scan the printed QR code
+- Shared access: use the printed password when password protection is enabled
+
+### 4. Run from source
 
 ```bash
 git clone https://github.com/yaoshenwang/remux.git
@@ -52,66 +91,114 @@ npm install
 npm start
 ```
 
-The CLI prints local and tunnel URLs — open on your phone to connect.
+## Requirements
 
-### CLI Options
+- Node.js 20+
+- Zellij installed and available in `PATH` or passed via `--zellij-bin`
+- Optional `devtunnel` or `cloudflared` when tunnel mode is enabled
 
-```
+## Features
+
+- Session, tab, and pane management from the browser control drawer
+- Full terminal streaming through xterm.js for Live interaction
+- Inspect view for readable history and mobile-friendly text selection
+- Per-client PTY attach model for reconnect-friendly shared sessions
+- Compose input for native mobile keyboard entry
+- Drag-and-drop or picker-based image upload into the active workspace
+- Theme picker with built-in terminal themes
+- Automatic reconnect with keepalive
+- Optional Gastown metadata enrichment when running inside a Gastown workspace
+
+## CLI
+
+```text
 remux [options]
 
 Options:
   -p, --port <port>                Local port (default: 8767)
-  --password <pass>                Authentication password (auto-generated if omitted)
-  --[no-]require-password          Toggle password requirement (default: true)
-  --no-tunnel                      Don't start Cloudflare tunnel
-  --session <name>                 Default tmux session name (default: main)
-  --scrollback <lines>             Scrollback capture lines (default: 1000)
+  --host <host>                    Bind address (default: 127.0.0.1)
+  --password <pass>                Authentication password
+  --[no-]require-password          Toggle password protection (default: true)
+  --[no-]tunnel                    Start a public tunnel (default: true)
+  --tunnel-provider <provider>     Tunnel provider: auto, devtunnel, cloudflare
+  --zellij-session <name>          Zellij session name (default: remux)
+  --zellij-bin <path>              Path to zellij binary
   --debug-log <path>               Write backend debug logs to a file
 ```
 
-### Environment Variables
+## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
-| `REMUX_SOCKET_NAME` | Dedicated tmux socket name (`tmux -L`) for isolation |
-| `REMUX_SOCKET_PATH` | Explicit tmux socket path (`tmux -S`) |
-| `REMUX_DEBUG_LOG` | Enable debug log file output |
-| `REMUX_FORCE_SCRIPT_PTY` | Force Unix `script(1)` PTY fallback |
-| `REMUX_TOKEN` | Fixed auth token across restarts |
+| `REMUX_DEBUG_LOG` | Debug log file path |
+| `REMUX_PASSWORD` | Password used when `--require-password` is enabled |
+| `REMUX_TOKEN` | Reuse a fixed auth token across restarts |
+| `VITE_DEV_MODE=1` | Backend knows frontend is served by Vite during development |
 
-## Security
+## Security Defaults
 
-- Password authentication enabled by default (random password generated if not specified)
-- Clients attach through dedicated grouped tmux sessions for independent window focus
-- Full security model documented in [SECURITY.md](./docs/SECURITY.md)
+- Token authentication is always required
+- Password protection is enabled by default
+- Control and terminal WebSockets authenticate independently
+- The server binds to `127.0.0.1` by default
+- Tunnel mode prefers HTTPS exposure through DevTunnel or Cloudflare instead of exposing the local port directly
+
+## Documentation
+
+- [docs/README.md](./docs/README.md): documentation entrypoint
+- [docs/CURRENT_BASELINE.md](./docs/CURRENT_BASELINE.md): current architecture truth
+- [docs/ACTIVE_DOCS_INDEX.md](./docs/ACTIVE_DOCS_INDEX.md): active, draft, and archive authority map
+- [docs/SPEC.md](./docs/SPEC.md): current Zellij-backed architecture, transport model, and API surface
+- [docs/TESTING.md](./docs/TESTING.md): current test loop and merge gate
+- [docs/archive/README.md](./docs/archive/README.md): archived legacy and transition documents
 
 ## Development
 
 ```bash
-# Start dev server (backend + frontend with hot reload)
 npm run dev
+```
 
-# Quality gate
+Current validation commands:
+
+```bash
 npm run typecheck
 npm test
-npm run test:e2e
 npm run build
+npm run test:e2e
+```
 
-# Optional: real tmux smoke test
-npm run test:smoke
+The required pre-merge gate is:
+
+```bash
+npm run typecheck && npm test && npm run build
 ```
 
 ## Tech Stack
 
-- **Backend**: Node.js, Express, WebSocket (ws), node-pty
-- **Frontend**: React 19, xterm.js, Vite
-- **Testing**: Vitest (unit/integration), Playwright (E2E)
-- **Language**: TypeScript
+- Backend gateway: Node.js, Express 5, `ws`, `node-pty`
+- Session backend: Zellij
+- Frontend: React 19, Vite, xterm.js
+- Testing: Vitest and Playwright
+- Language: TypeScript
+
+This stack maps to the current `Runtime Cockpit` phase. Future phases extend the same product line rather than replacing the shipped path wholesale.
 
 ## Acknowledgments
 
-Remux was originally inspired by [tmux-mobile](https://github.com/DagsHub/tmux-mobile) by [DagsHub](https://github.com/DagsHub) and [porterminal](https://github.com/lyehe/porterminal). The project has since been substantially rewritten.
+Remux was originally inspired by existing browser-based terminal access tools and then rewritten around a Zellij-backed, mobile-first control surface.
+
+## Contributors
+
+Thanks to everyone who has helped shape Remux.
+
+[![Contributors](https://contrib.rocks/image?repo=yaoshenwang/remux)](https://github.com/yaoshenwang/remux/graphs/contributors)
+
+Made with [contrib.rocks](https://contrib.rocks).
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=yaoshenwang/remux&type=Date)](https://star-history.com/#yaoshenwang/remux&Date)
 
 ## License
 
-MIT — see [LICENSE](./LICENSE) for details.
+MIT. See [LICENSE](./LICENSE).
