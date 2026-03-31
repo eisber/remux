@@ -40,7 +40,7 @@
     "dev:frontend": "vite --config vite.config.ts",
     "build": "pnpm run build:frontend && pnpm run build:backend",
     "build:backend": "tsc -p tsconfig.backend.json",
-    "build:frontend": "vite build --config vite.config.ts",
+    "build:frontend": "vite build --config vite.config.ts && cp node_modules/ghostty-web/dist/ghostty-vt.wasm dist/frontend/ghostty-vt.wasm",
     "start": "pnpm run build && node dist/backend/cli-zellij.js",
     "check:terminology": "node scripts/check-active-terminology.mjs",
     "typecheck": "tsc -p tsconfig.backend.json --noEmit && tsc -p tsconfig.frontend.json --noEmit",
