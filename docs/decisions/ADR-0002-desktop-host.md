@@ -1,7 +1,10 @@
 # ADR-0002: Desktop Host Direction
 
-- Status: Accepted
+- Status: Superseded by ADR-0003
 - Date: 2026-03-31
+
+This ADR is preserved as the first desktop host evaluation. The active desktop
+alpha direction is defined by `ADR-0003-tauri-shell-alpha.md`.
 
 ## Context
 
@@ -34,4 +37,3 @@ Desktop host exploration should start from Electron hosting the existing gateway
 - the runtime adapter boundary exists and is exercised
 - desktop packaging no longer depends on Node-specific APIs directly
 - terminal integration and local process management can be expressed through a portable boundary
-
