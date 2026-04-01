@@ -130,7 +130,7 @@ describe("WebSocket auth", () => {
     const ws = await connectWs();
     ws.send(JSON.stringify({ type: "attach_first", session: "main" }));
     const msg = await waitForMsg(ws, "auth_error");
-    expect(msg.reason).toBe("invalid token");
+    expect(msg.reason).toBe("invalid credentials");
     ws.close();
   });
 

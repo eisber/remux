@@ -19,6 +19,7 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 const PORT = process.env.PORT || 8767;
 const TOKEN = process.env.REMUX_TOKEN || null;
+const PASSWORD = process.env.REMUX_PASSWORD || null;
 
 // ── Locate ghostty-web assets ──────────────────────────────────────
 
@@ -651,6 +652,23 @@ const HTML_TEMPLATE = `<!doctype html>
             selectSession(s.name);
             closeSidebarMobile();
           });
+          el.querySelector('.name').addEventListener('dblclick', e => {
+            e.preventDefault(); e.stopPropagation();
+            const nameEl = e.target;
+            const input = document.createElement('input');
+            input.type = 'text'; input.value = s.name;
+            input.style.cssText = 'all:unset;font:inherit;color:inherit;width:100%;border-bottom:1px solid #888;';
+            nameEl.replaceWith(input); input.focus(); input.select();
+            const commit = () => {
+              const v = input.value.trim();
+              if (v && v !== s.name) {
+                sendCtrl({ type: 'rename_session', oldName: s.name, newName: v });
+                if (s.name === currentSession) currentSession = v;
+              } else renderSessions();
+            };
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', e2 => { if (e2.key === 'Enter') input.blur(); if (e2.key === 'Escape') { input.value = s.name; input.blur(); } });
+          });
           list.appendChild(el);
         });
       }
@@ -674,6 +692,21 @@ const HTML_TEMPLATE = `<!doctype html>
             }
             e.preventDefault();
             if (t.id !== currentTabId) attachTab(t.id);
+          });
+          el.addEventListener('dblclick', e => {
+            e.preventDefault(); e.stopPropagation();
+            const titleEl = el.querySelector('.title');
+            const input = document.createElement('input');
+            input.type = 'text'; input.value = t.title;
+            input.style.cssText = 'all:unset;font:inherit;color:inherit;width:80px;border-bottom:1px solid #888;';
+            titleEl.replaceWith(input); input.focus(); input.select();
+            const commit = () => {
+              const v = input.value.trim();
+              if (v && v !== t.title) sendCtrl({ type: 'rename_tab', tabId: t.id, title: v });
+              else renderTabs();
+            };
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', e2 => { if (e2.key === 'Enter') input.blur(); if (e2.key === 'Escape') { input.value = t.title; input.blur(); } });
           });
           list.appendChild(el);
         });
@@ -770,6 +803,41 @@ const HTML_TEMPLATE = `<!doctype html>
         term.focus();
       });
 
+      // ── Keyboard shortcuts ──
+      document.addEventListener('keydown', e => {
+        // Ctrl+T — new tab
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 't') {
+          e.preventDefault();
+          sendCtrl({ type: 'new_tab', session: currentSession, cols: term.cols, rows: term.rows });
+          return;
+        }
+        // Ctrl+Shift+T — new session
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'T') {
+          e.preventDefault();
+          const name = prompt('Session name:');
+          if (name && name.trim()) sendCtrl({ type: 'new_session', name: name.trim(), cols: term.cols, rows: term.rows });
+          return;
+        }
+        // Ctrl+W — close current tab
+        if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'w') {
+          e.preventDefault();
+          if (currentTabId != null) closeTab(currentTabId);
+          return;
+        }
+        // Ctrl+Tab / Ctrl+Shift+Tab — next/prev tab
+        if (e.ctrlKey && e.key === 'Tab') {
+          e.preventDefault();
+          const sess = sessions.find(s => s.name === currentSession);
+          if (!sess || sess.tabs.length < 2) return;
+          const idx = sess.tabs.findIndex(t => t.id === currentTabId);
+          const next = e.shiftKey
+            ? sess.tabs[(idx - 1 + sess.tabs.length) % sess.tabs.length]
+            : sess.tabs[(idx + 1) % sess.tabs.length];
+          attachTab(next.id);
+          return;
+        }
+      });
+
       // ── Mobile ──
       if (window.visualViewport) {
         window.visualViewport.addEventListener('resize', () => {
@@ -832,7 +900,7 @@ function serveFile(filePath, res) {
 
 // ── WebSocket Server ──────────────────────────────────────────────
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: true });
 
 httpServer.on("upgrade", (req, socket, head) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -847,8 +915,8 @@ wss.on("connection", (ws) => {
   ws._remuxTabId = null;
   ws._remuxCols = 80;
   ws._remuxRows = 24;
-  ws._remuxAuthed = !TOKEN;
-  if (!TOKEN) controlClients.add(ws); // auto-auth: register for broadcasts immediately
+  ws._remuxAuthed = !TOKEN && !PASSWORD;
+  if (!TOKEN && !PASSWORD) controlClients.add(ws); // auto-auth: register for broadcasts immediately
 
   ws.on("message", (raw) => {
     const msg = raw.toString("utf8");
@@ -857,15 +925,19 @@ wss.on("connection", (ws) => {
     if (!ws._remuxAuthed) {
       try {
         const parsed = JSON.parse(msg);
-        if (parsed.type === "auth" && parsed.token === TOKEN) {
-          ws._remuxAuthed = true;
-          controlClients.add(ws);
-          ws.send(JSON.stringify({ type: "auth_ok" }));
-          ws.send(JSON.stringify({ type: "state", sessions: getState() }));
-          return;
+        if (parsed.type === "auth") {
+          const tokenOk = TOKEN && parsed.token === TOKEN;
+          const passOk = PASSWORD && parsed.password === PASSWORD;
+          if (tokenOk || passOk) {
+            ws._remuxAuthed = true;
+            controlClients.add(ws);
+            ws.send(JSON.stringify({ type: "auth_ok" }));
+            ws.send(JSON.stringify({ type: "state", sessions: getState() }));
+            return;
+          }
         }
       } catch {}
-      ws.send(JSON.stringify({ type: "auth_error", reason: "invalid token" }));
+      ws.send(JSON.stringify({ type: "auth_error", reason: "invalid credentials" }));
       ws.close(4001, "unauthorized");
       return;
     }
@@ -938,6 +1010,30 @@ wss.on("connection", (ws) => {
         // Delete entire session
         if (p.type === "delete_session") {
           if (p.name) { deleteSession(p.name); broadcastState(); }
+          return;
+        }
+
+        // Rename a tab
+        if (p.type === "rename_tab") {
+          const found = findTab(p.tabId);
+          if (found && p.title) {
+            found.tab.title = p.title;
+            broadcastState();
+          }
+          return;
+        }
+
+        // Rename a session
+        if (p.type === "rename_session") {
+          if (p.oldName && p.newName && p.oldName !== p.newName) {
+            const session = sessionMap.get(p.oldName);
+            if (session && !sessionMap.has(p.newName)) {
+              sessionMap.delete(p.oldName);
+              session.name = p.newName;
+              sessionMap.set(p.newName, session);
+              broadcastState();
+            }
+          }
           return;
         }
 
