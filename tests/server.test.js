@@ -13,7 +13,7 @@ import { homedir } from "os";
 
 const PORT = 19876; // test-only port
 const TOKEN = "test-token-" + Date.now();
-const PERSIST_FILE = path.join(homedir(), ".remux", "sessions.json");
+const PERSIST_FILE = path.join(homedir(), ".remux", `sessions-port-${PORT}.json`);
 let serverProc;
 
 function httpGet(urlPath) {
@@ -145,19 +145,24 @@ describe("WebSocket auth", () => {
 
 describe("session and tab management", () => {
   let ws;
+  let initialState;
 
   beforeAll(async () => {
     ws = await connectWs();
+    // Register both handlers before sending auth to avoid losing the state
+    // message that the server sends immediately after auth_ok
+    const authP = waitForMsg(ws, "auth_ok");
+    const stateP = waitForMsg(ws, "state");
     ws.send(JSON.stringify({ type: "auth", token: TOKEN }));
-    await waitForMsg(ws, "auth_ok");
+    await authP;
+    initialState = await stateP;
   });
 
   afterAll(() => ws?.close());
 
   it("receives state with default session on connect", async () => {
-    const stateMsg = await waitForMsg(ws, "state");
-    expect(stateMsg.sessions.length).toBeGreaterThanOrEqual(1);
-    const main = stateMsg.sessions.find((s) => s.name === "main");
+    expect(initialState.sessions.length).toBeGreaterThanOrEqual(1);
+    const main = initialState.sessions.find((s) => s.name === "main");
     expect(main).toBeDefined();
     expect(main.tabs.length).toBeGreaterThanOrEqual(1);
   });
